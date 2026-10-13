@@ -1,4 +1,9 @@
-package com.folio.hermes.cascade
+package com.folio.hermes.cascade.writer
+
+import com.folio.hermes.cascade.Exchange
+import com.folio.hermes.cascade.TaskBrief
+import com.folio.hermes.cascade.TaskSnapshot
+import com.folio.hermes.cascade.UpdateMode
 
 /** A new task as the writer planned it. */
 data class TaskPlan(val label: String, val prompt: String, val say: String)

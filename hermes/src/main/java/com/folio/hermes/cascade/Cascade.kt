@@ -1,6 +1,9 @@
 package com.folio.hermes.cascade
 
 import com.folio.hermes.TurnUpdate
+import com.folio.hermes.cascade.routing.CascadeBrain
+import com.folio.hermes.cascade.routing.Router
+import com.folio.hermes.cascade.writer.WriterPrompts
 import com.folio.hermes.openrouter.FailureKind
 import com.folio.hermes.openrouter.OpenRouter
 import com.folio.hermes.openrouter.OpenRouterException
@@ -9,8 +12,8 @@ import com.folio.hermes.telemetry.TelemetrySink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.takeWhile
@@ -420,6 +423,7 @@ class Cascade(
                     if (decision.writer) write(WriterPrompts.spoken(said, 1), WriterPrompts.clarify(text, recentExchanges(), board.briefs())) { play(AppLines.SAY_AGAIN) }
                     else if (spoken.slot == null) play(AppLines.SAY_AGAIN)
                 Route.AskRepeat -> play(AppLines.SAY_AGAIN)
+                Route.Hold -> Unit // offline turns are held before they reach here
                 Route.NewTask -> if (atCap) play(AppLines.LIMIT_FULL) else if (!outbox.stageDone(turnId, "task")) {
                     if (spoken.slot == null) play("ack.do")
                     spoken.writerRan = true

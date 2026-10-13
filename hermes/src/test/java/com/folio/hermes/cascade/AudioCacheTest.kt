@@ -110,23 +110,23 @@ class AudioCacheTest {
         val cache = TtsCache(MemoryClipStore())
         tts.delayMs = 20
         val first = PhraseRenderer(tts.voice(cache), telemetry = com.folio.hermes.telemetry.TelemetrySink.None).render(bank)
-        assertEquals(RenderProgress(total = 281, done = 281, cached = 0, failed = 0, finished = true), first)
-        assertEquals(281, tts.requests.get())
+        assertEquals(RenderProgress(total = 285, done = 285, cached = 0, failed = 0, finished = true), first)
+        assertEquals(285, tts.requests.get())
         assertTrue("at most 4 at a time, saw ${tts.peak.get()}", tts.peak.get() <= 4)
 
-        // Version 3 changes one line and adds one slot: only those two lines are fetched.
+        // The next version changes one line and adds one slot: only those two lines are fetched.
         val slots = bank.slots.map { if (it.id == "ack.do") it.copy(lines = it.lines.dropLast(1) + "Righto.") else it } +
             PhraseSlot("ack.extra", "ack", "new", listOf("Brand new line."))
-        val v3 = PhraseBank(3, bank.groups, slots)
-        val second = PhraseRenderer(tts.voice(cache), telemetry = com.folio.hermes.telemetry.TelemetrySink.None).render(v3)
-        assertEquals(283, tts.requests.get())
-        assertEquals(280, second.cached)
-        assertEquals(282, second.total)
+        val v4 = PhraseBank(4, bank.groups, slots)
+        val second = PhraseRenderer(tts.voice(cache), telemetry = com.folio.hermes.telemetry.TelemetrySink.None).render(v4)
+        assertEquals(287, tts.requests.get())
+        assertEquals(284, second.cached)
+        assertEquals(286, second.total)
 
         // A new voice re-renders everything (new keys).
         tts.delayMs = 0
-        PhraseRenderer(tts.voice(cache, voice = "other"), telemetry = com.folio.hermes.telemetry.TelemetrySink.None).render(v3)
-        assertEquals(283 + 282, tts.requests.get())
+        PhraseRenderer(tts.voice(cache, voice = "other"), telemetry = com.folio.hermes.telemetry.TelemetrySink.None).render(v4)
+        assertEquals(287 + 286, tts.requests.get())
     }
 
     @Test fun rendererSkipsAFailureAfterOneRetry() = runBlocking {

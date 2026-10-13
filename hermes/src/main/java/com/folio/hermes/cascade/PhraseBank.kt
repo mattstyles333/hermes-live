@@ -18,7 +18,7 @@ internal data class PhraseFile(
 )
 
 /**
- * Bill's stock lines (`hermes-cascade-phrases-2026-10-13.json`, version 2, shipped unchanged as a
+ * Bill's stock lines (`hermes-cascade-phrases-2026-10-13.json`, version 3, shipped unchanged as a
  * resource): slots of 2–6 alternative lines. Every line is rendered once per voice and model
  * ([PhraseRenderer]) and played from the [TtsCache], so a stock line costs no TTS request.
  *
@@ -63,6 +63,9 @@ object AppLines {
     const val HI = "social.hi"
     const val WELCOME_BACK = "social.welcome_back"
 
+    /** Results that arrived while the call was off or the line was down (bank v3). */
+    const val WHILE_AWAY = "result.while_away"
+
     const val WAIT = "wait.brief"
     const val SIGNAL = "wait.signal"
     const val LIMIT_FULL = "limit.full"
@@ -88,6 +91,6 @@ object AppLines {
     /** Groups only the app picks from. */
     val APP_GROUPS = setOf("wait", "limit", "approval", "error", "end")
 
-    /** Conversational-group slots only the app picks (call start). */
-    val APP_IDS = setOf(HI, WELCOME_BACK)
+    /** Conversational-group slots only the app picks (call start, catch-up). */
+    val APP_IDS = setOf(HI, WELCOME_BACK, WHILE_AWAY)
 }
