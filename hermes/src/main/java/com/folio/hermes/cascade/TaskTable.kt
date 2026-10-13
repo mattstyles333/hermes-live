@@ -251,7 +251,8 @@ data class TaskTable(
         val t = this[id] ?: return TaskStep(this, null)
         val pending = kind == RunKind.Queue && t.active > 0
         val runId = runCounter + 1
-        val opening = kind == RunKind.Start && t.storedSessionId == null
+        // No session yet: a start opens one; anything sent meanwhile waits for it (same session, in order).
+        val opening = t.storedSessionId == null && (kind == RunKind.Start || t.runs.values.any { it.opening })
         val run = TaskRun(kind, pending, turnId = turnId, text = text, opening = opening, voiceContext = voiceContext)
         val record = t.copy(
             pendingUpdates = t.pendingUpdates + if (pending) 1 else 0,
@@ -259,8 +260,12 @@ data class TaskTable(
             runs = t.runs + (runId to run),
             queued = false,
         ).log(TaskEvent.Submitted(now, kind.how))
-        val effect = if (opening) Effect.OpenTaskSession(id, runId, t.label) else submit(record, runId, run)
-        return TaskStep(copy(tasks = tasks.map { if (it.id == id) record else it }, runCounter = runId), runId, effects = listOf(effect))
+        val effects = when {
+            !opening -> listOf(submit(record, runId, run))
+            kind == RunKind.Start -> listOf(Effect.OpenTaskSession(id, runId, t.label))
+            else -> emptyList()
+        }
+        return TaskStep(copy(tasks = tasks.map { if (it.id == id) record else it }, runCounter = runId), runId, effects = effects)
     }
 
     /**
@@ -272,9 +277,11 @@ data class TaskTable(
         val t = this[id] ?: return TaskStep(this, Unit)
         val run = t.runs[runId]?.takeIf { it.opening } ?: return TaskStep(this, Unit)
         if (t.cancelled || t.state != TaskState.Running) return forget(id, runId)
-        val ready = run.copy(opening = false)
-        val record = t.copy(storedSessionId = storedSessionId ?: t.storedSessionId, runs = t.runs + (runId to ready))
-        return TaskStep(put(record), Unit, effects = listOf(submit(record, runId, ready)))
+        // This run, then any update that waited for the session, in order.
+        val waiting = t.runs.filter { (k, r) -> r.opening && (k == runId || r.kind != RunKind.Start) }.toSortedMap()
+        val ready = waiting.mapValues { (_, r) -> r.copy(opening = false) }
+        val record = t.copy(storedSessionId = storedSessionId ?: t.storedSessionId, runs = t.runs + ready)
+        return TaskStep(put(record), Unit, effects = ready.map { (k, r) -> submit(record, k, r) })
     }
 
     /** Drop run [runId] of task [id] as if it never went out (nothing reached Hermes): no ending, no result. */

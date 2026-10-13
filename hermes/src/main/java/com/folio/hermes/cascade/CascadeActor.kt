@@ -173,8 +173,14 @@ class CascadeActor(
     /** Any other input (taps, resume choice, hold-to-talk). */
     fun send(event: Event) = post(event)
 
-    /** Open past conversation [conversationId] from the history list (`ConversationHistory.list`). */
-    fun openConversation(conversationId: String) = post(Event.OpenConversation(conversationId))
+    /**
+     * Open past conversation [conversationId] from the history list (`ConversationHistory.list`).
+     * The stored state is read back first if no call or restore has yet (an off-call restore).
+     */
+    fun openConversation(conversationId: String) {
+        restore()
+        post(Event.OpenConversation(conversationId))
+    }
 
     private fun post(event: Event) {
         channel.trySend(event)

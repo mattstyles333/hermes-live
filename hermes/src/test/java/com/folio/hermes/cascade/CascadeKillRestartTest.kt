@@ -9,6 +9,8 @@ import com.folio.hermes.cascade.store.CoreDto
 import com.folio.hermes.cascade.store.StoreCodec
 import com.folio.hermes.cascade.store.StoreKeys
 import com.folio.hermes.cascade.store.durableEnv
+import com.folio.hermes.cascade.routing.MemoRouting
+import java.time.ZoneOffset
 import com.folio.hermes.openrouter.FailureKind
 import com.folio.hermes.openrouter.OpenRouterResult
 import com.folio.hermes.telemetry.TelemetrySink
@@ -81,17 +83,30 @@ class CascadeKillRestartTest {
 
     private var createAhead = true
 
+    /** Run on the env `:live` ships ([CascadeCore.env]: CEO routing on the durable seams) instead of the C1 handlers. */
+    private var ceo = false
+
+    /** What the server got for [text]: equal on C1; on CEO a brief built around it (Goal line plus the transcript block). */
+    private fun sent(prompts: List<String>, text: String): Int = prompts.count { if (ceo) it.contains(text) else it == text }
+
     private fun TestScope.actor(store: Store, server: FakeServer, gate: EffectGate): Run {
         val clock = TestClock(this)
         val openRouter = FakeOpenRouter(clock).apply {
             jevDefault = FakeOpenRouter.JevScript(10, newTask)
             // The brief is the request itself, so each turn's submit is recognisable.
-            plan = { prompt -> OpenRouterResult.Ok("LABEL: job\nPROMPT: ${prompt.substringAfter("The request: \"").trimEnd('"')}\nSAY: On it.") }
+            plan = { prompt ->
+                if (ceo) {
+                    val request = prompt.substringAfter("Transcript: \"").substringBefore("\"\n")
+                    OpenRouterResult.Ok("""{"briefs":[{"brief":"Goal: $request\nDone when: it is done","label":"job","summary":"On it."}],"notes":""}""")
+                } else {
+                    OpenRouterResult.Ok("LABEL: job\nPROMPT: ${prompt.substringAfter("The request: \"").trimEnd('"')}\nSAY: On it.")
+                }
+            }
         }
         val hermes = ClientHermes(server).apply { createAhead = this@CascadeKillRestartTest.createAhead }
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
         val actor = CascadeActor(
-            scope = scope, env = durableEnv(bank), settings = { CascadeSettings() },
+            scope = scope, env = if (ceo) CascadeCore.env(bank, MemoRouting(ZoneOffset.UTC)) else durableEnv(bank), settings = { CascadeSettings() },
             openRouter = updateAnswer?.let { ByText(openRouter, it) } ?: openRouter, hermes = hermes, audio = FakeAudioOut(clock), clock = clock, store = store,
             telemetry = TelemetrySink.None, gate = gate, seed = 3,
         )
@@ -135,11 +150,14 @@ class CascadeKillRestartTest {
         runCurrent()
     }
 
-    private fun countEffects(scenario: TestScope.(Run) -> Unit): Int {
+    /** The scenario's effect count with no kill; every one of [texts] reaches Hermes exactly once. */
+    private fun countEffects(texts: List<String>, scenario: TestScope.(Run) -> Unit): Int {
         var count = 0
         runTest {
-            val run = actor(MemoryStore(), FakeServer(), EffectGate { count++; true })
+            val server = FakeServer()
+            val run = actor(MemoryStore(), server, EffectGate { count++; true })
             scenario(run)
+            texts.forEach { assertEquals("'$it' sent once with no kill", 1, sent(server.prompts, it)) }
             run.close()
         }
         return count
@@ -198,6 +216,27 @@ class CascadeKillRestartTest {
         killEverywhere("update+line", listOf(texts[0], UPDATE)) { updating(it) }
     }
 
+    /*
+     * The same kills on the env `:live` ships (CEO routing: JSON briefs, TaskQueue, Confirmations
+     * marks, CeoUpdateTaskHandler with R-RT-7 redirect and the busy-mode read).
+     */
+    @Test fun ceoKillingTheOnlineScenarioAnywhereLosesNothingAndNeverSubmitsTwice() {
+        ceo = true
+        killEverywhere("ceo online") { online(it) }
+    }
+
+    @Test fun ceoKillingAnUpdateWithTheWriterLosesNothingAndNeverSubmitsTwice() {
+        ceo = true
+        updateAnswer = update("line_then_writer")
+        killEverywhere("ceo update+writer", listOf(texts[0], UPDATE)) { updating(it) }
+    }
+
+    @Test fun ceoKillingAnUpdateWithTheLineOnlyLosesNothingAndNeverSubmitsTwice() {
+        ceo = true
+        updateAnswer = update("line_only")
+        killEverywhere("ceo update+line", listOf(texts[0], UPDATE)) { updating(it) }
+    }
+
     /** A port that cannot create a session ahead (the old path): no double and no loss, but some kills end `NotSent`. */
     @Test fun withoutSessionFirstTheGreyZoneIsBoundedAndNeverDoubled() {
         createAhead = false
@@ -206,7 +245,7 @@ class CascadeKillRestartTest {
 
     /** Kill before every effect k and restart. [allowNotSent]: the old grey zone is expected (no session-first). */
     private fun killEverywhere(name: String, texts: List<String> = this.texts, allowNotSent: Boolean = false, scenario: TestScope.(Run) -> Unit) {
-        val total = countEffects(scenario)
+        val total = countEffects(texts, scenario)
         assertTrue("the scenario runs a real number of effects ($total)", total > 40)
         var lost = 0
         var doubles = 0
@@ -232,8 +271,8 @@ class CascadeKillRestartTest {
                 val atKill = Durable.read(store)
                 everDurable += atKill.turnIds
                 // R-DUR-1: a new task never reaches Hermes before it is stored, nor an update before its run or stage.
-                server.prompts.filter { it != UPDATE }.forEach { p -> assertTrue("k=$k: '$p' reached Hermes before its task was stored", atKill.tasks.any { it.brief == p }) }
-                if (UPDATE in server.prompts) assertTrue("k=$k: the update reached Hermes before it was stored", "u2" in atKill.updates)
+                server.prompts.filter { sent(listOf(it), UPDATE) == 0 }.forEach { p -> assertTrue("k=$k: '$p' reached Hermes before its task was stored", atKill.tasks.any { it.brief == p }) }
+                if (sent(server.prompts, UPDATE) > 0) assertTrue("k=$k: the update reached Hermes before it was stored", "u2" in atKill.updates)
 
                 val second = actor(store, server, EffectGate.Open)
                 second.actor.start()
@@ -245,7 +284,7 @@ class CascadeKillRestartTest {
                 val after = second.actor.state.value
 
                 texts.forEach { t ->
-                    if (server.prompts.count { it == t } > 1) {
+                    if (sent(server.prompts, t) > 1) {
                         doubles++
                         println("$name k=$k: '$t' submitted twice (at kill: $atKill)")
                     }
@@ -254,10 +293,10 @@ class CascadeKillRestartTest {
                 if (turns.isNotEmpty()) durableKills++
                 for (turnId in turns) {
                     val text = texts[turnId.drop(1).toInt() - 1]
-                    val submitted = server.prompts.any { it == text }
+                    val submitted = sent(server.prompts, text) > 0
                     val held = after.outbox.held.any { it.turnId == turnId }
                     val task = after.tasks.tasks.firstOrNull { it.turnId == turnId }
-                    val retryable = task != null && task.send == SendState.NotSent && task.brief == text
+                    val retryable = task != null && task.send == SendState.NotSent && task.brief?.let { if (ceo) it.contains(text) else it == text } == true
                     if (!submitted && !held && !retryable) {
                         lost++
                         println("$name k=$k: $turnId lost (at kill: $atKill)")

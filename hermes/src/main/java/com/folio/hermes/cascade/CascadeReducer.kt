@@ -75,10 +75,7 @@ class CascadeReducer(val env: CascadeEnv) {
                 else -> env.handlers.hooks.tap(this, event)
             }
             is Event.WordChosen -> env.handlers.hooks.wordChosen(this, event)
-            is Event.ResumeChosen -> {
-                env.conversation.resume(this, event.choice)
-                releaseOffCall(speakResults = event.choice != ResumeChoice.New)
-            }
+            is Event.ResumeChosen -> chooseResume(event.choice)
             is Event.TimerFired -> timer(event.timer)
             is Event.JevAnswered ->
                 if (s.flush?.jevSeq == event.seq) flushAnswered(event.result) else turn(TurnRules.answered(s.turn, event.seq, event.result, event.atMs, ask))
@@ -116,7 +113,8 @@ class CascadeReducer(val env: CascadeEnv) {
             is Event.TaskSessionOpened -> tasks(s.tasks.sessionOpened(event.taskId, event.runId, event.storedSessionId))
             is Event.RunNotReceived -> env.registry.notReceived(this, event)
             is Event.Restore -> restore(event.restored, call = false)
-            is Event.OpenConversation -> env.conversation.open(this, event.loaded)
+            // Only once the store is read back: before that, the first save would overwrite it.
+            is Event.OpenConversation -> if (s.restored) env.conversation.open(this, event.loaded)
         }
     }
 
@@ -144,6 +142,18 @@ class CascadeReducer(val env: CascadeEnv) {
             env.registry.restored(this)
             env.handlers.hooks.restored(this)
         }
+    }
+
+    private fun Tx.chooseResume(choice: ResumeChoice) {
+        env.conversation.resume(this, choice)
+        releaseOffCall(speakResults = choice != ResumeChoice.New)
+    }
+
+    /** The user talked with the Resume card up: that is its default choice (R-CONV-2), so nothing waits behind it. */
+    private fun Tx.resumeByDefault() {
+        val card = s.conversation.resume ?: return
+        chooseResume(card.defaultChoice)
+        report("cascade.conversation", mapOf("event" to "resume_default", "choice" to card.defaultChoice.name.lowercase()))
     }
 
     /** Results and requests held while no call was open (or while the Resume card showed). New: results stay unread on their cards. */
@@ -255,6 +265,7 @@ class CascadeReducer(val env: CascadeEnv) {
         val hooks = env.handlers.hooks
         when (event) {
             is TurnEvent.Done -> {
+                resumeByDefault()
                 emit(CascadeEvent.TurnCommitted(event.turnId))
                 val decision = hooks.decide(s, event.answers, env.bank)
                 val text = (event.pending + event.heard).filter { it.isNotBlank() }.joinToString(" ")

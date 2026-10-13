@@ -258,6 +258,31 @@ class CoreFixesTest {
         assertTrue("the reopened one leaves the history", Effect.Persist(StoreKeys.conversation("c100"), null) in fx)
     }
 
+    @Test fun talkingWithTheResumeCardUpTakesItsDefaultAndReleasesWaitingResults() {
+        val h = CeoHarness(conversation = DurableConversations())
+        h.s = h.s.copy(
+            conversation = ConversationState(id = "c1", resume = ResumeCandidate("c1", 0, 1, 0, 0, ResumeChoice.Continue)),
+            tasks = TaskTable(listOf(TaskRecord("t1", "stock check", 0, state = TaskState.Done, result = "Fourteen in stock.", unread = true, accepted = true, send = SendState.Accepted)), counter = 1),
+            offCall = OffCallState(results = listOf(TaskResult("t1", "stock check", "Fourteen in stock.", ok = true))),
+        )
+        h.turn("what's new", 0, "action" to answer("reply"))
+        assertNull(h.s.conversation.resume)
+        assertEquals("c1", h.s.conversation.id)
+        assertEquals(1, h.emitted().count { it == CascadeEvent.ResultQueued("t1") })
+    }
+
+    @Test fun anUpdateWhileTheSessionOpensWaitsAndFollowsTheStartInTheSameSession() {
+        val start = TaskTable().start("Check RB2140 stock.", "stock check", "", 4, 0, turnId = "u1")
+        assertTrue(start.effects.single() is Effect.OpenTaskSession)
+        val update = start.table.launch("t1", "and the Leeds store", "", RunKind.Queue, 10, turnId = "u2")
+        assertTrue("waits for the session", update.effects.isEmpty())
+        val opened = update.table.sessionOpened("t1", 1L, "s1")
+        val submits = opened.effects.filterIsInstance<Effect.SubmitTask>()
+        assertEquals(listOf("Check RB2140 stock.", "and the Leeds store"), submits.map { it.text })
+        assertTrue(submits.all { it.storedSessionId == "s1" })
+        assertTrue(opened.table["t1"]!!.runs.values.none { it.opening })
+    }
+
     @Test fun theUiNamesTheTurnItsWordsBelongTo() {
         val h = CeoHarness()
         h.turn("email Sapphire", 0, "action" to answer("reply"))

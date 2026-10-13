@@ -108,10 +108,16 @@ class CascadeCore private constructor(
         recoverOnce()
     }
 
+    /** Open a past conversation from [history]: the store is read back first (and recovery launched) if it was not yet. */
+    fun openConversation(conversationId: String) {
+        restore()
+        actor.openConversation(conversationId)
+    }
+
     /** The label and headline for `Effect.Notify(kind, taskId)` (spec v2 §14 item 12). */
     fun notifyInfo(taskId: String, kind: String? = null): NotifyInfo? = notifyInfo(actor.state.value, taskId, kind)
 
-    /** Past conversations for the history list, newest first (open one with `actor.openConversation(id)`). */
+    /** Past conversations for the history list, newest first (open one with [openConversation]). */
     fun history(): List<PastConversation> = ConversationHistory.list(ports.store, actor.state.value.takeIf { it.restored })
 
     @Synchronized

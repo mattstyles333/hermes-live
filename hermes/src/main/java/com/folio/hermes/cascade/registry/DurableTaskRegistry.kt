@@ -103,6 +103,9 @@ object DurableTaskRegistry : TaskRegistry {
             val text = t.runs.values.firstOrNull { it.kind == RunKind.Start }?.text ?: t.brief ?: t.label
             put(tx, t.copy(relaunch = false, runs = emptyMap(), active = 0, pendingUpdates = 0, storedSessionId = null, send = SendState.Sending, accepted = false))
             tx.tasks(tx.s.tasks.launch(t.id, text, tx.voiceContext(), RunKind.Start, tx.s.wallMs, t.turnId))
+            // Updates that were waiting for that session wait again, in order.
+            t.runs.toSortedMap().values.filter { it.kind != RunKind.Start && it.text != null }
+                .forEach { r -> tx.tasks(tx.s.tasks.launch(t.id, r.text!!, tx.voiceContext(), r.kind, tx.s.wallMs, r.turnId)) }
             tx.report("cascade.task", mapOf("event" to "recovered", "running" to tx.s.tasks.runningCount, "how" to "relaunch"))
         }
     }

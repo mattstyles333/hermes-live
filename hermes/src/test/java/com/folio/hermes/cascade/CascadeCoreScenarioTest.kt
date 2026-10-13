@@ -294,6 +294,45 @@ class CascadeCoreScenarioTest {
         }
     }
 
+    /** Opening a past conversation before any call reads the store back first: nothing stored is overwritten. */
+    @Test fun openingAPastConversationBeforeACallKeepsTheStore() = runTest {
+        val store = MemoryStore()
+        val server = FakeServer()
+        App(this, store, server).use { app ->
+            app.script()
+            app.core.start()
+            runCurrent()
+            app.say("And count the Kestrel aviators.")
+            advanceUntilIdle()
+            app.net.state.value = false
+            runCurrent()
+            app.say("Note to self, chase the Leeds invoice.")
+            advanceUntilIdle()
+            assertEquals(1, app.state.outbox.size)
+        }
+        val past = com.folio.hermes.cascade.store.ConversationDto(id = "c100", startedWallMs = 100, endedWallMs = 200, summary = "Old talk.")
+        store.put(com.folio.hermes.cascade.store.StoreKeys.conversation("c100"), com.folio.hermes.cascade.store.StoreCodec.encode(com.folio.hermes.cascade.store.ConversationDto.serializer(), past))
+        App(this, store, server).use { app ->
+            app.script()
+            assertTrue(app.core.history().any { it.id == "c100" })
+            app.core.openConversation("c100")
+            advanceUntilIdle()
+            assertEquals("c100", app.state.conversation.id)
+            assertEquals("the held turn is still there", 1, app.state.outbox.size)
+            assertEquals("t1", app.state.tasks.tasks.single().id)
+            app.net.state.value = false
+            app.core.start()
+            runCurrent()
+            app.net.state.value = true
+            advanceUntilIdle()
+            app.say("And count the Kestrel aviators.")
+            advanceUntilIdle()
+            val ids = app.state.tasks.tasks.map { it.id }
+            assertEquals("no id is reused", ids.distinct(), ids)
+            assertTrue(store.get(com.folio.hermes.cascade.store.StoreKeys.task("t1"))!!.contains("Kestrel"))
+        }
+    }
+
     /** R-Q-1: building the cascade does nothing: no request, no store write. */
     @Test fun buildingItIsDark() = runTest {
         val store = MemoryStore()
