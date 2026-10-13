@@ -55,7 +55,11 @@ class ClientHermes(private val server: FakeServer) : HermesPort, SessionRecovery
     private val bound = linkedMapOf<String, String?>()
     val opened = mutableListOf<Triple<String, String, String?>>()
     val probes = mutableListOf<String>()
+    val interrupts = mutableListOf<String>()
     var autoStart = true
+
+    /** The next [failSubmits] submits fail before reaching the server (no session, no prompt). */
+    var failSubmits = 0
 
     override fun open(taskId: String, label: String, storedSessionId: String?) {
         if (taskId in bound) return
@@ -64,6 +68,10 @@ class ClientHermes(private val server: FakeServer) : HermesPort, SessionRecovery
     }
 
     override fun submit(taskId: String, text: String, voiceContext: String, queued: Boolean, interruptFirst: Boolean): Flow<TurnUpdate> {
+        if (failSubmits > 0) {
+            failSubmits--
+            return flow { emit(TurnUpdate.Failed("unreachable")) }
+        }
         val session = bound[taskId]?.let { server.sessions[it] } ?: server.create().also {
             bound[taskId] = it.id
             sessions.tryEmit(taskId to it.id)
@@ -78,7 +86,15 @@ class ClientHermes(private val server: FakeServer) : HermesPort, SessionRecovery
         return channel.consumeAsFlow()
     }
 
-    override suspend fun interrupt(taskId: String): Boolean = bound[taskId] != null
+    override suspend fun interrupt(taskId: String): Boolean {
+        interrupts += taskId
+        val session = bound[taskId]?.let { server.sessions[it] } ?: return false
+        session.live.forEach {
+            it.trySend(TurnUpdate.Completed("", TurnStatus.Interrupted, null))
+            it.close()
+        }
+        return true
+    }
 
     override suspend fun busyMode(): BusyMode? = BusyMode.Interrupt
 
