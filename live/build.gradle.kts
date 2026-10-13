@@ -50,6 +50,9 @@ android {
         targetSdk = 35
         versionCode = 3
         versionName = "1.0.2"
+        // Instrumented tests (S-C audio and STT, on the emulator). Long corpus benches run only
+        // with the instrumentation argument bench=true (see src/androidTest/README.md).
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -76,8 +79,9 @@ android {
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
+                "proguard-sherpa.pro",
             )
-            // The S23 is arm64; the release APK carries only that WebRTC build.
+            // The S23 is arm64; the release APK carries only that WebRTC and sherpa-onnx build.
             ndk { abiFilters += "arm64-v8a" }
         }
         debug {
@@ -102,6 +106,11 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            // sherpa-onnx's C and C++ API libraries: only libsherpa-onnx-jni.so (+ onnxruntime) is
+            // loaded from Kotlin, and it does not link them (readelf NEEDED, v1.13.8).
+            excludes += listOf("**/libsherpa-onnx-c-api.so", "**/libsherpa-onnx-cxx-api.so")
         }
     }
 
@@ -129,16 +138,22 @@ dependencies {
     // WebRTC for the GPT-Live peer connection (Google's libwebrtc, prebuilt by Stream). Inline:
     // only :live uses it, and Folio builds :hermes against its own copy of the catalog.
     implementation("io.getstream:stream-webrtc-android:1.3.10")
-    // Debug-only STT Lab (spike S-C0, src/debug): on-device speech-to-text and the tar.bz2 model
-    // archives. Release builds never see either.
-    debugImplementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:v1.13.8")
-    debugImplementation("org.apache.commons:commons-compress:1.28.0")
+    // On-device speech-to-text (S-C: Silero VAD, streaming Zipformer, offline Parakeet) and the
+    // tar.bz2 model archives ModelManager unpacks. Inline, like WebRTC: only :live uses them.
+    implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:v1.13.8")
+    implementation("org.apache.commons:commons-compress:1.28.0")
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
     testImplementation(platform(libs.androidx.compose.bom))
     testImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test:rules:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
 }
 
 afterEvaluate {
