@@ -7,6 +7,7 @@ Spike S-C0 of the cascade voice spec (v2, 2026-10-13). It measures on-device spe
 - Install the debug APK, then open the **STT Lab** launcher icon (a second icon next to Hermes Live).
 - Or: `adb shell am start -n com.folio.hermeslive/.lab.SttLabActivity`
 - Debug and release share the package name but not the signing key. Uninstall a release Hermes Live first, and reinstall it from the Folio Release afterwards. You will need to sign in again.
+- Folio can stay installed. The debug manifest drops the `com.folio.permission.HERMES` definition, because a differently signed redefinition would be refused. Folio can't read a debug build's connection anyway.
 
 ## What it does
 

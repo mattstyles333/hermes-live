@@ -64,6 +64,11 @@ class CaptureEngine(
     private val offlineModel: LabModel?,
     private val stats: LiveStats,
     private val hotwordArgs: (LabModel) -> String,
+    /**
+     * False for the echo test: no second pass and nothing recorded in [stats], so playback
+     * echo never feeds the confidence threshold or the live numbers.
+     */
+    private val measure: Boolean = true,
 ) {
     private val _state = MutableStateFlow(LiveState(source = source))
     val state: StateFlow<LiveState> = _state
@@ -111,21 +116,29 @@ class CaptureEngine(
             .build()
         val available = AcousticEchoCanceler.isAvailable()
         val aec = if (available) AcousticEchoCanceler.create(record.audioSessionId) else null
+        // Whether the platform already runs AEC on this source, before we ask for it (R-SPK-5).
+        val byDefault = aec?.enabled == true
         aec?.enabled = true
-        val aecReport = AecReport(source.name, available, aec != null, aec?.enabled == true)
+        val aecReport = AecReport(source.name, available, aec != null, byDefault, aec?.enabled == true)
         stats.aec[source] = aecReport
         _state.update { it.copy(running = true, status = "Listening", aec = aecReport) }
         thread = Thread({ loop(record, aec) }, "lab-capture").also { it.start() }
     }
 
-    fun stop() {
+    /**
+     * Stops capture and waits for a running second pass. Returns false if either is still
+     * running after the timeout: the caller must then not release the recognisers (a native
+     * use-after-free), and leaks them instead.
+     */
+    fun stop(): Boolean {
         running.set(false)
-        thread?.join(3_000)
+        val t = thread
+        t?.join(5_000)
         thread = null
-        // The caller releases the recognisers next: let a running second pass finish first.
         secondPass.shutdown()
-        secondPass.awaitTermination(20, TimeUnit.SECONDS)
+        val drained = secondPass.awaitTermination(30, TimeUnit.SECONDS)
         _state.update { it.copy(running = false, status = "Stopped", speech = false) }
+        return drained && t?.isAlive != true
     }
 
     private fun loop(record: AudioRecord, aec: AcousticEchoCanceler?) {
@@ -141,15 +154,23 @@ class CaptureEngine(
         var lastUi = 0L
         var procNanos = 0L
         var audioNanos = 0L
+        var slow = 0
+        var errors = 0
+        var errorRun = 0
+        var localIds = 0
         try {
             record.startRecording()
             while (running.get()) {
                 val n = record.read(chunk, 0, chunk.size)
                 if (n <= 0) {
-                    stats.readErrors++
-                    _state.update { it.copy(readErrors = stats.readErrors) }
+                    errors++
+                    if (measure) stats.readErrors++
+                    if (++errorRun >= MAX_ERROR_RUN) error("AudioRecord.read failed $errorRun times in a row ($n)")
+                    _state.update { it.copy(readErrors = errors) }
+                    Thread.sleep(10)
                     continue
                 }
+                errorRun = 0
                 val t0 = System.nanoTime()
                 val samples = Dbfs.pcm16ToFloat(chunk, n)
                 val start = samplesCaptured
@@ -189,7 +210,7 @@ class CaptureEngine(
                 val words = TokenConfidence.words(result.tokens.toList(), result.ysProbs)
                 partialWords = words.map { it.word }
                 val level = Dbfs.of(samples)
-                if (speech) stats.addSpeechLevel(level)
+                if (speech && measure) stats.addSpeechLevel(level)
 
                 probe.get()?.onChunk(start, samples, speech)
 
@@ -199,7 +220,7 @@ class CaptureEngine(
                         val skip = if (heardSpeech) maxOf(0, quietLead - PRE_ROLL_SAMPLES) else 0
                         val pcm = concat(utterance, utteranceSamples, skip).takeIf { it.size >= Sherpa.SAMPLE_RATE / 5 }
                             ?: concat(utterance, utteranceSamples, 0)
-                        val id = stats.nextUtteranceId()
+                        val id = if (measure) stats.nextUtteranceId() else ++localIds
                         val u = Utterance(id, words, result.text.trim(), pcm.size.toDouble() / Sherpa.SAMPLE_RATE, streamHotwords)
                         _state.update { it.copy(utterances = (listOf(u) + it.utterances).take(MAX_SHOWN), partial = emptyList()) }
                         probe.get()?.onFinalWords(words.map { it.word })
@@ -224,9 +245,14 @@ class CaptureEngine(
                 val elapsed = System.nanoTime() - t0
                 procNanos += elapsed
                 audioNanos += chunkNanos * n / chunk.size
-                if (elapsed > chunkNanos) stats.slowChunks++
-                stats.streamProcNanos = procNanos
-                stats.streamAudioNanos = audioNanos
+                if (elapsed > chunkNanos) {
+                    slow++
+                    if (measure) stats.slowChunks++
+                }
+                if (measure) {
+                    stats.streamProcNanos = procNanos
+                    stats.streamAudioNanos = audioNanos
+                }
                 if (t0 - lastUi > UI_NANOS) {
                     lastUi = t0
                     _state.update {
@@ -235,14 +261,14 @@ class CaptureEngine(
                             speech = speech,
                             partial = words,
                             streamRtf = procNanos.toDouble() / audioNanos,
-                            slowChunks = stats.slowChunks,
+                            slowChunks = slow,
                             hotwordsActive = streamHotwords,
                         )
                     }
                 }
             }
         } catch (e: Exception) {
-            _state.update { it.copy(status = "Capture failed: ${e.javaClass.simpleName}") }
+            _state.update { it.copy(status = "Capture failed: ${e.javaClass.simpleName}: ${e.message.orEmpty()}") }
         } finally {
             runCatching { record.stop() }
             record.release()
@@ -254,6 +280,7 @@ class CaptureEngine(
     }
 
     private fun submitSecondPass(u: Utterance, pcm: FloatArray) {
+        if (!measure) return
         val recognizer = offline ?: return
         val model = offlineModel ?: return
         secondPass.execute {
@@ -296,6 +323,7 @@ class CaptureEngine(
     private companion object {
         const val MAX_UTTERANCE_SAMPLES = 30 * Sherpa.SAMPLE_RATE
         const val PRE_ROLL_SAMPLES = 8 * Sherpa.SAMPLE_RATE / 10
+        const val MAX_ERROR_RUN = 50
         const val MAX_SHOWN = 12
         const val UI_NANOS = 80_000_000L
     }

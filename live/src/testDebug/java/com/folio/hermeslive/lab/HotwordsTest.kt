@@ -57,6 +57,16 @@ class HotwordsTest {
         }
     }
 
+    @Test fun vocabIsConfiguredOnlyForBeamSearch() {
+        assertTrue(Hotwords.vocabConfigured(Hotwords.BEAM, vocabFileExists = true))
+        assertFalse(Hotwords.vocabConfigured(Hotwords.GREEDY, vocabFileExists = true))
+        assertFalse(Hotwords.vocabConfigured(Hotwords.BEAM, vocabFileExists = false))
+        // A recogniser built greedy never gets hotwords, whatever the settings say later.
+        val phrases = Hotwords.parse("HERMES", upperCase = true).phrases
+        val built = Hotwords.vocabConfigured(Hotwords.GREEDY, vocabFileExists = true)
+        assertEquals("", Hotwords.safeArgument(phrases, ModelKind.PARAKEET_TDT, Hotwords.GREEDY, built))
+    }
+
     @Test fun unsafeCombinationsGetAnEmptyArgument() {
         val phrases = Hotwords.parse("HERMES", upperCase = true).phrases
         assertEquals("", Hotwords.safeArgument(phrases, ModelKind.NEMOTRON_STREAMING, Hotwords.BEAM, true))

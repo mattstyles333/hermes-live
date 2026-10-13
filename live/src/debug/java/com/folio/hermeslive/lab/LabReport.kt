@@ -87,6 +87,8 @@ data class AecReport(
     val source: String,
     val available: Boolean,
     val created: Boolean,
+    /** The effect was already on before the lab enabled it (the platform default). */
+    @SerialName("enabled_by_default") val enabledByDefault: Boolean,
     val enabled: Boolean,
 )
 
@@ -135,6 +137,7 @@ data class EchoTrial(
     @SerialName("call_mode") val callMode: Boolean,
     @SerialName("aec_enabled") val aecEnabled: Boolean,
     @SerialName("playback_path") val playbackPath: String,
+    @SerialName("tts_offline_voice") val ttsOfflineVoice: Boolean,
     @SerialName("playback_dbfs") val playbackDbfs: Double?,
     @SerialName("voice_call_volume") val voiceCallVolume: Double?,
     @SerialName("echo_input_dbfs_median") val echoInputDbfsMedian: Double?,

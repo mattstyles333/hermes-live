@@ -64,7 +64,30 @@ class LabController(private val context: Context) : EchoTest.Host {
     private var tts: Playback.Tts? = null
     private var passage: WavPcm.Pcm? = null
 
-    private class Loaded(val key: String, val vad: Vad, val online: OnlineRecognizer, val offline: OfflineRecognizer?) {
+    /** Loaded models plus how they were built, which is what decides if hotwords are safe. */
+    private class Loaded(
+        val key: String,
+        val vad: Vad,
+        val online: OnlineRecognizer,
+        val streamingModel: LabModel,
+        val streamingDecoding: String,
+        val streamingVocab: Boolean,
+        val offline: OfflineRecognizer?,
+        val offlineModel: LabModel?,
+        val offlineDecoding: String,
+        val offlineVocab: Boolean,
+    ) {
+        /** The hotwords argument for [model] as built; "" whenever it could crash. */
+        fun hotwordArg(model: LabModel, text: String): String {
+            val (decoding, vocab) = when (model) {
+                streamingModel -> streamingDecoding to streamingVocab
+                offlineModel -> offlineDecoding to offlineVocab
+                else -> return ""
+            }
+            val phrases = Hotwords.parse(text, model.upperCaseHotwords).phrases
+            return Hotwords.safeArgument(phrases, model.kind, decoding, vocab)
+        }
+
         fun release() {
             vad.release()
             online.release()
@@ -112,7 +135,7 @@ class LabController(private val context: Context) : EchoTest.Host {
             submit("Switching source") {
                 stopEngine()
                 restoreAudio()
-                engineFor(after.source)
+                startEngine(after.source, measure = true)
             }
         }
         refreshHotwords()
@@ -122,12 +145,6 @@ class LabController(private val context: Context) : EchoTest.Host {
         settings.update { it.copy(hotwordsText = text) }
         refreshHotwords()
         engine?.hotwordsUpdated()
-    }
-
-    private fun hotwordArg(model: LabModel): String {
-        val s = settings.value
-        val phrases = Hotwords.parse(s.hotwordsText, model.upperCaseHotwords).phrases
-        return Hotwords.safeArgument(phrases, model.kind, Hotwords.decodingFor(model.kind, s.decoding), store.hasVocab(model))
     }
 
     private fun refreshHotwords() {
@@ -167,7 +184,7 @@ class LabController(private val context: Context) : EchoTest.Host {
 
     fun startCaptions() = submit("Loading models") {
         ensureLoaded()
-        engineFor(settings.value.source)
+        startEngine(settings.value.source, measure = true)
     }
 
     fun stopCaptions() = submit("Stopping") {
@@ -210,11 +227,7 @@ class LabController(private val context: Context) : EchoTest.Host {
         restoreAudio()
         val l = ensureLoaded()
         val s = settings.value
-        fun probeArg(model: LabModel): String {
-            if (model.probeHotword.isEmpty()) return ""
-            val phrases = Hotwords.parse(model.probeHotword, model.upperCaseHotwords).phrases
-            return Hotwords.safeArgument(phrases, model.kind, Hotwords.decodingFor(model.kind, s.decoding), store.hasVocab(model))
-        }
+        fun probeArg(model: LabModel): String = if (model.probeHotword.isEmpty()) "" else l.hotwordArg(model, model.probeHotword)
         val streamArg = probeArg(s.streaming)
         val streaming = if (streamArg.isEmpty()) null else {
             val wav = WaveReader.readWave(store.path(s.streaming, s.streaming.probeWav))
@@ -280,7 +293,20 @@ class LabController(private val context: Context) : EchoTest.Host {
         val online = timed(s.streaming.id) { Sherpa.online(store, s.streaming, s.threads, s.decoding) }
         val offline = offlineModel?.let { m -> timed(m.id) { Sherpa.offline(store, m, s.threads, s.decoding) } }
         loadMs.value = times
-        return Loaded(key, vad, online, offline).also { loaded = it }
+        val streamingDecoding = Hotwords.decodingFor(s.streaming.kind, s.decoding)
+        val offlineDecoding = offlineModel?.let { Hotwords.decodingFor(it.kind, s.decoding) } ?: Hotwords.GREEDY
+        return Loaded(
+            key = key,
+            vad = vad,
+            online = online,
+            streamingModel = s.streaming,
+            streamingDecoding = streamingDecoding,
+            streamingVocab = Hotwords.vocabConfigured(streamingDecoding, store.hasVocab(s.streaming)),
+            offline = offline,
+            offlineModel = offlineModel,
+            offlineDecoding = offlineDecoding,
+            offlineVocab = offlineModel != null && Hotwords.vocabConfigured(offlineDecoding, store.hasVocab(offlineModel)),
+        ).also { loaded = it }
     }
 
     private fun releaseLoaded() {
@@ -288,13 +314,26 @@ class LabController(private val context: Context) : EchoTest.Host {
         loaded = null
     }
 
-    override fun engineFor(source: CaptureSource): CaptureEngine {
-        engine?.let { if (it.state.value.running && it.state.value.source == source) return it }
+    /** The echo test gets its own engine that records nothing into [stats] and has no second pass. */
+    override fun engineFor(source: CaptureSource): CaptureEngine = startEngine(source, measure = false)
+
+    override fun ttsOfflineVoice(): Boolean = tts?.offlineVoice == true
+
+    private fun startEngine(source: CaptureSource, measure: Boolean): CaptureEngine {
         stopEngine()
         val l = ensureLoaded()
-        val s = settings.value
         enterCallMode()
-        val e = CaptureEngine(source, l.vad, l.online, s.streaming, l.offline, s.offline, stats, ::hotwordArg)
+        val e = CaptureEngine(
+            source = source,
+            vad = l.vad,
+            online = l.online,
+            streamingModel = l.streamingModel,
+            offline = l.offline,
+            offlineModel = l.offlineModel,
+            stats = stats,
+            hotwordArgs = { m -> l.hotwordArg(m, settings.value.hotwordsText) },
+            measure = measure,
+        )
         l.vad.reset()
         mirror?.cancel()
         mirror = scope.launch { e.state.collect { live.value = it } }
@@ -304,9 +343,15 @@ class LabController(private val context: Context) : EchoTest.Host {
     }
 
     private fun stopEngine() {
-        engine?.stop()
-        engine?.setProbe(null)
+        val e = engine ?: return
         engine = null
+        e.setProbe(null)
+        if (!e.stop()) {
+            // A decode is still running natively: never free the models under it. Leak them;
+            // the next start loads fresh ones.
+            loaded = null
+            live.update { it.copy(status = "Stopped; a decode was still running, so the models were left alone and will reload") }
+        }
     }
 
     private fun enterCallMode() {

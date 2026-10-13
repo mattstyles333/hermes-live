@@ -24,6 +24,9 @@ class EchoTest(private val host: Host) {
 
         fun volumeFraction(): Double?
 
+        /** True when TextToSpeech uses an on-device English voice (no network). */
+        fun ttsOfflineVoice(): Boolean
+
         fun status(text: String, talkNow: Boolean = false)
 
         fun cancelled(): Boolean
@@ -162,6 +165,7 @@ class EchoTest(private val host: Host) {
         callMode = host.callMode,
         aecEnabled = aecEnabled,
         playbackPath = player.path,
+        ttsOfflineVoice = host.ttsOfflineVoice(),
         playbackDbfs = player.dbfs,
         voiceCallVolume = host.volumeFraction(),
         echoInputDbfsMedian = EchoMaths.median(quietFrames, 0, quietFrames.size),

@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Debug builds only (spike S-C0): the STT Lab. Release builds don't merge this file. -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- The release Folio already defines this signature permission with the release key.
+         Android refuses a differently signed app that redefines it
+         (INSTALL_FAILED_DUPLICATE_PERMISSION), so the debug build doesn't define it and can sit
+         next to Folio on the phone. Folio can't read a debug build's connection anyway: the
+         signers differ. -->
+    <permission
+        android:name="com.folio.permission.HERMES"
+        tools:node="remove" />
 
     <application>
         <activity

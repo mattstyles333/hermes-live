@@ -83,7 +83,7 @@ object Sherpa {
             modelType = model.modelType,
         )
         // The bpe encoder is only built for modified_beam_search; set the unit with the vocab.
-        if (vocab.isNotEmpty() && decoding == Hotwords.BEAM) {
+        if (Hotwords.vocabConfigured(decoding, vocab.isNotEmpty())) {
             modelConfig.modelingUnit = "bpe"
             modelConfig.bpeVocab = vocab
         }
@@ -119,7 +119,7 @@ object Sherpa {
             provider = "cpu",
             modelType = model.modelType,
         )
-        if (vocab.isNotEmpty() && decoding == Hotwords.BEAM) {
+        if (Hotwords.vocabConfigured(decoding, vocab.isNotEmpty())) {
             modelConfig.modelingUnit = "bpe"
             modelConfig.bpeVocab = vocab
         }

@@ -181,7 +181,8 @@ private fun LiveSection(lab: LabController, onStart: () -> Unit) {
         Text(live.status, style = SmallStyle, color = PrintMute)
         val aec = live.aec
         Text(
-            "Source ${live.source?.name ?: "-"} · AEC available ${aec?.available ?: "-"} · effect created ${aec?.created ?: "-"} · enabled ${aec?.enabled ?: "-"}",
+            "Source ${live.source?.name ?: "-"} · AEC available ${aec?.available ?: "-"} · effect created ${aec?.created ?: "-"} · " +
+                "on by default ${aec?.enabledByDefault ?: "-"} · enabled ${aec?.enabled ?: "-"}",
             style = SmallStyle,
             color = PrintInk,
         )
@@ -293,7 +294,8 @@ private fun EchoSection(lab: LabController, onEcho: (Boolean) -> Unit) {
                 "${t.source}: AEC ${t.aecEnabled} · echo words ${t.echoWords} (${t.echoWordsInPassage} from passage) · " +
                     "VAD false ${pct(t.vadFalseSpeechRatio)} · cut-in ${t.cutInMs?.let { "${fmt(it, 0)} ms" } ?: "-"} · " +
                     "prompt→VAD ${t.promptToVadMs?.let { "${fmt(it, 0)} ms" } ?: "-"} · stop ${t.stopPlaybackMs?.let { "${fmt(it, 1)} ms" } ?: "-"} · " +
-                    "busy at prompt ${t.vadBusyAtPrompt} · ${t.playbackPath}",
+                    "busy at prompt ${t.vadBusyAtPrompt} · ${t.playbackPath}" +
+                    if (t.ttsOfflineVoice) "" else " · WARNING: no on-device TTS voice found, the engine may have used the network",
                 style = MonoStyle,
                 color = PrintInk,
             )

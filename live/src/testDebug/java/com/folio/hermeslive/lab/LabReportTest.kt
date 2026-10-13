@@ -29,11 +29,11 @@ class LabReportTest {
         app = AppReport("1.0.2", "debug", "1.13.8", "1.23.2"),
         settings = SettingsReport("VOICE_COMMUNICATION", "zipformer-en-2023-06-26", "parakeet-tdt-110m", 2, "modified_beam_search", true, 1.0f, 0.5f, 0.25f, 0.25f, 30f, 0.8),
         models = ModelCatalog.all.map { ModelReport(it.id, true, true, 12.5, 3.0, it.bytes, 500) },
-        aec = CaptureSource.entries.map { AecReport(it.name, true, true, true) },
+        aec = CaptureSource.entries.map { AecReport(it.name, true, true, false, true) },
         live = LiveReport(4, 0.2, 0, 0, -32.0, 180.0, 400.0, 0.08, 40, 5, 41, 6),
         confidence = ConfidenceReport(35, 5, 0.8, 0.97, 0.55, 0.85, 0.7),
         hotwords = HotwordReport(3, 0, true, true, 3, 3, true, false),
-        echo = listOf(EchoTrial("MIC", true, false, "audiotrack_voice_communication", -18.0, 0.8, -40.0, 12, 10, 0.4, false, true, 260.0, 600.0, 0.4, 0)),
+        echo = listOf(EchoTrial("MIC", true, false, "audiotrack_voice_communication", true, -18.0, 0.8, -40.0, 12, 10, 0.4, false, true, 260.0, 600.0, 0.4, 0)),
         bench = listOf(BenchRow("zipformer-en-2023-06-26", "streaming", 4, "modified_beam_search", 800.0, 25.0, 0.1, 0.05)),
     )
 

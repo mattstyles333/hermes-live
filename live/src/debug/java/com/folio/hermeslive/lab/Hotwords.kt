@@ -60,6 +60,10 @@ object Hotwords {
         else -> GREEDY
     }
 
+    /** Sherpa sets modelingUnit=bpe and the vocab only for beam search (see [Sherpa]). */
+    fun vocabConfigured(decodingMethod: String, vocabFileExists: Boolean): Boolean =
+        vocabFileExists && decodingMethod == BEAM
+
     fun support(kind: ModelKind, decodingMethod: String, vocabPresent: Boolean): Support = when {
         kind == ModelKind.SILERO_VAD -> Support.No("not a recogniser")
         kind == ModelKind.NEMOTRON_STREAMING ->
