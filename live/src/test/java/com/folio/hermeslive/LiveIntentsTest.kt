@@ -22,7 +22,7 @@ import org.robolectric.annotation.Config
 class LiveIntentsTest {
     @Test fun launcherObeysStartOnOpen() {
         val launch = LiveIntents.parse(Intent(Intent.ACTION_MAIN))
-        assertEquals(CallRequest(), launch.request)
+        assertEquals(CallRequest(entry = "launcher"), launch.request)
         assertTrue(launch.onlyIfStartOnOpen)
         assertFalse(launch.wake)
     }
@@ -31,7 +31,7 @@ class LiveIntentsTest {
         val intent = Intent(LiveIntents.ACTION_CALL)
             .putExtra(LiveIntents.EXTRA_PROMPT, "  What's next?  ")
             .putExtra(LiveIntents.EXTRA_MUTED, true)
-        assertEquals(LiveIntents.Launch(CallRequest(prompt = "What's next?", muted = true)), LiveIntents.parse(intent))
+        assertEquals(LiveIntents.Launch(CallRequest(prompt = "What's next?", muted = true, entry = "folio")), LiveIntents.parse(intent))
         val stringMuted = Intent(LiveIntents.ACTION_CALL).putExtra(LiveIntents.EXTRA_MUTED, "true")
         assertTrue(LiveIntents.parse(stringMuted).request!!.muted)
         assertEquals("com.folio.hermeslive.action.CALL", LiveIntents.ACTION_CALL)
@@ -42,13 +42,16 @@ class LiveIntentsTest {
     @Test fun shortcutsAssistantHeadsetTileAndShare() {
         assertTrue(LiveIntents.parse(Intent(LiveIntents.ACTION_TALK_MUTED)).request!!.muted)
         assertTrue(LiveIntents.parse(Intent(LiveIntents.ACTION_NEW_CONVERSATION)).request!!.newConversation)
-        for (action in listOf(Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND, LiveIntents.ACTION_TILE)) {
+        val entries = mapOf(Intent.ACTION_ASSIST to "assist", Intent.ACTION_VOICE_COMMAND to "headset", LiveIntents.ACTION_TILE to "tile")
+        for ((action, entry) in entries) {
             val launch = LiveIntents.parse(Intent(action))
             assertTrue(action, launch.wake)
-            assertEquals(CallRequest(), launch.request)
+            assertEquals(CallRequest(entry = entry), launch.request)
         }
+        assertEquals("shortcut", LiveIntents.parse(Intent(LiveIntents.ACTION_TALK)).request!!.entry)
         val share = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "Summarise this article")
         assertEquals("Summarise this article", LiveIntents.parse(share).request!!.prompt)
+        assertEquals("share", LiveIntents.parse(share).request!!.entry)
         assertNull(LiveIntents.parse(Intent(Intent.ACTION_SEND).setType("text/plain")).request)
         assertNull(LiveIntents.parse(Intent("something.else")).request)
         assertNull(LiveIntents.parse(null).request)

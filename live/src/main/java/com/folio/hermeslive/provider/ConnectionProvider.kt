@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Bundle
 import com.folio.hermes.HermesAuthException
 import com.folio.hermes.HermesTokens
+import com.folio.hermes.telemetry.Telemetry
 import com.folio.hermeslive.graph
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -37,12 +38,15 @@ class ConnectionProvider : ContentProvider() {
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
         val ctx = context ?: return null
         if (ctx.checkCallingOrSelfPermission(PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+            Telemetry.warn("provider.call", null, mapOf("method" to method, "allowed" to false))
             throw SecurityException("Requires $PERMISSION")
         }
         return when (method) {
             METHOD_CONNECTION -> runBlocking {
                 val force = extras?.getBoolean(EXTRA_FORCE_REFRESH, false) == true
-                (withTimeoutOrNull(TIMEOUT_MS) { connection(ctx, force) } ?: Connection.Unavailable("Hermes Live timed out")).toBundle()
+                val answer = withTimeoutOrNull(TIMEOUT_MS) { connection(ctx, force) } ?: Connection.Unavailable("Hermes Live timed out")
+                Telemetry.event("provider.call", mapOf("method" to method, "allowed" to true, "force_refresh" to force, "answer" to answer.kind))
+                answer.toBundle()
             }
             METHOD_STATE -> Bundle().apply { putBoolean(KEY_IN_CALL, inCall(ctx)) }
             else -> null
@@ -52,6 +56,13 @@ class ConnectionProvider : ContentProvider() {
     /** What `connection` answers. */
     sealed interface Connection {
         fun toBundle(): Bundle
+
+        /** For diagnostics: signed_in / signed_out / unavailable (never the token or address). */
+        val kind: String get() = when (this) {
+            is SignedIn -> "signed_in"
+            SignedOut -> "signed_out"
+            is Unavailable -> "unavailable"
+        }
 
         data object SignedOut : Connection {
             override fun toBundle() = Bundle().apply { putBoolean(KEY_SIGNED_IN, false) }
@@ -109,8 +120,10 @@ class ConnectionProvider : ContentProvider() {
             } catch (e: HermesAuthException.SignInRequired) {
                 Connection.SignedOut
             } catch (e: HermesAuthException.InvalidCredentials) {
+                Telemetry.warn("auth.refresh_failed", null, mapOf("reason" to "invalid_credentials", "force_refresh" to forceRefresh))
                 Connection.SignedOut
             } catch (e: java.io.IOException) {
+                Telemetry.warn("auth.refresh_failed", null, mapOf("reason" to "unreachable", "type" to e.javaClass.simpleName, "force_refresh" to forceRefresh))
                 Connection.Unavailable("Hermes is unreachable")
             }
         }

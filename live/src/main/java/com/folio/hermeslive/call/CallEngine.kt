@@ -2,6 +2,7 @@ package com.folio.hermeslive.call
 
 import com.folio.hermes.ApprovalChoice
 import com.folio.hermes.HermesAuthException
+import com.folio.hermes.HermesRpcException
 import com.folio.hermes.live.BridgeEvent
 import com.folio.hermes.live.BridgeStatus
 import com.folio.hermes.live.DelegationBridge
@@ -10,6 +11,7 @@ import com.folio.hermes.live.Speaker
 import com.folio.hermes.live.StopReason
 import com.folio.hermes.live.VoiceLiveApi
 import com.folio.hermes.live.VoiceLiveException
+import com.folio.hermes.telemetry.Telemetry
 import com.folio.hermeslive.data.LiveSettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -87,6 +89,9 @@ class CallEngine(
     private var micLevel = 0f
     private var remoteLevel = 0f
     private var lastRemoteLevel = 0.0
+    private var requestedAtMs = 0L
+    private var lostAtMs = 0L
+    private var lastRouteKind: RouteKind? = null
 
     // ── commands ────────────────────────────────────────────────────────────────────────────
 
@@ -110,7 +115,20 @@ class CallEngine(
         route = RouteChoice(RouteSelector.auto(devices, callSettings.fallbackRoute), manual = false)
         applyRoute()
         audio.setFocus(FocusMode.Hold)
-        link = links.create(memory.load().resumable(clock()))
+        val resume = memory.load().resumable(clock())
+        link = links.create(resume)
+        requestedAtMs = clock()
+        Telemetry.event(
+            "call.start",
+            mapOf(
+                "entry" to request.entry,
+                "muted" to request.muted,
+                "has_prompt" to (pendingPrompt != null),
+                "new_conversation" to request.newConversation,
+                "resumed" to (resume != null),
+                "route" to route.route?.kind,
+            ),
+        )
         tickJob = scope.launch {
             while (true) {
                 delay(TICK_MS)
@@ -183,6 +201,7 @@ class CallEngine(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                Telemetry.warn("gateway.error", null, failureAttrs(e) + ("op" to "approval.respond"))
                 _state.update { it.copy(notice = "Could not send your answer to Hermes.") }
             }
         }
@@ -199,6 +218,7 @@ class CallEngine(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                Telemetry.warn("gateway.error", null, failureAttrs(e) + ("op" to "clarify.respond"))
                 _state.update { it.copy(notice = "Could not send your answer to Hermes.") }
             }
         }
@@ -231,6 +251,7 @@ class CallEngine(
     override fun onOtherCall(active: Boolean) {
         if (!_state.value.inCall || active == otherCall) return
         otherCall = active
+        Telemetry.event("call.other_call", mapOf("active" to active))
         if (active) {
             if (!_state.value.muted) {
                 setMuted(true, quiet = true)
@@ -275,16 +296,25 @@ class CallEngine(
                 if (attempt != epoch) return@launch
                 startedTimeout = scope.launch {
                     delay(STARTED_TIMEOUT_MS)
-                    if (attempt == epoch && b.status.value == BridgeStatus.Connecting) fail("Hermes Live did not start. Try again.")
+                    if (attempt == epoch && b.status.value == BridgeStatus.Connecting) {
+                        Telemetry.warn("call.failed", null, mapOf("type" to "session_not_started", "reconnect" to everLive))
+                        fail("Hermes Live did not start. Try again.")
+                    }
                 }
             } catch (e: CancellationException) {
                 if (attempt == epoch && _state.value.inCall && e is kotlinx.coroutines.TimeoutCancellationException) {
+                    Telemetry.warn("call.failed", null, mapOf("type" to "timeout", "after_ms" to clock() - requestedAtMs, "reconnect" to everLive))
                     fail("Hermes Live took too long to connect.")
                 } else if (e !is kotlinx.coroutines.TimeoutCancellationException) {
                     throw e
                 }
             } catch (e: Exception) {
-                if (attempt == epoch) fail(describe(e))
+                if (attempt == epoch) {
+                    val attrs = failureAttrs(e) + mapOf("reconnect" to everLive, "shown" to describe(e))
+                    // Expected failures (network, auth, vendor) carry codes only: their messages can echo the server.
+                    if (e is java.io.IOException) Telemetry.warn("call.failed", null, attrs) else Telemetry.error("call.failed", e, attrs)
+                    fail(describe(e))
+                }
             }
         }
     }
@@ -336,9 +366,13 @@ class CallEngine(
             }
             is BridgeEvent.ToolStarted -> _state.update { it.copy(tool = event.label) }
             is BridgeEvent.DelegationSettled -> settled(null)
-            is BridgeEvent.DelegationFailed -> settled(
-                if (event.message.contains("sign in", ignoreCase = true)) "Sign in to Hermes again." else "Could not reach Hermes for that request.",
-            )
+            is BridgeEvent.DelegationFailed -> {
+                Telemetry.warn("delegation.failed", null, mapOf("kind" to event.kind, "code" to event.code))
+                if (event.code != null) Telemetry.warn("gateway.error", null, mapOf("code" to event.code, "op" to "prompt.submit"))
+                settled(
+                    if (event.message.contains("sign in", ignoreCase = true)) "Sign in to Hermes again." else "Could not reach Hermes for that request.",
+                )
+            }
             is BridgeEvent.ApprovalNeeded -> {
                 if (_state.value.approvals.none { it.id == event.request.id }) {
                     _state.update { it.copy(approvals = it.approvals + ApprovalCard(event.request)) }
@@ -352,16 +386,19 @@ class CallEngine(
             is BridgeEvent.RequestWithdrawn -> _state.update { s ->
                 s.copy(approvals = s.approvals.filterNot { it.id == event.id }, clarify = s.clarify?.takeUnless { it.id == event.id })
             }
-            is BridgeEvent.Stopping -> _state.update {
-                it.copy(
-                    phase = CallPhase.Ending,
-                    notice = when (event.reason) {
-                        StopReason.SpokenStop -> "Saying goodbye…"
-                        StopReason.IdleTimeout -> "Nobody has spoken for a while. Hanging up."
-                        StopReason.CallCap -> "Call time limit reached. Hanging up."
-                        StopReason.UserRequest -> "Ending…"
-                    },
-                )
+            is BridgeEvent.Stopping -> {
+                Telemetry.event("call.stopping", mapOf("reason" to event.reason))
+                _state.update {
+                    it.copy(
+                        phase = CallPhase.Ending,
+                        notice = when (event.reason) {
+                            StopReason.SpokenStop -> "Saying goodbye…"
+                            StopReason.IdleTimeout -> "Nobody has spoken for a while. Hanging up."
+                            StopReason.CallCap -> "Call time limit reached. Hanging up."
+                            StopReason.UserRequest -> "Ending…"
+                        },
+                    )
+                }
             }
             BridgeEvent.CapWarning -> {
                 effect(Earcon.Warning)
@@ -372,7 +409,11 @@ class CallEngine(
                 _state.update { it.copy(warning = "It has gone quiet. Hanging up in 30 seconds unless you speak.") }
             }
             BridgeEvent.IdleWarningCleared -> _state.update { it.copy(warning = null) }
-            is BridgeEvent.LiveError -> _state.update { it.copy(notice = event.message) }
+            is BridgeEvent.LiveError -> {
+                // The vendor's message can echo the conversation: the code only.
+                Telemetry.warn("live.error", null, mapOf("code" to (event.code ?: "none")))
+                _state.update { it.copy(notice = event.message) }
+            }
             is BridgeEvent.UsageUpdated -> usageNow = event.seconds
             is BridgeEvent.Closed -> onClosed(event.reason, event.usageSeconds)
         }
@@ -382,6 +423,11 @@ class CallEngine(
         startedTimeout?.cancel()
         val reconnected = everLive
         everLive = true
+        if (reconnected) {
+            Telemetry.event("call.reconnected", mapOf("ms" to clock() - lostAtMs))
+        } else {
+            Telemetry.event("call.connected", mapOf("connect_ms" to clock() - requestedAtMs, "route" to route.route?.kind))
+        }
         if (liveAtMs == null) liveAtMs = clock()
         _state.update {
             it.copy(
@@ -424,6 +470,8 @@ class CallEngine(
     }
 
     private fun reconnect() {
+        lostAtMs = clock()
+        Telemetry.warn("call.reconnect", null, mapOf("delegation_cut_off" to delegationActive, "live_s" to liveAtMs?.let { (clock() - it) / 1000 }))
         reconnectsLeft--
         delegationCutOff = delegationActive
         delegationActive = false
@@ -529,6 +577,13 @@ class CallEngine(
 
     private fun applyRoute() {
         val r = route.route
+        if (r?.kind != lastRouteKind && _state.value.inCall) {
+            Telemetry.event(
+                "audio.route_change",
+                mapOf("from" to lastRouteKind, "to" to r?.kind, "manual" to route.manual, "available" to devices.map { it.kind.name }.sorted().joinToString(",")),
+            )
+            lastRouteKind = r?.kind
+        }
         if (r != null) audio.select(r)
         effects.proximity(_state.value.inCall && r?.kind == RouteKind.Earpiece)
         _state.update { it.copy(route = r, routes = devices) }
@@ -549,6 +604,18 @@ class CallEngine(
         if (!_state.value.inCall) return
         epoch++
         val endedAt = clock()
+        Telemetry.event(
+            "call.end",
+            mapOf(
+                "reason" to reason,
+                "failed" to (error != null),
+                "ever_live" to everLive,
+                "duration_s" to (liveAtMs?.let { (endedAt - it) / 1000 } ?: 0L),
+                "voice_s" to (usageDone + usageNow).toLong(),
+                "user_ended" to userEnding,
+                "reconnects_used" to (1 - reconnectsLeft).coerceAtLeast(0),
+            ),
+        )
         tickJob?.cancel()
         utteranceJob?.cancel()
         startedTimeout?.cancel()
@@ -609,6 +676,7 @@ class CallEngine(
         micLevel = 0f
         remoteLevel = 0f
         lastRemoteLevel = 0.0
+        lastRouteKind = null
     }
 
     companion object {
@@ -626,6 +694,20 @@ class CallEngine(
             "connection_lost" -> "The connection dropped."
             "failed" -> "The call failed."
             else -> "Hermes Live ended the call (${reason.trim().replace('_', ' ')})."
+        }
+
+        /** Safe attributes for a failure: type and codes, never the message (it can echo the server). */
+        fun failureAttrs(e: Throwable): Map<String, Any?> = buildMap {
+            put("type", e.javaClass.simpleName)
+            when (e) {
+                is VoiceLiveException -> {
+                    put("kind", e.kind.name)
+                    put("http_status", e.httpCode)
+                }
+                is HermesAuthException.Unavailable -> put("http_status", e.httpCode)
+                is HermesRpcException -> put("code", e.code)
+                else -> Unit
+            }
         }
 
         /** Plain English for a failed start. */

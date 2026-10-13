@@ -40,6 +40,8 @@ data class CallRequest(
     val muted: Boolean = false,
     /** Forget the previous Hermes session and start a new conversation. */
     val newConversation: Boolean = false,
+    /** Where the call came from, for diagnostics: app, launcher, folio, shortcut, assist, headset, tile, share. */
+    val entry: String = "app",
 )
 
 /** One caption line: a speaker's turn, merged from transcript deltas. */

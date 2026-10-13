@@ -32,6 +32,9 @@ val releaseStoreFile: File? = releaseSigningProps.getProperty("storeFile")?.let 
     if (file.isAbsolute) file else rootProject.file(path)
 }
 
+val diagnosticsUrl: String =
+    (System.getenv("FOLIO_DIAGNOSTICS_URL") ?: providers.gradleProperty("folio.diagnosticsUrl").orNull).orEmpty().trim()
+
 val canSignRelease: Boolean =
     releaseStoreFile?.isFile == true &&
         !releaseSigningProps.getProperty("storePassword").isNullOrBlank() &&
@@ -45,8 +48,8 @@ android {
         applicationId = "com.folio.hermeslive"
         minSdk = 31
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
     }
 
     signingConfigs {
@@ -62,6 +65,9 @@ android {
 
     buildTypes {
         release {
+            // Default diagnostics endpoint (OTLP/HTTP). Only release CI sets FOLIO_DIAGNOSTICS_URL
+            // (a repo variable); local and fork builds get "" and send nothing. Never commit a URL.
+            buildConfigField("String", "DIAGNOSTICS_URL", "\"${diagnosticsUrl.replace("\"", "")}\"")
             isMinifyEnabled = true
             isShrinkResources = true
             if (canSignRelease) {
@@ -75,6 +81,8 @@ android {
             ndk { abiFilters += "arm64-v8a" }
         }
         debug {
+            // Debug builds and unit tests never send (even when CI has the variable).
+            buildConfigField("String", "DIAGNOSTICS_URL", "\"\"")
             isMinifyEnabled = false
             // x86_64 for the emulator.
             ndk { abiFilters += listOf("arm64-v8a", "x86_64") }

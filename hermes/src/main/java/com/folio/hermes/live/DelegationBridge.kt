@@ -2,6 +2,7 @@ package com.folio.hermes.live
 
 import com.folio.hermes.ApprovalRequest
 import com.folio.hermes.ClarifyRequest
+import com.folio.hermes.HermesRpcException
 import com.folio.hermes.TurnUpdate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -63,7 +64,12 @@ sealed interface BridgeEvent {
     data class DelegationStarted(val delegationId: String?, val prompt: String) : BridgeEvent
     /** Hermes finished; [spoke] is false when there was nothing to say. */
     data class DelegationSettled(val delegationId: String?, val spoke: Boolean) : BridgeEvent
-    data class DelegationFailed(val delegationId: String?, val message: String) : BridgeEvent
+    /**
+     * [message] may echo the server (show it, don't log it). [kind] is safe to log: "turn_failed"
+     * for a failed Hermes turn, else the exception's simple class name; [code] is the gateway's
+     * JSON-RPC code when there was one.
+     */
+    data class DelegationFailed(val delegationId: String?, val message: String, val kind: String = "turn_failed", val code: Int? = null) : BridgeEvent
     /** Hermes started a tool; [label] is speakable ("web search"). */
     data class ToolStarted(val delegationId: String?, val label: String) : BridgeEvent
     /** Show an Approve / Deny card. Never answered by the bridge. */
@@ -77,7 +83,8 @@ sealed interface BridgeEvent {
     data object IdleWarning : BridgeEvent
     /** User speech after [IdleWarning] kept the call open. */
     data object IdleWarningCleared : BridgeEvent
-    data class LiveError(val message: String) : BridgeEvent
+    /** [message] is the vendor's and may echo content: log [code] only. */
+    data class LiveError(val message: String, val code: String? = null) : BridgeEvent
     data class UsageUpdated(val seconds: Double) : BridgeEvent
     /** Tear down WebRTC now. */
     data class Closed(val reason: String, val usageSeconds: Double?) : BridgeEvent
@@ -161,7 +168,7 @@ class DelegationBridge(
             is LiveServerEvent.Transcript -> onTranscript(event.fragment)
             is LiveServerEvent.DelegationCreated -> onDelegation(event.delegationId)
             is LiveServerEvent.UsageUpdated -> listener(BridgeEvent.UsageUpdated(event.seconds))
-            is LiveServerEvent.Error -> if (!event.ignorable) listener(BridgeEvent.LiveError(event.message))
+            is LiveServerEvent.Error -> if (!event.ignorable) listener(BridgeEvent.LiveError(event.message, event.code))
             is LiveServerEvent.Closed -> finish(event.reason, event.usageSeconds)
             is LiveServerEvent.Other -> Unit
         }
@@ -350,7 +357,9 @@ class DelegationBridge(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (activeDelegation == localId) fail(localId, e.message ?: "Could not reach Hermes.")
+                if (activeDelegation == localId) {
+                    fail(localId, e.message ?: "Could not reach Hermes.", e.javaClass.simpleName, (e as? HermesRpcException)?.code)
+                }
             }
         }
     }
@@ -362,10 +371,10 @@ class DelegationBridge(
         clearDelegation()
     }
 
-    private fun fail(localId: String, message: String) {
+    private fun fail(localId: String, message: String, kind: String = "turn_failed", code: Int? = null) {
         if (activeDelegation != localId) return
         speak(activeWireId, "Sorry, I could not reach Hermes for that request.")
-        listener(BridgeEvent.DelegationFailed(activeWireId, message))
+        listener(BridgeEvent.DelegationFailed(activeWireId, message, kind, code))
         clearDelegation()
     }
 

@@ -29,16 +29,18 @@ object LiveIntents {
     fun parse(intent: Intent?): Launch {
         val action = intent?.action ?: return Launch(null)
         return when (action) {
-            Intent.ACTION_MAIN -> Launch(CallRequest(), onlyIfStartOnOpen = true)
-            ACTION_CALL -> Launch(CallRequest(prompt = intent.getStringExtra(EXTRA_PROMPT)?.trim()?.ifEmpty { null }, muted = mutedExtra(intent)))
-            ACTION_TALK -> Launch(CallRequest())
-            ACTION_TALK_MUTED -> Launch(CallRequest(muted = true))
-            ACTION_NEW_CONVERSATION -> Launch(CallRequest(newConversation = true))
-            Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND, ACTION_TILE -> Launch(CallRequest(), wake = true)
+            Intent.ACTION_MAIN -> Launch(CallRequest(entry = "launcher"), onlyIfStartOnOpen = true)
+            ACTION_CALL -> Launch(CallRequest(prompt = intent.getStringExtra(EXTRA_PROMPT)?.trim()?.ifEmpty { null }, muted = mutedExtra(intent), entry = "folio"))
+            ACTION_TALK -> Launch(CallRequest(entry = "shortcut"))
+            ACTION_TALK_MUTED -> Launch(CallRequest(muted = true, entry = "shortcut"))
+            ACTION_NEW_CONVERSATION -> Launch(CallRequest(newConversation = true, entry = "shortcut"))
+            Intent.ACTION_ASSIST -> Launch(CallRequest(entry = "assist"), wake = true)
+            Intent.ACTION_VOICE_COMMAND -> Launch(CallRequest(entry = "headset"), wake = true)
+            ACTION_TILE -> Launch(CallRequest(entry = "tile"), wake = true)
             Intent.ACTION_SEND -> {
                 val text = listOfNotNull(intent.getStringExtra(Intent.EXTRA_SUBJECT), intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString())
                     .joinToString("\n").trim().take(MAX_SHARED_CHARS)
-                Launch(if (text.isEmpty()) null else CallRequest(prompt = text))
+                Launch(if (text.isEmpty()) null else CallRequest(prompt = text, entry = "share"))
             }
             else -> Launch(null)
         }

@@ -58,6 +58,8 @@ jobs:
           FOLIO_STORE_PASSWORD: ${{ secrets.FOLIO_STORE_PASSWORD }}
           FOLIO_KEY_ALIAS: folio
           FOLIO_KEY_PASSWORD: ${{ secrets.FOLIO_KEY_PASSWORD }}
+          # Default diagnostics endpoint baked into the release build (repo variable; empty = off).
+          FOLIO_DIAGNOSTICS_URL: ${{ vars.FOLIO_DIAGNOSTICS_URL }}
         run: ./gradlew testDebugUnitTest :live:assembleRelease --no-daemon
 
       - name: Package APK

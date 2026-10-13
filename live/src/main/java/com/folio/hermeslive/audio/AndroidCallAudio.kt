@@ -12,6 +12,7 @@ import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import com.folio.hermes.telemetry.Telemetry
 import com.folio.hermeslive.call.CallAudio
 import com.folio.hermeslive.call.FocusMode
 import com.folio.hermeslive.call.RouteKind
@@ -64,11 +65,13 @@ class AndroidCallAudio(context: Context) : CallAudio {
         if (active) end()
         this.listener = listener
         savedMode = am.mode
-        am.mode = AudioManager.MODE_IN_COMMUNICATION
+        guard("mode") { am.mode = AudioManager.MODE_IN_COMMUNICATION }
         active = true
-        am.addOnModeChangedListener(ContextCompat.getMainExecutor(app), modeListener)
-        am.registerAudioDeviceCallback(deviceCallback, main)
-        ContextCompat.registerReceiver(app, noisy, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), ContextCompat.RECEIVER_NOT_EXPORTED)
+        guard("listeners") {
+            am.addOnModeChangedListener(ContextCompat.getMainExecutor(app), modeListener)
+            am.registerAudioDeviceCallback(deviceCallback, main)
+            ContextCompat.registerReceiver(app, noisy, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), ContextCompat.RECEIVER_NOT_EXPORTED)
+        }
     }
 
     override fun end() {
@@ -79,8 +82,10 @@ class AndroidCallAudio(context: Context) : CallAudio {
         runCatching { am.unregisterAudioDeviceCallback(deviceCallback) }
         runCatching { app.unregisterReceiver(noisy) }
         main.removeCallbacksAndMessages(null)
-        am.clearCommunicationDevice()
-        am.mode = savedMode
+        guard("restore") {
+            am.clearCommunicationDevice()
+            am.mode = savedMode
+        }
         listener = null
     }
 
@@ -92,7 +97,11 @@ class AndroidCallAudio(context: Context) : CallAudio {
 
     override fun select(route: RouteOption) {
         val device = am.availableCommunicationDevices.firstOrNull { it.id == route.id } ?: return
-        if (am.communicationDevice?.id != device.id) am.setCommunicationDevice(device)
+        guard("select") {
+            if (am.communicationDevice?.id != device.id && !am.setCommunicationDevice(device)) {
+                Telemetry.warn("audio.route_refused", null, mapOf("route" to route.kind))
+            }
+        }
     }
 
     override fun setFocus(mode: FocusMode) {
@@ -109,7 +118,10 @@ class AndroidCallAudio(context: Context) : CallAudio {
                     .setOnAudioFocusChangeListener(focusListener, main)
                     .setWillPauseWhenDucked(false)
                     .build()
-                am.requestAudioFocus(request)
+                val granted = guard("focus") { am.requestAudioFocus(request) }
+                if (granted != null && granted != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                    Telemetry.event("audio.focus_denied", mapOf("mode" to mode, "result" to granted))
+                }
                 focusRequest = request
             }
         }
@@ -121,6 +133,14 @@ class AndroidCallAudio(context: Context) : CallAudio {
     }
 
     override fun isMusicActive(): Boolean = am.isMusicActive
+
+    /** An AudioManager call that must not end the call if the platform refuses it: report and carry on. */
+    private inline fun <T> guard(op: String, block: () -> T): T? = try {
+        block()
+    } catch (e: RuntimeException) {
+        Telemetry.error("audio.error", e, mapOf("op" to op))
+        null
+    }
 
     private fun abandon() {
         focusRequest?.let { am.abandonAudioFocusRequest(it) }

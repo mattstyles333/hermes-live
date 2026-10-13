@@ -7,6 +7,7 @@ import android.util.Base64
 import com.folio.hermes.HermesCredentials
 import com.folio.hermes.HermesTokens
 import com.folio.hermes.TokenStore
+import com.folio.hermes.telemetry.Telemetry
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -119,7 +120,13 @@ class SecureTokenStore(private val prefs: SharedPreferences, private val box: Se
         if (text == null) {
             edit.remove(key)
         } else {
-            edit.putString(key, Base64.encodeToString(box.seal(text.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP))
+            val sealed = try {
+                box.seal(text.toByteArray(Charsets.UTF_8))
+            } catch (e: Exception) {
+                Telemetry.error("keystore.seal_failed", e, mapOf("item" to key))
+                throw e
+            }
+            edit.putString(key, Base64.encodeToString(sealed, Base64.NO_WRAP))
         }
         edit.commit()
     }
@@ -127,7 +134,11 @@ class SecureTokenStore(private val prefs: SharedPreferences, private val box: Se
     private fun openText(key: String): String? {
         val stored = prefs.getString(key, null) ?: return null
         return runCatching { String(box.open(Base64.decode(stored, Base64.NO_WRAP)), Charsets.UTF_8) }
-            .onFailure { prefs.edit().remove(key).commit() }
+            .onFailure { e ->
+                // A wiped or invalidated Keystore key: the session is gone, so sign-in is asked again.
+                Telemetry.error("keystore.open_failed", e, mapOf("item" to key))
+                prefs.edit().remove(key).commit()
+            }
             .getOrNull()
     }
 

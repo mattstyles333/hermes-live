@@ -252,7 +252,7 @@ class DelegationBridgeTest {
         r.server("""{"type":"error","error":{"code":"context_injection_incomplete","message":"late"}}""")
         assertTrue(r.events.none { it is BridgeEvent.LiveError })
         r.server("""{"type":"error","error":{"code":"rate_limited","message":"slow down"}}""")
-        assertEquals(BridgeEvent.LiveError("slow down"), r.events.last())
+        assertEquals(BridgeEvent.LiveError("slow down", "rate_limited"), r.events.last())
 
         r.bridge.delegateText("Read my latest email")
         runCurrent()

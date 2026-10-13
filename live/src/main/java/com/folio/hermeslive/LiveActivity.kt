@@ -22,6 +22,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.withResumed
+import com.folio.hermes.telemetry.FlushResult
+import com.folio.hermes.telemetry.Telemetry
 import com.folio.hermeslive.call.CallRequest
 import com.folio.hermeslive.call.SessionMemory
 import com.folio.hermeslive.data.AccountState
@@ -36,8 +38,10 @@ import com.folio.hermeslive.ui.SignInScreen
 import com.folio.hermeslive.ui.SignInUi
 import com.folio.hermeslive.ui.clock
 import com.folio.hermeslive.ui.voiceText
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** The one screen: sign in, the call, settings. Every call starts here (foreground, mic granted). */
 class LiveActivity : ComponentActivity() {
@@ -46,6 +50,7 @@ class LiveActivity : ComponentActivity() {
     private var showSettings by mutableStateOf(false)
     private var signIn by mutableStateOf(SignInUi())
     private var micRefused by mutableStateOf(false)
+    private var diagnosticsStatus by mutableStateOf<String?>(null)
 
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         val request = pendingStart ?: return@registerForActivityResult
@@ -157,6 +162,8 @@ class LiveActivity : ComponentActivity() {
                 account = account,
                 voice = voice,
                 version = BuildConfig.VERSION_NAME,
+                diagnosticsBuiltIn = BuildConfig.DIAGNOSTICS_URL.isNotBlank(),
+                diagnosticsStatus = diagnosticsStatus,
                 actions = SettingsActions(
                     onBack = { showSettings = false },
                     onChange = { change -> g.settings.update(change) },
@@ -167,6 +174,13 @@ class LiveActivity : ComponentActivity() {
                     },
                     onResetConversation = { g.settings.save(SessionMemory.Empty) },
                     onRefreshVoice = { scope.launch { g.account.refreshVoiceStatus() } },
+                    onSendTestEvent = {
+                        diagnosticsStatus = "Sending…"
+                        scope.launch {
+                            Telemetry.event("diagnostics.test", mapOf("screen" to "settings"))
+                            diagnosticsStatus = describe(withContext(Dispatchers.IO) { Telemetry.flush() })
+                        }
+                    },
                 ),
             )
             account !is AccountState.SignedIn && !call.inCall -> SignInScreen(
@@ -212,4 +226,13 @@ class LiveActivity : ComponentActivity() {
             )
         }
     }
+}
+
+/** What "Send test event" shows. */
+internal fun describe(result: FlushResult): String = when (result) {
+    is FlushResult.Sent -> "✓ Sent (HTTP ${result.status})"
+    is FlushResult.Failed -> if (result.status > 0) "Failed: HTTP ${result.status}" else "Failed: ${result.reason}"
+    FlushResult.Off -> "Off: switched off or no endpoint"
+    FlushResult.Nothing -> "Nothing to send"
+    FlushResult.BackingOff -> "Waiting to retry"
 }

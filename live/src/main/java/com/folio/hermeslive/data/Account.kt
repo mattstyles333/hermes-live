@@ -8,6 +8,7 @@ import com.folio.hermes.HermesEndpoint
 import com.folio.hermes.HermesTokens
 import com.folio.hermes.live.VoiceLiveApi
 import com.folio.hermes.live.VoiceLiveStatus
+import com.folio.hermes.telemetry.Telemetry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -96,7 +97,10 @@ class Account(
 
     suspend fun signIn(rawUrl: String, username: String, password: String): SignInResult {
         val endpoint = when (val parsed = HermesEndpoint.parse(rawUrl)) {
-            is HermesEndpoint.Parsed.Invalid -> return SignInResult.Failed(parsed.message)
+            is HermesEndpoint.Parsed.Invalid -> {
+                Telemetry.event("auth.signin", mapOf("ok" to false, "reason" to "invalid_address"))
+                return SignInResult.Failed(parsed.message)
+            }
             is HermesEndpoint.Parsed.Valid -> parsed.endpoint
         }
         if (username.isBlank() || password.isEmpty()) return SignInResult.Failed("Enter your Hermes user name and password.")
@@ -113,10 +117,14 @@ class Account(
             settings.setAccount(url, username.trim())
             _state.value = AccountState.SignedIn(display(url), username.trim())
             onSessionChanged()
-            SignInResult.Ok(refreshVoiceStatus())
+            val voice = refreshVoiceStatus()
+            Telemetry.event("auth.signin", mapOf("ok" to true, "cleartext" to url.startsWith("http://"), "voice_available" to voice?.available))
+            SignInResult.Ok(voice)
         } catch (e: HermesAuthException) {
+            Telemetry.warn("auth.signin", null, signInFailure(e))
             SignInResult.Failed(e.message ?: "Could not sign in.")
         } catch (e: java.io.IOException) {
+            Telemetry.warn("auth.signin", null, mapOf("ok" to false, "reason" to "network", "type" to e.javaClass.simpleName))
             SignInResult.Failed(networkMessage(e))
         }
     }
@@ -153,6 +161,7 @@ class Account(
         watcher = scope.launch {
             a.state.collect { s ->
                 if (s is AuthState.NeedsSignIn && settings.serverUrl.value != null) {
+                    Telemetry.warn("auth.refresh_failed", null, mapOf("state" to "needs_sign_in"))
                     _state.value = AccountState.NeedsSignIn(display(url), s.reason)
                     onSessionChanged()
                 }
@@ -162,6 +171,19 @@ class Account(
     }
 
     companion object {
+        /** ok=false plus an enum reason; never the server's text. */
+        fun signInFailure(e: HermesAuthException): Map<String, Any?> = mapOf(
+            "ok" to false,
+            "reason" to when (e) {
+                is HermesAuthException.InvalidCredentials -> "invalid_credentials"
+                is HermesAuthException.RateLimited -> "rate_limited"
+                is HermesAuthException.Unavailable -> "unavailable"
+                is HermesAuthException.SignInRequired -> "sign_in_required"
+                is HermesAuthException.Protocol -> "protocol"
+            },
+            "http_status" to (e as? HermesAuthException.Unavailable)?.httpCode,
+        )
+
         fun display(url: String): String = url.removePrefix("https://").removePrefix("http://")
 
         fun networkMessage(e: Throwable): String {

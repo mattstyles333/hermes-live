@@ -46,6 +46,7 @@ folio-launcher pulls this repo in as a git submodule and builds `:hermes` from i
 | Account | `data/Account.kt`, `data/SecureTokenStore.kt` (Keystore AES-GCM), `data/SettingsStore.kt` |
 | Foreground call | `service/CallService.kt` (type microphone, CallStyle notification, MediaSession for headset buttons), `service/CallActionReceiver.kt`, `service/CallTileService.kt` |
 | Folio interface | `provider/ConnectionProvider.kt` |
+| Diagnostics (crash + error reporting) | `:hermes` `telemetry/` (`Telemetry`, `TelemetryCore`, `Scrub`, `Otlp`, `ExitReports`, `Tombstone`, `DiagnosticsEndpoint`); installed first in `LiveApp.onCreate`; Settings › Diagnostics |
 | Entry points | `LiveIntents.kt`, `LiveActivity.kt`, `res/xml/shortcuts.xml` |
 | UI | `ui/` (Compose; Folio's palette copied, no dependency on Folio) |
 
@@ -68,6 +69,16 @@ folio-launcher pulls this repo in as a git submodule and builds `:hermes` from i
 - **Data-channel writes.** Every data-channel write goes through `OrderedSender`. A close never overtakes a held commentary.
 - **Threading.** `CallEngine` and `DelegationBridge` are single-threaded (Main). `WebRtcTransport` posts every callback to Main.
 - **Cleartext.** Plain http is allowed only for `*.ts.net` (`res/xml/network_security_config.xml`). The config can't express `100.64.0.0/10`. `HermesEndpoint` accepts those IPs, but Android refuses them, so use the MagicDNS name.
+
+## Diagnostics
+
+Crash and error reporting as OTLP/HTTP JSON logs (`POST <endpoint>/v1/logs`), shared with Folio through `:hermes` (`com.folio.hermes.telemetry`). Service `hermes-live`; Folio reports as `folio`.
+
+- **Endpoint.** The default is `BuildConfig.DIAGNOSTICS_URL`, baked into **release** builds from the env var `FOLIO_DIAGNOSTICS_URL` (or Gradle property `folio.diagnosticsUrl`). Release CI passes the repo variable `FOLIO_DIAGNOSTICS_URL`; `ci.yml` does not, and debug builds and unit tests always get `""`. Settings › Diagnostics: a switch (on by default) and an optional override URL (https, or http on `*.ts.net`). Effective endpoint = off if switched off, else the override, else the default (`DiagnosticsEndpoint.effective`). Never write the real URL in code, tests, docs or commits.
+- **What is sent.** Crashes (written synchronously to `filesDir/telemetry/pending/` by the uncaught-exception handler, then the previous handler runs), previous exits from `ActivityManager.getHistoricalProcessExitReasons` (crash, native crash with a tombstone summary, ANR with the main-thread dump, low memory, excessive resource use, init failure, dependency died; each once), and `Telemetry.event/warn/error`. Resource: `service.name`, `service.version`, `deployment.environment=phone`, `device.model`, `device.manufacturer`, `os.version`, `app.install_id` (random per install).
+- **No content, ever.** Event names plus safe attributes only: codes, enum reasons, durations, counts, booleans. Never transcripts, prompts, answers, typed text, tokens, cookies, passwords, user names or URLs with queries. Vendor and server messages (`BridgeEvent.LiveError.message`, `DelegationFailed.message`, `HermesAuthException` text) are not logged: log their `code` / `kind` / type. `Scrub` redacts and truncates every message, attribute and stack trace as a second line.
+- **Events.** `call.start` (entry: launcher/folio/shortcut/assist/headset/tile/share/app), `call.connected` (connect_ms), `call.failed`, `call.reconnect`, `call.reconnected`, `call.stopping`, `call.end` (reason, duration_s, voice_s), `call.other_call`, `live.error` (code), `delegation.failed` (kind, code), `gateway.error`, `auth.signin` (ok + reason), `auth.refresh_failed`, `audio.route_change`, `audio.error`, `audio.focus_denied`, `webrtc.*` (ice_failed, connection_failed, disconnected, lost, datachannel_closed, ice_gather_timeout, ice_candidate_error), `keystore.*_failed`, `provider.call` (allowed/denied, answer kind), `diagnostics.test`.
+- **Sending.** In-memory queue (≤200) flushed every 30 s and when the app leaves the screen (`onTrimMemory(UI_HIDDEN)`), on one daemon thread, 10 s timeouts, backoff 30 s → 30 min on failure. Pending files: ≤50, dropped after 3 days, deleted only after a 2xx. Telemetry never throws into the app.
 
 ## Touch and hardware contracts
 
@@ -111,6 +122,7 @@ folio-launcher pulls this repo in as a git submodule and builds `:hermes` from i
 - `SecureStoresTest` (Robolectric, with a software AES key standing in for the Keystore).
 - `LiveSettingsTest` (defaults).
 - `ConnectionProviderTest`: permission refused, signed-out shape, signed-in shape, `force_refresh`, state.
+- `:hermes` `telemetry/`: `ScrubTest`, `OtlpTest` (exact OTLP JSON), `TelemetryCoreTest` (MockWebServer: off state sends nothing, crash file deleted only on 2xx, backoff, queue bound, pending cap/expiry, exit dedupe), `TombstoneTest` (proto fields per AOSP `tombstone.proto`), `DiagnosticsEndpointTest` (off without a URL, off when switched off, override wins). `OtlpLiveTest` sends one real record only when `TELEMETRY_LIVE_URL` is set; CI never sets it.
 - `LiveIntentsTest`
 - `CallScreenTest` (Robolectric Compose).
 

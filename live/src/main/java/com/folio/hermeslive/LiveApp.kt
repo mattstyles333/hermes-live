@@ -2,6 +2,7 @@ package com.folio.hermeslive
 
 import android.app.Application
 import android.content.Context
+import com.folio.hermes.telemetry.Telemetry
 import com.folio.hermeslive.audio.AndroidCallAudio
 import com.folio.hermeslive.audio.AndroidCallEffects
 import com.folio.hermeslive.call.CallEngine
@@ -30,6 +31,11 @@ class LiveApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // First: so a crash anywhere below is still caught. Off unless an endpoint is configured.
+        val prefs = getSharedPreferences(SettingsStore.PREFS, Context.MODE_PRIVATE)
+        Telemetry.install(this, "hermes-live", BuildConfig.VERSION_NAME) {
+            SettingsStore.diagnosticsEndpoint(prefs, BuildConfig.DIAGNOSTICS_URL)
+        }
         CallNotifications.createChannels(this)
         graph.ready // start restoring the session
     }
@@ -45,7 +51,7 @@ class LiveGraph(private val app: Context) {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    val settings = SettingsStore(app.getSharedPreferences("hermes_live", Context.MODE_PRIVATE))
+    val settings = SettingsStore(app.getSharedPreferences(SettingsStore.PREFS, Context.MODE_PRIVATE))
     val tokens = SecureTokenStore(app.getSharedPreferences("hermes_live_secure", Context.MODE_PRIVATE), KeystoreSecretBox())
     val account = Account(settings, tokens, client, ioScope) {
         app.contentResolver.notifyChange(ConnectionProvider.URI, null)

@@ -1,6 +1,7 @@
 package com.folio.hermeslive.data
 
 import android.content.SharedPreferences
+import com.folio.hermes.telemetry.DiagnosticsEndpoint
 import com.folio.hermeslive.call.FallbackRoute
 import com.folio.hermeslive.call.SessionMemory
 import com.folio.hermeslive.call.SessionMemoryStore
@@ -37,6 +38,8 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
             .putBoolean(K_START_ON_OPEN, next.startOnOpen)
             .putBoolean(K_KEEP_SCREEN_ON, next.keepScreenOn)
             .putString(K_FALLBACK, next.fallbackRoute.name)
+            .putBoolean(K_DIAGNOSTICS, next.diagnostics)
+            .putString(K_DIAGNOSTICS_URL, next.diagnosticsUrl.trim())
             .apply()
         _settings.value = next
     }
@@ -73,23 +76,41 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
             keepScreenOn = prefs.getBoolean(K_KEEP_SCREEN_ON, d.keepScreenOn),
             fallbackRoute = prefs.getString(K_FALLBACK, null)
                 ?.let { name -> FallbackRoute.entries.firstOrNull { it.name == name } } ?: d.fallbackRoute,
+            diagnostics = prefs.getBoolean(K_DIAGNOSTICS, d.diagnostics),
+            diagnosticsUrl = prefs.getString(K_DIAGNOSTICS_URL, null) ?: d.diagnosticsUrl,
         )
     }
 
-    private companion object {
-        const val K_MUSIC = "music_in_gaps"
-        const val K_DUCK = "duck_on_speaker"
-        const val K_EARCONS = "earcons"
-        const val K_HAPTICS = "haptics"
-        const val K_SPOKEN_APPROVALS = "spoken_approvals"
-        const val K_IDLE = "idle_minutes"
-        const val K_CAP = "cap_minutes"
-        const val K_START_ON_OPEN = "start_on_open"
-        const val K_KEEP_SCREEN_ON = "keep_screen_on"
-        const val K_FALLBACK = "fallback_route"
-        const val K_SERVER = "server_url"
-        const val K_USER = "username"
-        const val K_SESSION = "stored_session_id"
-        const val K_SESSION_AT = "stored_session_at"
+    companion object {
+        const val PREFS = "hermes_live"
+
+        /**
+         * The diagnostics endpoint in force, read straight from [prefs] (the telemetry thread
+         * asks before the app graph exists): off when switched off, else the override, else
+         * [buildDefault] (`BuildConfig.DIAGNOSTICS_URL`, empty outside release CI).
+         */
+        fun diagnosticsEndpoint(prefs: SharedPreferences, buildDefault: String): String? =
+            DiagnosticsEndpoint.effective(
+                enabled = prefs.getBoolean(K_DIAGNOSTICS, true),
+                override = prefs.getString(K_DIAGNOSTICS_URL, null),
+                buildDefault = buildDefault,
+            )
+
+        private const val K_DIAGNOSTICS = "diagnostics"
+        private const val K_DIAGNOSTICS_URL = "diagnostics_url"
+        private const val K_MUSIC = "music_in_gaps"
+        private const val K_DUCK = "duck_on_speaker"
+        private const val K_EARCONS = "earcons"
+        private const val K_HAPTICS = "haptics"
+        private const val K_SPOKEN_APPROVALS = "spoken_approvals"
+        private const val K_IDLE = "idle_minutes"
+        private const val K_CAP = "cap_minutes"
+        private const val K_START_ON_OPEN = "start_on_open"
+        private const val K_KEEP_SCREEN_ON = "keep_screen_on"
+        private const val K_FALLBACK = "fallback_route"
+        private const val K_SERVER = "server_url"
+        private const val K_USER = "username"
+        private const val K_SESSION = "stored_session_id"
+        private const val K_SESSION_AT = "stored_session_at"
     }
 }

@@ -14,6 +14,7 @@ import android.os.IBinder
 import android.service.quicksettings.TileService
 import android.view.KeyEvent
 import androidx.core.content.ContextCompat
+import com.folio.hermes.telemetry.Telemetry
 import com.folio.hermeslive.call.CallEngine
 import com.folio.hermeslive.call.CallRequest
 import com.folio.hermeslive.call.CallUiState
@@ -57,6 +58,7 @@ class CallService : Service() {
             )
         } catch (e: RuntimeException) {
             // Not allowed from here (e.g. not started from the foreground): do not record without the notice.
+            Telemetry.error("call.foreground_refused", e)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -67,6 +69,7 @@ class CallService : Service() {
                 prompt = intent.getStringExtra(EXTRA_PROMPT),
                 muted = intent.getBooleanExtra(EXTRA_MUTED, false),
                 newConversation = intent.getBooleanExtra(EXTRA_NEW_CONVERSATION, false),
+                entry = intent.getStringExtra(EXTRA_ENTRY) ?: "app",
             ),
         )
         watch()
@@ -163,6 +166,7 @@ class CallService : Service() {
         const val EXTRA_PROMPT = "prompt"
         const val EXTRA_MUTED = "muted"
         const val EXTRA_NEW_CONVERSATION = "new_conversation"
+        const val EXTRA_ENTRY = "entry"
         private val HEADSET_KEYS = setOf(KeyEvent.KEYCODE_HEADSETHOOK, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
 
         /** Start a call. Call only from a visible activity, after RECORD_AUDIO is granted. */
@@ -171,6 +175,7 @@ class CallService : Service() {
                 .putExtra(EXTRA_PROMPT, request.prompt)
                 .putExtra(EXTRA_MUTED, request.muted)
                 .putExtra(EXTRA_NEW_CONVERSATION, request.newConversation)
+                .putExtra(EXTRA_ENTRY, request.entry)
             ContextCompat.startForegroundService(context, intent)
         }
     }

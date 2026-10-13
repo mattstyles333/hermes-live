@@ -20,6 +20,9 @@ class LiveSettingsTest {
         assertFalse(d.keepScreenOn)
         assertEquals(FallbackRoute.Speaker, d.fallbackRoute)
         assertTrue("no real host is built in", LiveSettings.SERVER_HINT.contains("example.com"))
+        assertTrue("diagnostics on by default (the URL comes from release CI)", d.diagnostics)
+        assertEquals("", d.diagnosticsUrl)
+        assertTrue(LiveSettings.DIAGNOSTICS_HINT.contains("example.com"))
     }
 
     @Test fun bridgeAndGapSettingsFollowTheChoices() {

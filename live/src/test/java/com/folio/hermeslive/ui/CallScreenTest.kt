@@ -10,6 +10,7 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.folio.hermes.ApprovalChoice
@@ -18,6 +19,7 @@ import com.folio.hermeslive.call.CallUiState
 import com.folio.hermeslive.data.AccountState
 import com.folio.hermeslive.data.LiveSettings
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -185,5 +187,34 @@ class CallScreenTest {
         assertTrue(settings.spokenApprovals)
         compose.onNodeWithTag("signout").performScrollTo().performClick()
         assertEquals(listOf("signout"), calls)
+    }
+
+    @Test fun diagnosticsSwitchOverrideAndTestEvent() {
+        var settings = LiveSettings()
+        var tests = 0
+        compose.setContent {
+            LiveTheme {
+                SettingsScreen(
+                    settings, AccountState.SignedOut, null, "1.0.2",
+                    SettingsActions(onChange = { settings = it(settings) }, onSendTestEvent = { tests++ }),
+                    diagnosticsBuiltIn = true,
+                    diagnosticsStatus = "✓ Sent (HTTP 200)",
+                )
+            }
+        }
+        compose.onNodeWithText(DIAGNOSTICS_PRIVACY).performScrollTo().assertIsDisplayed()
+        // Plain http to a non-tailnet host is refused and not saved.
+        compose.onNodeWithTag("diagnostics-url").performScrollTo().performTextInput("http://logs.example.com")
+        compose.onNodeWithText("Use https:// (plain http:// only for a *.ts.net name).").performScrollTo().assertIsDisplayed()
+        assertEquals("", settings.diagnosticsUrl)
+        compose.onNodeWithTag("diagnostics-url").performTextClearance()
+        compose.onNodeWithTag("diagnostics-url").performTextInput("https://logs.example.com")
+        assertEquals("https://logs.example.com", settings.diagnosticsUrl)
+        compose.onNodeWithTag("diagnostics-test").performScrollTo().performClick()
+        assertEquals(1, tests)
+        compose.onNodeWithTag("diagnostics-status").performScrollTo().assertIsDisplayed()
+        assertTrue(settings.diagnostics)
+        compose.onNodeWithTag("diagnostics").performScrollTo().performClick()
+        assertFalse(settings.diagnostics)
     }
 }

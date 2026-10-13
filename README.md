@@ -12,6 +12,7 @@ Android 12+ (built for a Galaxy S23). Works on its own, and as the voice for the
 - **Sound that behaves.** Speaker, earpiece, wired, USB and Bluetooth; a headset takes over when it connects; the screen goes dark at your ear; a phone call mutes Hermes until it's over.
 - **Many ways to hang up.** End button, call notification (Mute / End), Quick Settings tile, hold the headset button, or say "goodbye", "that's all" or "never mind". Idle calls hang up after 3 minutes and calls stop at 30, each with a spoken warning. You see the length and cost ($0.05/min) afterwards.
 - **Approvals need a tap.** When Hermes wants to run something, a card and a notification ask first. Spoken approvals are off unless you turn them on.
+- **Crash reports, never content.** Release builds send crash reports and errors (event names, codes, durations, stack traces; never what you say, Hermes's answers or sign-in details) to the maintainer's diagnostics endpoint, set at build time from the CI variable `FOLIO_DIAGNOSTICS_URL`. Turn it off in Settings › Diagnostics, or point it at your own OTLP/HTTP collector (e.g. SigNoz). Builds you make yourself send nothing unless you set that variable.
 - **Start it how you like.** App icon, shortcuts (Talk, Talk muted, New conversation), Quick Settings tile, the assistant gesture or headset button once Hermes Live is your assistant app, or share text to it.
 
 ## Server requirements

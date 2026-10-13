@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.os.Handler
 import android.os.Looper
+import com.folio.hermes.telemetry.Telemetry
 import com.folio.hermeslive.call.LiveTransport
 import com.folio.hermeslive.call.RemoteLevelReader
 import com.folio.hermeslive.call.StatsEntry
@@ -62,6 +63,7 @@ class WebRtcTransport(context: Context, private val events: TransportEvents) : L
     private var mic: AudioTrack? = null
     private var channel: DataChannel? = null
     private var disconnectTimer: Runnable? = null
+    private var candidateErrors = 0
 
     // Mic level accumulation on the audio thread (posted every ~50 ms).
     private var micSquares = 0.0
@@ -115,7 +117,10 @@ class WebRtcTransport(context: Context, private val events: TransportEvents) : L
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
 
             override fun onStateChange() {
-                if (dc.state() == DataChannel.State.CLOSED) lost("data channel closed")
+                if (dc.state() == DataChannel.State.CLOSED) {
+                    if (!closed) Telemetry.warn("webrtc.datachannel_closed")
+                    lost("data channel closed")
+                }
             }
 
             override fun onMessage(buffer: DataChannel.Buffer) {
@@ -130,7 +135,9 @@ class WebRtcTransport(context: Context, private val events: TransportEvents) : L
         val offer = sdp { observer -> pc.createOffer(observer, MediaConstraints()) }
         setSdp { observer -> pc.setLocalDescription(observer, offer) }
         // Trickle is fine after the timeout: the vendor answers with the candidates it has.
-        withTimeoutOrNull(ICE_GATHER_TIMEOUT_MS) { gathered.await() }
+        if (withTimeoutOrNull(ICE_GATHER_TIMEOUT_MS) { gathered.await() } == null) {
+            Telemetry.event("webrtc.ice_gather_timeout", mapOf("timeout_ms" to ICE_GATHER_TIMEOUT_MS))
+        }
         check(!closed) { "closed" }
         val local = pc.localDescription?.description ?: error("Missing local SDP offer")
         val answer = exchange(local)
@@ -216,13 +223,18 @@ class WebRtcTransport(context: Context, private val events: TransportEvents) : L
 
     private val observer = object : PeerConnection.Observer {
         override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
-        override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) = Unit
+        override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
+            if (state == PeerConnection.IceConnectionState.FAILED && !closed) Telemetry.warn("webrtc.ice_failed")
+        }
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {
             if (state == PeerConnection.IceGatheringState.COMPLETE) gathered.complete(Unit)
         }
         override fun onIceCandidate(candidate: IceCandidate) = Unit
-        override fun onIceCandidateError(event: IceCandidateErrorEvent) = Unit
+        override fun onIceCandidateError(event: IceCandidateErrorEvent) {
+            // STUN/TURN errors are often harmless; the first few say why a connection never formed.
+            if (candidateErrors++ < 3) Telemetry.event("webrtc.ice_candidate_error", mapOf("error_code" to event.errorCode))
+        }
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
         override fun onSelectedCandidatePairChanged(event: CandidatePairChangeEvent) = Unit
         override fun onAddStream(stream: MediaStream) = Unit
@@ -240,10 +252,19 @@ class WebRtcTransport(context: Context, private val events: TransportEvents) : L
             main.post {
                 if (closed) return@post
                 when (state) {
-                    PeerConnection.PeerConnectionState.FAILED -> events.onLost("connection failed")
+                    PeerConnection.PeerConnectionState.FAILED -> {
+                        Telemetry.warn("webrtc.connection_failed")
+                        events.onLost("connection failed")
+                    }
                     PeerConnection.PeerConnectionState.DISCONNECTED -> {
+                        Telemetry.event("webrtc.disconnected")
                         // Mobile networks blip; give ICE a few seconds to recover before calling it lost.
-                        val timer = Runnable { if (!closed) events.onLost("connection lost") }
+                        val timer = Runnable {
+                            if (!closed) {
+                                Telemetry.warn("webrtc.lost", null, mapOf("grace_ms" to DISCONNECT_GRACE_MS))
+                                events.onLost("connection lost")
+                            }
+                        }
                         disconnectTimer = timer
                         main.postDelayed(timer, DISCONNECT_GRACE_MS)
                     }

@@ -26,6 +26,10 @@ data class LiveSettings(
     val keepScreenOn: Boolean = false,
     /** Route without a headset, and after one disconnects. */
     val fallbackRoute: FallbackRoute = FallbackRoute.Speaker,
+    /** Send crash reports and errors (never content) to the diagnostics endpoint. */
+    val diagnostics: Boolean = true,
+    /** Optional OTLP/HTTP endpoint that replaces the built-in one. Empty = the built-in default. */
+    val diagnosticsUrl: String = "",
 ) {
     fun gapSettings(): GapSettings = GapSettings(enabled = musicInGaps, duckOnSpeaker = duckOnSpeaker)
 
@@ -50,5 +54,8 @@ data class LiveSettings(
 
         /** Tailnet shape (cleartext is allowed for *.ts.net only). */
         const val TAILNET_HINT = "http://<machine>.<tailnet>.ts.net:9119"
+
+        /** Placeholder for the diagnostics override; never a real host (public repo). */
+        const val DIAGNOSTICS_HINT = "https://logs.example.com"
     }
 }

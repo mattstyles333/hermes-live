@@ -33,7 +33,16 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import com.folio.hermes.live.VoiceLiveStatus
+import com.folio.hermes.telemetry.DiagnosticsEndpoint
 import com.folio.hermeslive.call.FallbackRoute
 import com.folio.hermeslive.data.AccountState
 import com.folio.hermeslive.data.LiveSettings
@@ -45,6 +54,8 @@ data class SettingsActions(
     val onSignOut: () -> Unit = {},
     val onResetConversation: () -> Unit = {},
     val onRefreshVoice: () -> Unit = {},
+    /** Queue a test event and send it now; the result comes back as `diagnosticsStatus`. */
+    val onSendTestEvent: () -> Unit = {},
 )
 
 @Composable
@@ -55,6 +66,10 @@ fun SettingsScreen(
     version: String,
     actions: SettingsActions,
     modifier: Modifier = Modifier,
+    /** Built-in diagnostics endpoint present (release builds); false in local builds. */
+    diagnosticsBuiltIn: Boolean = false,
+    /** Result of the last "Send test event": "✓ Sent (HTTP 200)", "Failed: HTTP 503", "Off"… */
+    diagnosticsStatus: String? = null,
 ) {
     Column(modifier.fillMaxSize().background(VoidBlack).windowInsetsPadding(WindowInsets.safeDrawing)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -118,6 +133,21 @@ fun SettingsScreen(
                 Spacer(Modifier.height(8.dp))
                 Pill("Start a new conversation", filled = false, tag = "reset-conversation", onClick = actions.onResetConversation)
             }
+            Section("Diagnostics") {
+                Toggle(
+                    "Send crash reports and errors",
+                    DIAGNOSTICS_PRIVACY + if (!diagnosticsBuiltIn && settings.diagnosticsUrl.isBlank()) " This build has no endpoint: add one below." else "",
+                    settings.diagnostics, "diagnostics",
+                ) { v -> actions.onChange { it.copy(diagnostics = v) } }
+                DiagnosticsUrlField(settings, enabled = settings.diagnostics, onChange = actions.onChange)
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Pill("Send test event", filled = false, tag = "diagnostics-test", onClick = actions.onSendTestEvent)
+                    diagnosticsStatus?.let {
+                        Text(it, style = SmallStyle, color = PrintMute, modifier = Modifier.padding(start = 12.dp).testTag("diagnostics-status"))
+                    }
+                }
+            }
             Section("About") {
                 Line("Hermes Live", version)
                 Text(
@@ -135,6 +165,31 @@ fun voiceText(voice: VoiceLiveStatus?): String = when {
     voice == null -> "Unknown (tap to check)"
     voice.available -> listOf(voice.model, voice.voice.takeIf { it.isNotBlank() }?.let { "voice $it" }).filterNotNull().filter { it.isNotBlank() }.joinToString(" · ").ifEmpty { "Available" }
     else -> "Unavailable" + (voice.reason?.let { ": $it" } ?: "")
+}
+
+const val DIAGNOSTICS_PRIVACY = "Crash reports and errors only. Never what you say, Hermes's answers, or sign-in details."
+
+/** The optional override: saved only when it is blank or usable; a problem shows under the field. */
+@Composable
+private fun DiagnosticsUrlField(settings: LiveSettings, enabled: Boolean, onChange: ((LiveSettings) -> LiveSettings) -> Unit) {
+    var text by rememberSaveable { mutableStateOf(settings.diagnosticsUrl) }
+    val problem = DiagnosticsEndpoint.problem(text)
+    OutlinedTextField(
+        value = text,
+        onValueChange = { v ->
+            text = v
+            if (DiagnosticsEndpoint.problem(v) == null) onChange { it.copy(diagnosticsUrl = v.trim()) }
+        },
+        label = { Text("Send crash reports and errors to") },
+        placeholder = { Text(LiveSettings.DIAGNOSTICS_HINT, style = BodyStyle, color = PrintMute) },
+        singleLine = true, enabled = enabled, colors = fieldColors(), textStyle = BodyStyle,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done, autoCorrectEnabled = false),
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp).testTag("diagnostics-url"),
+    )
+    Text(
+        problem ?: "Optional. OTLP/HTTP endpoint, e.g. your SigNoz; replaces the built-in one. Never includes what you say or Hermes's answers.",
+        style = SmallStyle, color = if (problem != null) EndRed else PrintMute, modifier = Modifier.padding(top = 6.dp),
+    )
 }
 
 private fun next(choices: List<Int>, current: Int): Int {
