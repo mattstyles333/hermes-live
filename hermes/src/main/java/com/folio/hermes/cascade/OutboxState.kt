@@ -9,6 +9,11 @@ data class HeldTurn(
     val speechEndAt: Long,
     val wallMs: Long = 0L,
     val transcript: Transcript? = null,
+    /**
+     * Not offline dictation: a turn carried over a hang-up or a restart. It is resent as it is,
+     * never segmented or labelled "dictated offline" (R-OFF-4 applies to memo mode only).
+     */
+    val carried: Boolean = false,
 )
 
 /** One held turn, by turn id. */

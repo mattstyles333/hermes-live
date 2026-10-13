@@ -142,6 +142,9 @@ data class ResumeCandidate(
     val defaultChoice: ResumeChoice,
 )
 
+/** A past conversation read back from the store, to reopen it ([Event.OpenConversation]). */
+data class StoredConversation(val id: String, val summary: String, val recent: List<Exchange>)
+
 /** The conversation this call belongs to (R-CONV-1; phase 1, S-B). */
 data class ConversationState(
     val id: String? = null,
@@ -159,6 +162,8 @@ data class State(
     val wallMs: Long = 0L,
     val settings: CascadeSettings = CascadeSettings(),
     val started: Boolean = false,
+    /** The stored state was read back (first [Event.Start] or [Event.Restore]); recovery may run. */
+    val restored: Boolean = false,
     /** VAD says the user is speaking. */
     val userSpeaking: Boolean = false,
     val turn: TurnState = TurnState(),
@@ -189,6 +194,12 @@ data class State(
     val ceo: CeoState = CeoState(),
     val conversation: ConversationState = ConversationState(),
     val offCall: OffCallState = OffCallState(),
+    /**
+     * Small facts slices remember across events, by key (a turn id, `task:<id>`, a slice name):
+     * "this turn's summary was spoken", "this run's line waits for Accepted". Stored with the
+     * outbox, so a restart or a resend never repeats them. Use [Tx.mark] and friends.
+     */
+    val marks: Map<String, Set<String>> = emptyMap(),
 ) {
     /** True while Bill has something queued or playing (wait for this before closing the call). */
     val speaking: Boolean get() = !speech.isEmpty

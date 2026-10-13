@@ -16,7 +16,10 @@ object UiProjection {
             s.writers.isNotEmpty() -> TurnPhase.Writing
             else -> TurnPhase.Idle
         }
-        val lastTranscript = s.transcript.byTurn.values.lastOrNull()
+        val last = s.transcript.byTurn.entries.lastOrNull()
+        val lastTranscript = last?.value
+        // The words on screen are the last committed turn's (WordChosen indexes them) unless the user is mid-speech.
+        val shownTurn = if (turn.heard.isNotEmpty() || last == null) null else last.key
         return CascadeUiState(
             turn = TurnUi(
                 phase = phase,
@@ -28,6 +31,7 @@ object UiProjection {
                 pass = if (turn.heard.isNotEmpty() || lastTranscript == null) TranscriptPass.Fast else lastTranscript.pass,
                 offline = !s.connection.online,
                 holdToTalk = s.transcript.holdToTalk,
+                turnId = shownTurn,
             ),
             jev = JevUi(inFlight = turn.jevInFlight > 0, answers = s.jev.answers, latencyMs = s.jev.latencyMs),
             writer = s.writer,
@@ -50,7 +54,7 @@ object UiProjection {
 }
 
 /** The call screen's view of a task (C1 fields plus the CEO ones). */
-fun TaskRecord.toUi(): TaskUi = snapshot().toUi().copy(
+fun TaskRecord.toUi(): TaskUi = snapshot().toUi().let { if (queued && state == TaskState.Running && runs.isEmpty()) it.copy(status = TaskUiStatus.Queued) else it }.copy(
     brief = brief,
     summary = summary,
     send = send,

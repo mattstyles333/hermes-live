@@ -44,7 +44,7 @@ object StoreKeys {
 const val STORE_VERSION: Int = 1
 
 @Serializable
-data class HeldDto(val turnId: String, val text: String = "", val speechEndAt: Long = 0L, val wallMs: Long = 0L)
+data class HeldDto(val turnId: String, val text: String = "", val speechEndAt: Long = 0L, val wallMs: Long = 0L, val carried: Boolean = false)
 
 /**
  * The durable outbox. [held] is every turn not yet carried out: held offline, or committed and
@@ -94,6 +94,8 @@ data class CoreDto(
     val conversation: ConversationDto? = null,
     val memo: List<MemoDto> = emptyList(),
     val offCall: List<OffCallDto> = emptyList(),
+    /** `State.marks`: what slices remember across events (summaries spoken, lines awaiting `Accepted`). */
+    val marks: Map<String, List<String>> = emptyMap(),
 )
 
 /** One task-log entry. [t] is the kind; the other fields depend on it. */
@@ -101,7 +103,17 @@ data class CoreDto(
 data class EventDto(val t: String, val at: Long = 0L, val s: String? = null, val label: String? = null, val done: Boolean? = null)
 
 @Serializable
-data class RunDto(val id: Long, val kind: String = RunKind.Start.how, val pending: Boolean = false)
+data class RunDto(
+    val id: Long,
+    val kind: String = RunKind.Start.how,
+    val pending: Boolean = false,
+    val turnId: String? = null,
+    /** Kept until Hermes accepts the run, so a restart can send it again if it never arrived. */
+    val text: String? = null,
+    val accepted: Boolean = false,
+    /** The session was being created: the prompt had not left. */
+    val opening: Boolean = false,
+)
 
 /** One task (R-DUR-3): enough to answer status, re-bind its session and recover or retry it. */
 @Serializable
@@ -131,6 +143,7 @@ data class TaskDto(
     val send: String = SEND_SENDING,
     val submitAttempts: Int = 0,
     val offline: Boolean = false,
+    val queued: Boolean = false,
 )
 
 private const val SEND_SENDING = "sending"
@@ -166,7 +179,7 @@ object StoreCodec {
         finishedAt = t.finishedAt,
         steps = t.steps,
         pendingUpdates = t.pendingUpdates,
-        runs = t.runs.entries.sortedBy { it.key }.map { (id, run) -> RunDto(id, run.kind.how, run.pending) },
+        runs = t.runs.entries.sortedBy { it.key }.map { (id, run) -> RunDto(id, run.kind.how, run.pending, run.turnId, run.text, run.accepted, run.opening) },
         brief = t.brief,
         summary = t.summary,
         turnId = t.turnId,
@@ -174,6 +187,7 @@ object StoreCodec {
         send = sendWire(t.send),
         submitAttempts = t.submitAttempts,
         offline = t.offline,
+        queued = t.queued,
     )
 
     fun record(d: TaskDto): TaskRecord {
@@ -196,7 +210,9 @@ object StoreCodec {
             steps = d.steps,
             lastEventAt = events.lastOrNull()?.atMs ?: d.startedAt,
             pendingUpdates = d.pendingUpdates,
-            runs = d.runs.associate { r -> r.id to TaskRun(RunKind.entries.firstOrNull { it.how == r.kind } ?: RunKind.Start, r.pending) },
+            runs = d.runs.associate { r ->
+                r.id to TaskRun(RunKind.entries.firstOrNull { it.how == r.kind } ?: RunKind.Start, r.pending, r.turnId, r.text, r.accepted, r.opening)
+            },
             brief = d.brief,
             summary = d.summary,
             turnId = d.turnId,
@@ -208,6 +224,7 @@ object StoreCodec {
             },
             submitAttempts = d.submitAttempts,
             offline = d.offline,
+            queued = d.queued,
         )
     }
 

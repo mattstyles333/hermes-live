@@ -3,6 +3,7 @@ package com.folio.hermes.cascade.registry
 import com.folio.hermes.cascade.CascadeEvent
 import com.folio.hermes.cascade.Effect
 import com.folio.hermes.cascade.Event
+import com.folio.hermes.cascade.ResumeChoice
 import com.folio.hermes.cascade.RunKind
 import com.folio.hermes.cascade.SendState
 import com.folio.hermes.cascade.TaskEvent
@@ -18,6 +19,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -57,7 +59,12 @@ class TaskRegistryTest {
             val t = second.state.tasks["t1"]!!
             assertEquals(TaskState.Done, t.state)
             assertEquals("Four in stock at the Leeds store.", t.result)
-            assertTrue("the recovered result is queued for speech", CascadeEvent.ResultQueued("t1") in second.events)
+            // It waits while the Resume card shows (spec v2 §14 item 7), then is spoken.
+            assertNotNull(second.state.conversation.resume)
+            assertTrue(CascadeEvent.ResultQueued("t1") !in second.events)
+            second.actor.send(Event.ResumeChosen(ResumeChoice.Play))
+            advanceUntilIdle()
+            assertEquals("the recovered result is queued for speech once", 1, second.events.count { it == CascadeEvent.ResultQueued("t1") })
             assertEquals("never submitted again", listOf("check stock of RB2140"), server.prompts)
         }
     }
@@ -76,16 +83,21 @@ class TaskRegistryTest {
         }
     }
 
-    @Test fun aStoredSessionThatNeverGotThePromptIsSentOnceIntoTheSameSession() = runTest {
+    @Test fun aStoredSessionThatNeverGotThePromptIsSentOnceIntoAFreshSession() = runTest {
         val store = MemoryStore()
         val server = FakeServer()
         server.create()
         stored(store, running(SendState.Sending, "s1"))
         rig(store, server).use { r ->
             advanceUntilIdle()
-            assertEquals(listOf("check stock of RB2140"), server.sessions.getValue("s1").prompts)
-            assertEquals(SendState.Accepted, r.state.tasks["t1"]!!.send)
-            assertEquals(1, r.state.tasks["t1"]!!.submitAttempts)
+            // Never prompted: sent again exactly once, into a new session created and stored first.
+            assertEquals(listOf("check stock of RB2140"), server.prompts)
+            assertTrue(server.sessions.getValue("s1").prompts.isEmpty())
+            val t = r.state.tasks["t1"]!!
+            assertEquals("s2", t.storedSessionId)
+            assertEquals(listOf("check stock of RB2140"), server.sessions.getValue("s2").prompts)
+            assertEquals(SendState.Accepted, t.send)
+            assertEquals("not a failed submit", 0, t.submitAttempts)
         }
     }
 
@@ -171,7 +183,12 @@ class TaskRegistryTest {
         }
         rig(store, server).use { r ->
             advanceUntilIdle()
-            assertTrue("spoken at the next start", CascadeEvent.ResultQueued("t1") in r.events)
+            // Item 7 (R-CONV-2): never over the Resume card; spoken after Continue (or Play).
+            assertNotNull(r.state.conversation.resume)
+            assertTrue("not while the Resume card shows", CascadeEvent.ResultQueued("t1") !in r.events)
+            r.actor.send(Event.ResumeChosen(ResumeChoice.Continue))
+            advanceUntilIdle()
+            assertEquals("spoken once after Continue", 1, r.events.count { it == CascadeEvent.ResultQueued("t1") })
             assertEquals("Four in stock.", r.state.tasks["t1"]!!.result)
         }
     }

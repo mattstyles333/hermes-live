@@ -72,6 +72,14 @@ class GatewayHermesPort(
         }
     }
 
+    /** A fresh conversation for [taskId] (never the stored id it had), created now; its stored id. */
+    override suspend fun create(taskId: String, label: String): String? {
+        val conversation = HermesConversation(gateway, config, options(label), null) { stored -> minted.tryEmit(taskId to stored) }
+        conversations[taskId] = conversation
+        conversation.ensureSession()
+        return conversation.storedSessionId
+    }
+
     override fun submit(taskId: String, text: String, voiceContext: String, queued: Boolean, interruptFirst: Boolean): Flow<TurnUpdate> {
         val conversation = conversations[taskId] ?: return emptyFlow()
         return conversation.turn(text, PromptSurface.VoiceLive, voiceContext, interruptFirst = interruptFirst, queued = queued)
@@ -82,16 +90,34 @@ class GatewayHermesPort(
     override suspend fun busyMode(): BusyMode? = gateway.busyMode()
 }
 
-/** [OpenRouterPort] on the C1 [OpenRouter] clients, with Bill's voice from [voice] (TTS cache first). */
-class LiveOpenRouter(private val openRouter: OpenRouter, private val voice: BillVoice) : OpenRouterPort {
+/**
+ * [OpenRouterPort] on the C1 [OpenRouter] clients, with Bill's voice from [voice] (TTS cache first).
+ * A whole writer answer ([write]: agent briefs, offline segmentation, summaries) may use up to
+ * [writeMaxTokens]; the spoken writer stream keeps the short default.
+ */
+class LiveOpenRouter(
+    private val openRouter: OpenRouter,
+    private val voice: BillVoice,
+    private val writeMaxTokens: Int = WRITE_MAX_TOKENS,
+) : OpenRouterPort {
     override suspend fun jev(state: JsonObject, questions: Map<String, JevQuestion>, timeoutMs: Long): OpenRouterResult<Map<String, JevAnswer>> =
         openRouter.jev.decide(state, questions, timeoutMs)
 
     override fun sentences(system: String, prompt: String): Flow<String> = openRouter.writer.sentences(system, prompt)
 
-    override suspend fun write(system: String, prompt: String): OpenRouterResult<String> = openRouter.writer.write(system, prompt)
+    override suspend fun write(system: String, prompt: String): OpenRouterResult<String> = openRouter.writer.write(system, prompt, writeMaxTokens)
 
     override suspend fun clip(text: String): OpenRouterResult<AudioClip> = voice.clip(text)
 
     override fun isCached(text: String): Boolean = voice.isCached(text)
+
+    companion object {
+        /**
+         * Spec v2 §14 item 17a. 200 tokens cut multi-brief JSON short. Worst cases (sized in
+         * `WriterBudgetTest`): 4 briefs of `Goal/Constraints/Done when` lines with label, summary,
+         * fixes and notes stay near 1,500 tokens; offline segmentation of a 24,000-character
+         * chunk of short sentences answers about 3,600 tokens of group numbers. A cap, not a charge.
+         */
+        const val WRITE_MAX_TOKENS = 4_096
+    }
 }

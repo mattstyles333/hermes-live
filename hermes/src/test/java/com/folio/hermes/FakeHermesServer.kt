@@ -143,6 +143,92 @@ class FakeHermesServer : Closeable {
     }
 }
 
+/**
+ * Stateful sessions on a [FakeHermesServer], shaped like the deployed server
+ * (`tui_gateway/methods_session.py`, `methods_prompt.py`; read 2026-10-13):
+ * - `session.create` stores nothing: the session is live but has no row until its first prompt;
+ * - `prompt.submit` stores the row and the user message before the turn starts (`streaming`), or
+ *   holds the text as `queued` while a turn runs;
+ * - `session.resume` answers `{session_id, session_key, message_count, messages[{role,text}], running,
+ *   status, inflight?, queued?}`; `omit_messages: true` leaves `messages` empty; an id with no row
+ *   and no live session is 4007 "session not found".
+ * [complete] ends the running turn: the assistant row is stored, then `message.complete` goes out.
+ */
+class FakeSessions(private val fake: FakeHermesServer) {
+    class Session(val runtime: String, val stored: String) {
+        val messages = CopyOnWriteArrayList<Pair<String, String>>()
+        @Volatile var running = false
+        @Volatile var persisted = false
+        @Volatile var queued: String? = null
+        @Volatile var live = true
+    }
+
+    val byStored = ConcurrentHashMap<String, Session>()
+    private val counter = AtomicInteger()
+    @Volatile var socket: FakeHermesServer.ServerSide? = null
+
+    /** Resumes seen, with their `omit_messages` flag. */
+    val resumes = CopyOnWriteArrayList<Pair<String, Boolean>>()
+
+    init {
+        fake.responders["session.create"] = { s, id, _ ->
+            socket = s
+            val n = counter.incrementAndGet()
+            val session = Session("rt$n", "stored-$n")
+            byStored[session.stored] = session
+            s.reply(id, """{"session_id":"${session.runtime}","stored_session_id":"${session.stored}","info":{}}""")
+        }
+        fake.responders["prompt.submit"] = { s, id, p ->
+            socket = s
+            val session = byStored.values.firstOrNull { it.runtime == p.string("session_id") }
+            val text = p.string("text").orEmpty()
+            when {
+                session == null -> s.error(id, 4001, "session not found")
+                session.running -> {
+                    session.queued = text
+                    s.reply(id, """{"status":"queued"}""")
+                }
+                else -> {
+                    session.persisted = true
+                    session.messages += "user" to text
+                    session.running = true
+                    s.reply(id, """{"status":"streaming"}""")
+                    s.event("message.start", session.runtime)
+                }
+            }
+        }
+        fake.responders["session.resume"] = { s, id, p ->
+            socket = s
+            val stored = p.string("session_id").orEmpty()
+            val omit = p.bool("omit_messages") == true
+            resumes += stored to omit
+            val session = byStored[stored]?.takeIf { it.persisted || it.live }
+            if (session == null) {
+                s.error(id, 4007, "session not found")
+            } else {
+                val messages = if (omit) "[]" else session.messages.joinToString(",", "[", "]") { (role, text) -> """{"role":"$role","text":"$text"}""" }
+                val inflight = if (session.running) session.messages.lastOrNull { it.first == "user" }?.let { ""","inflight":{"user":"${it.second}","assistant":"","streaming":true}""" }.orEmpty() else ""
+                val queued = session.queued?.let { ""","queued":{"user":"$it"}""" }.orEmpty()
+                s.reply(
+                    id,
+                    """{"session_id":"${session.runtime}","resumed":"$stored","session_key":"$stored","message_count":${session.messages.size},""" +
+                        """"messages":$messages,"running":${session.running},"status":"${if (session.running) "streaming" else "idle"}"$inflight$queued}""",
+                )
+            }
+        }
+    }
+
+    fun session(stored: String): Session = byStored.getValue(stored)
+
+    /** The running turn of [stored] ends with [text] (stored, then announced). */
+    fun complete(stored: String, text: String) {
+        val session = session(stored)
+        session.messages += "assistant" to text
+        session.running = false
+        socket!!.event("message.complete", session.runtime, """{"text":"$text","status":"complete"}""")
+    }
+}
+
 /** Token source for gateway tests. */
 class FakeTokens(var token: String = "at-1", var next: String = "at-2", var signedIn: Boolean = true) : AccessTokenProvider {
     val calls = AtomicInteger()

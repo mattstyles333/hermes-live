@@ -22,6 +22,11 @@ data class CascadeSettings(
     val holdRecheckMs: Long = 2_500L,
     /** Below this, `turn` means keep listening and `action` a clarifying question. R-RT-3. */
     val confidenceFloor: Double = 0.55,
+    /**
+     * `turn = done` is acted on only at or above this (spec v2 §14 item 16: measured over 176 runs,
+     * 0 false "done" at 0.60 against 1 at 0.55; 4.6% of true "done" wait for the 2.5 s re-ask).
+     */
+    val turnDoneFloor: Double = 0.60,
     /** Below this, `task` asks which one (unless there is exactly one candidate). R-RT-3. */
     val taskFloor: Double = 0.5,
     /** `ignore` is accepted at or above this. R-RT-3. */

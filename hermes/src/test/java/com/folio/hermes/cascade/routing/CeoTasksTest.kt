@@ -89,8 +89,10 @@ class CeoTasksTest {
         h.drain()
         assertEquals(listOf("Doing job A.", "Doing job B.", "Doing job C.", "Doing job D."), h.said().filter { it.startsWith("Doing job") })
         assertEquals(Confirmations.QUEUED, h.slotsSaid().last())
-        // A slot frees when a task's turn completes: the oldest queued one starts.
+        // A slot frees when a task's run ends (the hook after TaskRunEnded): the oldest queued one starts.
         h.on(Event.TaskUpdated("t2", h.submits()[1].runId, TurnUpdate.Completed("done", TurnStatus.Complete, null)))
+        assertEquals("still four until the run ends", 4, h.submits().size)
+        h.on(Event.TaskRunEnded("t2", h.submits()[1].runId))
         assertEquals("t5", h.submits().last().taskId)
         assertEquals(5, h.submits().size)
         h.accept(h.submits().last())
@@ -206,8 +208,10 @@ class CeoTasksTest {
         assertEquals("stock check", h.s.tasks["t2"]!!.label)
         // The public entry point for the registry's tap does the same.
         val tx = com.folio.hermes.cascade.Tx(h.s, h.env)
-        assertNotNull(CeoTasks.retry(tx, "t1"))
-        assertEquals(first.text, tx.effects.filterIsInstance<Effect.SubmitTask>().single().text)
+        val again = CeoTasks.retry(tx, "t1")
+        assertNotNull(again)
+        assertEquals(first.text, tx.s.tasks[again!!]!!.runs.values.single().text)
+        assertTrue(tx.effects.any { it is Effect.OpenTaskSession && it.taskId == again })
     }
 
     @Test fun resultBriefingIsTwoSentencesAndReadItAllReadsEverything() {
@@ -265,10 +269,14 @@ class CeoTasksTest {
 
 /** R-CTX-2: the conversation summary is asked for in the background and never holds a turn up. */
 class BackgroundSummariesTest {
-    @Test fun offByDefaultAndOffTheCriticalPathWhenOn() {
-        val off = CeoHarness()
-        repeat(6) { i -> off.turn("hello $i", i * 10_000L, "action" to answer("reply"), "line" to answer("social.thanks"), "enough" to answer("line_only")) }
-        assertTrue(off.effects.none { it is Effect.Write })
+    @Test fun offAloneOnInCeoRoutingAndOffTheCriticalPath() {
+        assertFalse(BackgroundSummaries().enabled)
+        val on = CeoHarness()
+        repeat(6) { i -> on.turn("hello $i", i * 10_000L, "action" to answer("reply"), "line" to answer("social.thanks"), "enough" to answer("line_only")) }
+        assertEquals("CeoRouting turns R-CTX-2 on", 1, on.effects.count { it is Effect.Write })
+        // The answer lands through the reducer (no action waits for it) and becomes the summary.
+        on.write("They said hello six times.")
+        assertEquals("They said hello six times.", on.s.conversation.summary)
 
         val summaries = BackgroundSummaries(enabled = true)
         val bank = PhraseBank.load()

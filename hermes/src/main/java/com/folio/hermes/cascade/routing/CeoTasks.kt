@@ -20,6 +20,9 @@ object CeoTasks {
         /** The task had not started: its brief was amended. */
         data object Amended : Updated
 
+        /** This turn's update already went out (a resend): nothing sent again. */
+        data object AlreadySent : Updated
+
         /** The task had failed: it was retried as new task [taskId] (R-TASK-7). */
         data class Retried(val taskId: String) : Updated
         data object NotFound : Updated
@@ -31,8 +34,14 @@ object CeoTasks {
      * the same brief, a finished one takes it as a follow-up, a running one gets it queued or
      * redirected ([kind]: `Queue`, `Redirect` or `InterruptFirst`).
      */
-    fun update(tx: Tx, id: String, text: String, kind: RunKind): Updated {
+    fun update(tx: Tx, id: String, text: String, kind: RunKind, turnId: String? = null): Updated {
         val t = tx.s.tasks[id] ?: return Updated.NotFound
+        if (turnId != null && (tx.updateSent(turnId, id) || tx.marked(turnId, "$AMENDED$id"))) return Updated.AlreadySent
+        if (TaskQueue.isQueued(t) && turnId != null) {
+            if (!TaskQueue.amend(tx, id, text)) return Updated.NotFound
+            tx.mark(turnId, "$AMENDED$id")
+            return Updated.Amended
+        }
         if (TaskQueue.isQueued(t)) return if (TaskQueue.amend(tx, id, text)) Updated.Amended else Updated.NotFound
         if (t.state == TaskState.Failed) return retry(tx, id, text)?.let { Updated.Retried(it) } ?: Updated.NotFound
         if (t.state != TaskState.Running) {
@@ -40,7 +49,7 @@ object CeoTasks {
             tx.tasks(tx.s.tasks.reopen(id, MAX_CAP))
             if (tx.s.tasks[id]?.state != TaskState.Running) return Updated.AtCap
         }
-        val runId = tx.tasks(tx.s.tasks.launch(id, text, tx.voiceContext(), kind, tx.s.wallMs)) ?: return Updated.NotFound
+        val runId = tx.launchUpdate(id, text, kind, turnId) ?: return Updated.NotFound
         tx.emit(CascadeEvent.UpdateSent(id, if (kind == RunKind.Queue) UpdateMode.Queue else UpdateMode.Redirect))
         tx.report("cascade.task", mapOf("event" to "update", "running" to tx.s.tasks.runningCount, "how" to kind.how))
         return Updated.Sent(runId)
@@ -95,7 +104,7 @@ object CeoTasks {
         when (val r = update(tx, id, text, kind)) {
             is Updated.Sent -> Confirmations.expectAck(tx, id, r.runId, slot)
             Updated.Amended -> tx.say(slot, SpeechKind.Reply)
-            is Updated.Retried -> Unit // its summary follows Accepted
+            is Updated.Retried, Updated.AlreadySent -> Unit // its summary follows Accepted
             Updated.AtCap -> tx.say(AppLines.LIMIT_FULL, SpeechKind.Reply)
             Updated.NotFound -> Unit
         }
@@ -103,4 +112,6 @@ object CeoTasks {
 
     /** Above every user cap: reopening is limited by [TaskQueue.busy] instead (queued tasks hold no slot). */
     private const val MAX_CAP = 6
+
+    private const val AMENDED = "amended:"
 }

@@ -16,6 +16,7 @@ import com.folio.hermes.cascade.Timer
 import com.folio.hermes.cascade.TurnRules
 import com.folio.hermes.cascade.answer
 import com.folio.hermes.cascade.conversation.ConversationPolicy
+import com.folio.hermes.cascade.registry.TaskRegistry
 import com.folio.hermes.openrouter.JevAnswer
 import com.folio.hermes.openrouter.OpenRouterResult
 import java.time.ZoneOffset
@@ -28,9 +29,10 @@ class CeoHarness(
     settings: CascadeSettings = CascadeSettings(),
     conversation: ConversationPolicy = ConversationPolicy.None,
     val memo: MemoRouting = MemoRouting(ZoneOffset.UTC),
+    registry: TaskRegistry = TaskRegistry.None,
 ) {
     val bank: PhraseBank = PhraseBank.load()
-    val env: CascadeEnv = CeoRouting.env(bank, memo, conversation = conversation)
+    val env: CascadeEnv = CeoRouting.env(bank, memo, registry = registry, conversation = conversation)
     private val reducer = CascadeReducer(env)
     val epoch = 1_760_000_000_000L
     var now = 0L
@@ -40,12 +42,17 @@ class CeoHarness(
     /** Everything Bill has said (stock lines and written sentences), in play order. */
     val spoken = mutableListOf<Piece>()
 
+    /** Session-first opens are answered at once (as the gateway would), so the submit follows in the same call. */
+    var openSessions = true
+
     fun at(ms: Long, event: Event): List<Effect> {
         now = maxOf(now, ms)
         val (next, out) = reducer.reduce(s.copy(nowMs = now, wallMs = epoch + now), event)
         s = next
         effects += out
-        return out
+        if (!openSessions) return out
+        val opened = out.filterIsInstance<Effect.OpenTaskSession>().flatMap { o -> at(ms, Event.TaskSessionOpened(o.taskId, o.runId, "stored-${o.taskId}")) }
+        return out + opened
     }
 
     fun on(event: Event): List<Effect> = at(now, event)

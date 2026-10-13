@@ -88,8 +88,24 @@ enum class CancelResult { Cancelled, AlreadyFinished, NotFound }
 /** How text reaches a task's session. */
 enum class RunKind(val how: String) { Start("start"), Queue("queue"), Redirect("redirect"), InterruptFirst("interrupt_first") }
 
-/** One submitted turn: its [kind], and whether it still counts as a pending update. */
-data class TaskRun(val kind: RunKind, val pending: Boolean)
+/**
+ * One submitted turn: its [kind], and whether it still counts as a pending update.
+ *
+ * Durability (R-DUR-1/2): [turnId] is the user turn it carries out (a resend of that turn never
+ * submits it again), [text] is what goes to Hermes, kept until the run is [accepted] so a
+ * restart can send it again if Hermes never got it. [opening]: the task's session is being
+ * created and the prompt has not left yet (session first, then persist, then submit). The
+ * [voiceContext] rides along in memory only.
+ */
+data class TaskRun(
+    val kind: RunKind,
+    val pending: Boolean,
+    val turnId: String? = null,
+    val text: String? = null,
+    val accepted: Boolean = false,
+    val opening: Boolean = false,
+    val voiceContext: String = "",
+)
 
 /** Whether Hermes has the task's text (CEO §1: the card shows "sending" until `Accepted`; R-DUR-2/4). */
 enum class SendState { Sending, Accepted, NotSent }
@@ -130,6 +146,10 @@ data class TaskRecord(
     val send: SendState = SendState.Sending,
     val submitAttempts: Int = 0,
     val offline: Boolean = false,
+    /** Waiting on the phone for a free slot: nothing was sent yet (R-TASK-1; the card reads Queued). */
+    val queued: Boolean = false,
+    /** Set by crash recovery only (never stored): its prompt never left, so start it again once restored. */
+    val relaunch: Boolean = false,
 ) {
     fun log(event: TaskEvent): TaskRecord = copy(events = (events + event).takeLast(TaskTable.MAX_EVENTS), lastEventAt = event.atMs)
 
@@ -220,29 +240,73 @@ data class TaskTable(
         return TaskStep(put(t.copy(state = TaskState.Running, cancelled = false, finishedAt = null)), null)
     }
 
-    /** Submit [text] to task [id] as [kind] (after [reopen]). */
-    fun launch(id: String, text: String, voiceContext: String, kind: RunKind, now: Long): TaskStep<Long?> {
+    /**
+     * Submit [text] to task [id] as [kind] (after [reopen]), for user turn [turnId] if any.
+     *
+     * A task with no stored session opens one first ([Effect.OpenTaskSession]); the submit
+     * follows [sessionOpened], after the session id is stored, so a restart can always ask
+     * Hermes whether the prompt arrived (exact idempotency, R-DUR-2).
+     */
+    fun launch(id: String, text: String, voiceContext: String, kind: RunKind, now: Long, turnId: String? = null): TaskStep<Long?> {
         val t = this[id] ?: return TaskStep(this, null)
         val pending = kind == RunKind.Queue && t.active > 0
         val runId = runCounter + 1
+        // No session yet: a start opens one; anything sent meanwhile waits for it (same session, in order).
+        val opening = t.storedSessionId == null && (kind == RunKind.Start || t.runs.values.any { it.opening })
+        val run = TaskRun(kind, pending, turnId = turnId, text = text, opening = opening, voiceContext = voiceContext)
         val record = t.copy(
             pendingUpdates = t.pendingUpdates + if (pending) 1 else 0,
             active = t.active + 1,
-            runs = t.runs + (runId to TaskRun(kind, pending)),
+            runs = t.runs + (runId to run),
+            queued = false,
         ).log(TaskEvent.Submitted(now, kind.how))
-        val effect = Effect.SubmitTask(
-            taskId = id,
-            runId = runId,
-            label = t.label,
-            storedSessionId = t.storedSessionId,
-            text = text,
-            voiceContext = voiceContext,
-            queued = kind == RunKind.Queue,
-            interruptFirst = kind == RunKind.InterruptFirst,
-            stopOnRedirect = kind == RunKind.Redirect,
-        )
-        return TaskStep(copy(tasks = tasks.map { if (it.id == id) record else it }, runCounter = runId), runId, effects = listOf(effect))
+        val effects = when {
+            !opening -> listOf(submit(record, runId, run))
+            kind == RunKind.Start -> listOf(Effect.OpenTaskSession(id, runId, t.label))
+            else -> emptyList()
+        }
+        return TaskStep(copy(tasks = tasks.map { if (it.id == id) record else it }, runCounter = runId), runId, effects = effects)
     }
+
+    /**
+     * Task [id]'s session for run [runId] exists ([storedSessionId], or null when the port cannot
+     * create one ahead and the submit creates it). The session id is stored by this step, so the
+     * submit goes out after it is durable. A run cancelled meanwhile is dropped unsent.
+     */
+    fun sessionOpened(id: String, runId: Long, storedSessionId: String?): TaskStep<Unit> {
+        val t = this[id] ?: return TaskStep(this, Unit)
+        val run = t.runs[runId]?.takeIf { it.opening } ?: return TaskStep(this, Unit)
+        if (t.cancelled || t.state != TaskState.Running) return forget(id, runId)
+        // This run, then any update that waited for the session, in order.
+        val waiting = t.runs.filter { (k, r) -> r.opening && (k == runId || r.kind != RunKind.Start) }.toSortedMap()
+        val ready = waiting.mapValues { (_, r) -> r.copy(opening = false) }
+        val record = t.copy(storedSessionId = storedSessionId ?: t.storedSessionId, runs = t.runs + ready)
+        return TaskStep(put(record), Unit, effects = ready.map { (k, r) -> submit(record, k, r) })
+    }
+
+    /** Drop run [runId] of task [id] as if it never went out (nothing reached Hermes): no ending, no result. */
+    fun forget(id: String, runId: Long): TaskStep<Unit> {
+        val t = this[id] ?: return TaskStep(this, Unit)
+        val run = t.runs[runId] ?: return TaskStep(this, Unit)
+        val record = t.copy(
+            runs = t.runs - runId,
+            active = (t.active - 1).coerceAtLeast(0),
+            pendingUpdates = if (run.pending) (t.pendingUpdates - 1).coerceAtLeast(0) else t.pendingUpdates,
+        )
+        return TaskStep(put(record), Unit)
+    }
+
+    private fun submit(t: TaskRecord, runId: Long, run: TaskRun) = Effect.SubmitTask(
+        taskId = t.id,
+        runId = runId,
+        label = t.label,
+        storedSessionId = t.storedSessionId,
+        text = run.text.orEmpty(),
+        voiceContext = run.voiceContext,
+        queued = run.kind == RunKind.Queue,
+        interruptFirst = run.kind == RunKind.InterruptFirst,
+        stopOnRedirect = run.kind == RunKind.Redirect,
+    )
 
     /** Stop task [id] with `session.interrupt`. */
     fun cancel(id: String, now: Long): TaskStep<CancelResult> {
@@ -285,6 +349,8 @@ data class TaskTable(
         }
         when (update) {
             is TurnUpdate.Accepted -> {
+                // Hermes has this run's text: it never needs sending again.
+                run = run.copy(accepted = true, text = null)
                 t = t.copy(
                     accepted = true,
                     queuedAtServer = update.status == SubmitStatus.Queued && run.kind == RunKind.Start,

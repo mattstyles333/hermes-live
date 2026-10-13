@@ -74,6 +74,42 @@ object DurableTaskRegistry : TaskRegistry {
         }
     }
 
+    /**
+     * Hermes never got run [Event.RunNotReceived.runId] (R-DUR-2): send it again, once. A start
+     * run gets a fresh session (the stored one was never prompted), created and stored before the
+     * prompt; an update goes to the task's session again with the same turn id.
+     */
+    override fun notReceived(tx: Tx, event: Event.RunNotReceived) {
+        val t = tx.s.tasks[event.taskId] ?: return
+        val run = t.runs[event.runId] ?: return
+        tx.tasks(tx.s.tasks.forget(t.id, event.runId))
+        if (t.cancelled || t.state != TaskState.Running) return
+        val how = if (run.kind == RunKind.Start) {
+            val fresh = tx.s.tasks[t.id] ?: return
+            put(tx, fresh.copy(storedSessionId = null, send = SendState.Sending, accepted = false))
+            tx.tasks(tx.s.tasks.launch(t.id, run.text ?: t.brief ?: t.label, tx.voiceContext(), RunKind.Start, tx.s.wallMs, run.turnId ?: t.turnId))
+            "resend_start"
+        } else {
+            val text = run.text ?: return
+            tx.tasks(tx.s.tasks.launch(t.id, text, tx.voiceContext(), run.kind, tx.s.wallMs, run.turnId))
+            "resend_update"
+        }
+        tx.report("cascade.task", mapOf("event" to "recovered", "running" to tx.s.tasks.runningCount, "how" to how))
+    }
+
+    /** Crash recovery left tasks whose prompt never left (session-first): start them again, as the same task. */
+    override fun restored(tx: Tx) {
+        tx.s.tasks.tasks.filter { it.relaunch }.forEach { t ->
+            val text = t.runs.values.firstOrNull { it.kind == RunKind.Start }?.text ?: t.brief ?: t.label
+            put(tx, t.copy(relaunch = false, runs = emptyMap(), active = 0, pendingUpdates = 0, storedSessionId = null, send = SendState.Sending, accepted = false))
+            tx.tasks(tx.s.tasks.launch(t.id, text, tx.voiceContext(), RunKind.Start, tx.s.wallMs, t.turnId))
+            // Updates that were waiting for that session wait again, in order.
+            t.runs.toSortedMap().values.filter { it.kind != RunKind.Start && it.text != null }
+                .forEach { r -> tx.tasks(tx.s.tasks.launch(t.id, r.text!!, tx.voiceContext(), r.kind, tx.s.wallMs, r.turnId)) }
+            tx.report("cascade.task", mapOf("event" to "recovered", "running" to tx.s.tasks.runningCount, "how" to "relaunch"))
+        }
+    }
+
     /** "Not sent: tap to retry": the same task, submitted again (attempts start over). */
     private fun resend(tx: Tx, t: TaskRecord) {
         if (tx.tasks(tx.s.tasks.reopen(t.id, tx.s.settings.taskCap)) is UpdateResult.AtCap) {

@@ -110,9 +110,15 @@ interface AudioOut {
  * - [busyMode] reads the server's `busy_input_mode` (`config.get`, never set).
  * - [sessions] emits (task id, stored session id) whenever Hermes mints one (persist it).
  * - [connected] is the gateway's state.
+ * - [create] makes task [taskId] a new session now, with no prompt (`session.create`), and returns
+ *   its stored id, which the actor stores before the first submit (R-DUR-2: a restart can then
+ *   ask Hermes whether the prompt arrived). It replaces any session the task had. Null: this port
+ *   cannot, and the first [submit] creates the session as before (additive; default null).
  */
 interface HermesPort {
     fun open(taskId: String, label: String, storedSessionId: String?)
+
+    suspend fun create(taskId: String, label: String): String? = null
 
     fun submit(taskId: String, text: String, voiceContext: String, queued: Boolean, interruptFirst: Boolean): Flow<TurnUpdate>
 

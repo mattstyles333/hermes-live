@@ -4,6 +4,7 @@ import com.folio.hermes.cascade.HeldTurn
 import com.folio.hermes.cascade.ResumeCandidate
 import com.folio.hermes.cascade.ResumeChoice
 import com.folio.hermes.cascade.State
+import com.folio.hermes.cascade.StoredConversation
 import com.folio.hermes.cascade.Tx
 import com.folio.hermes.cascade.ports.Store
 
@@ -39,6 +40,12 @@ interface ConversationPolicy {
 
     /** ▶ on a finished task card: its spoken briefing, mic off (R-CONV-2). */
     fun play(tx: Tx, taskId: String) = Unit
+
+    /** Read past conversation [conversationId] from the [Store] (the actor calls this; not in `reduce`). */
+    fun load(store: Store, conversationId: String): StoredConversation? = null
+
+    /** A past conversation was opened from the history list (R-CONV-1): make [loaded] the current one. Default: nothing. */
+    fun open(tx: Tx, loaded: StoredConversation?) = Unit
 
     companion object {
         val None: ConversationPolicy = object : ConversationPolicy {}

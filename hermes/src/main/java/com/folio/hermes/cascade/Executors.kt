@@ -51,6 +51,25 @@ class TaskRunner(private val scope: CoroutineScope, private val port: HermesPort
         synchronized(runs) { runs.getOrPut(e.taskId) { mutableListOf() } += job }
     }
 
+    /** [Effect.OpenTaskSession]: create the session; [Event.TaskSessionOpened], or the run fails like a submit. */
+    fun open(e: Effect.OpenTaskSession) {
+        val job = scope.launch {
+            val stored = try {
+                port.create(e.taskId, e.label)
+            } catch (c: CancellationException) {
+                // Cancelled before the prompt: the run ends unsent.
+                post(Event.TaskRunEnded(e.taskId, e.runId))
+                throw c
+            } catch (x: Exception) {
+                post(Event.TaskUpdated(e.taskId, e.runId, TurnUpdate.Failed(x.javaClass.simpleName)))
+                post(Event.TaskRunEnded(e.taskId, e.runId))
+                return@launch
+            }
+            post(Event.TaskSessionOpened(e.taskId, e.runId, stored))
+        }
+        synchronized(runs) { runs.getOrPut(e.taskId) { mutableListOf() } += job }
+    }
+
     fun interrupt(taskId: String) {
         scope.launch {
             val ok = try {

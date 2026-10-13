@@ -77,7 +77,7 @@ class CascadeUiTest {
         val r = Run(CascadeReducer(CascadeEnv(bank)))
         val start = r.s.tasks.start("Check RB2140 stock.", "stock check", "", 4, 0)
         r.s = r.s.copy(tasks = start.table)
-        val runId = (start.effects.single() as Effect.SubmitTask).runId
+        val runId = (start.effects.single() as Effect.OpenTaskSession).runId
         assertEquals(TaskUiStatus.Starting, r.ui.tasks.single().status)
         assertEquals(SendState.Sending, r.ui.tasks.single().send)
         assertEquals("Check RB2140 stock.", r.ui.tasks.single().brief)

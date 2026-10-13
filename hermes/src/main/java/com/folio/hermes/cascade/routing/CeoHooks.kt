@@ -6,7 +6,10 @@ import com.folio.hermes.cascade.AppLines
 import com.folio.hermes.cascade.CascadeEvent
 import com.folio.hermes.cascade.Decision
 import com.folio.hermes.cascade.DecisionRecord
+import com.folio.hermes.cascade.Effect
 import com.folio.hermes.cascade.Event
+import com.folio.hermes.cascade.CascadeSettings
+import com.folio.hermes.cascade.JevRequest
 import com.folio.hermes.cascade.PhraseBank
 import com.folio.hermes.cascade.Route
 import com.folio.hermes.cascade.RunKind
@@ -17,10 +20,12 @@ import com.folio.hermes.cascade.TaskState
 import com.folio.hermes.cascade.TaskTap
 import com.folio.hermes.cascade.Transcript
 import com.folio.hermes.cascade.TranscriptPass
+import com.folio.hermes.cascade.TurnContext
 import com.folio.hermes.cascade.TurnEvent
 import com.folio.hermes.cascade.Tx
 import com.folio.hermes.cascade.WriterJob
 import com.folio.hermes.cascade.WriterOwner
+import com.folio.hermes.cascade.writer.BriefTemplate
 import com.folio.hermes.cascade.writer.CeoPrompts
 import com.folio.hermes.cascade.writer.Repair
 import com.folio.hermes.cascade.writer.WriterPrompts
@@ -37,6 +42,18 @@ import com.folio.hermes.openrouter.OpenRouterResult
 class CeoHooks(private val memo: MemoRouting, private val summaries: BackgroundSummaries = BackgroundSummaries()) : TurnHooks {
     /** R-RT-8: offline, the turn commits on `pause_ms + 500` with no Jev call (then memo mode holds it). */
     override fun useJev(state: State): Boolean = state.connection.online
+
+    /**
+     * R-CTX-1/2, R-STT-4: the probe's request plus the uncertain words heard since the last
+     * commit (with alternatives) and the rolling conversation summary. The reducer then fits it
+     * to the cap (`JevStateBudget`: the summary goes first, then `recent`).
+     */
+    override fun ask(ctx: TurnContext, bank: PhraseBank, settings: CascadeSettings, state: State): JevRequest {
+        val below = settings.uncertainBelow
+        val uncertain = state.transcript.words.filter { it.uncertain || (it.confidence != null && it.confidence < below) }
+        val extras = JevExtras(uncertain = uncertain, conversationSummary = state.conversation.summary.takeIf { it.isNotBlank() })
+        return JevRequest(CascadeBrain.state(ctx, extras), CascadeBrain.questions(ctx, bank, settings.backchannel), CascadeBrain.key(ctx.heard, ctx.pending))
+    }
 
     override fun decide(state: State, answers: Map<String, JevAnswer>, bank: PhraseBank): Decision = CeoRouter.decide(state, answers, bank)
 
@@ -71,8 +88,18 @@ class CeoHooks(private val memo: MemoRouting, private val summaries: BackgroundS
         return KeyDoubt.absorb(tx, withTranscript) ?: withTranscript
     }
 
-    /** R-CTX-2: a whole-writer answer no action waited for (needs the hub to route it here). True if it was ours. */
-    fun backgroundWrote(tx: Tx, seq: Long, result: OpenRouterResult<String>): Boolean = summaries.wrote(tx, seq, result)
+    /** R-CTX-2: a whole-writer answer no action waited for (the reducer routes it here). True if it was ours. */
+    override fun backgroundWrote(tx: Tx, seq: Long, result: OpenRouterResult<String>): Boolean = summaries.wrote(tx, seq, result)
+
+    /** A run ended: its slot may be free for a task queued on the phone (R-TASK-1). */
+    override fun taskRunEnded(tx: Tx, event: Event.TaskRunEnded) {
+        TaskQueue.pump(tx)
+    }
+
+    /** The stored state is back (call start or off-call restore): queued tasks start while slots are free. */
+    override fun restored(tx: Tx) {
+        TaskQueue.pump(tx)
+    }
 
     /** The accurate pass for a turn (R-STT-2, S-C): its transcript replaces the fast one. */
     override fun accurate(tx: Tx, event: Event.AccurateFinal) {
@@ -97,24 +124,33 @@ class CeoHooks(private val memo: MemoRouting, private val summaries: BackgroundS
     }
 
     /**
-     * The user picked [Event.WordChosen.choice] for an uncertain word on screen: the transcript is
-     * corrected, and each task the turn started hears the correction (queued), or has its brief
-     * amended if it has not started.
+     * The user picked [Event.WordChosen.choice] for uncertain word [Event.WordChosen.index] of turn
+     * [Event.WordChosen.turnId] on screen. The index is into `TurnUi.words`, which is that turn's
+     * transcript words as shown. The transcript is corrected; the turn's task (the one whose brief
+     * has the misheard word, else each task the turn started) hears the correction as a queued
+     * `update_task` (or has its brief amended if it has not started);
+     * and the app learns the word ([Effect.LearnWord] → the vocabulary, R-STT-7).
      */
     override fun wordChosen(tx: Tx, event: Event.WordChosen) {
         val t = tx.s.transcript.byTurn[event.turnId] ?: return
-        val words = Repair.aligned(t)
+        val words = t.words.ifEmpty { Repair.aligned(t) }
         val old = words.getOrNull(event.index) ?: return
-        if (old.text == event.choice) return
+        if (old.text == event.choice || event.choice.isBlank()) return
         val fixed = words.mapIndexed { i, w -> if (i == event.index) w.copy(text = event.choice, uncertain = false, alternatives = listOf(w.text) + w.alternatives - event.choice) else w }
         keep(tx, event.turnId, t.copy(text = fixed.joinToString(" ") { it.text }, words = fixed))
+        tx.effects += Effect.LearnWord(old.text, event.choice)
         val note = "Correction from the user: \"${old.text}\" should be \"${event.choice}\"."
-        tx.s.tasks.tasks.filter { it.turnId == event.turnId && (it.state == TaskState.Running || TaskQueue.isQueued(it)) }.forEach { task ->
+        // The turn's task: one whose brief has the misheard word (a split turn), else every task the turn started.
+        val open = tx.s.tasks.tasks.filter { it.turnId == event.turnId && (it.state == TaskState.Running || TaskQueue.isQueued(it)) }
+        // Only the writer's job lines count: every brief ends with the whole dictation (the transcript block).
+        val named = open.filter { t -> t.brief?.substringBefore(BriefTemplate.REPORT_BACK)?.contains(old.text, ignoreCase = true) == true }
+        named.ifEmpty { open }.forEach { task ->
             when (val r = CeoTasks.update(tx, task.id, note, RunKind.Queue)) {
                 is CeoTasks.Updated.Sent -> Confirmations.expectAck(tx, task.id, r.runId, "update.queued")
                 else -> Unit
             }
         }
+        tx.report("cascade.word_chosen", mapOf("tasks" to tx.s.tasks.tasks.count { it.turnId == event.turnId }))
     }
 
     /** The fast-pass words for [action]'s text (the last words heard), as its transcript. */

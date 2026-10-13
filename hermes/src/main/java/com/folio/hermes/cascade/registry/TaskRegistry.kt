@@ -30,6 +30,17 @@ interface TaskRegistry {
 
     fun retry(tx: Tx, taskId: String) = Unit
 
+    /**
+     * Recovery found that Hermes never got run [Event.RunNotReceived.runId] (R-DUR-2): send it
+     * again, once. Default: the run just ends (no registry, nothing is recovered).
+     */
+    fun notReceived(tx: Tx, event: Event.RunNotReceived) {
+        tx.tasks(tx.s.tasks.forget(event.taskId, event.runId))
+    }
+
+    /** The stored state was read back for the first time (a call start or the off-call restore): settle what crash recovery left. */
+    fun restored(tx: Tx) = Unit
+
     companion object {
         val None: TaskRegistry = object : TaskRegistry {
             override fun taskForTurn(state: State, turnId: String): String? =

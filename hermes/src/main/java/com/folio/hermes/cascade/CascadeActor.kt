@@ -120,16 +120,31 @@ class CascadeActor(
      */
     fun start() {
         post(Event.Start())
-        if (hermesCollectors == null) {
-            hermesCollectors = actorScope.launch {
-                launch { hermes.sessions.collect { (task, stored) -> post(Event.TaskSessionBound(task, stored)) } }
-                launch { hermes.connected.collect { post(Event.HermesConnection(it)) } }
-            }
-        }
+        listenToHermes()
         collectors?.cancel()
         collectors = actorScope.launch {
             net?.let { n -> launch { n.online.collect { post(Event.Network(it)) } } }
             stt?.let { st -> launch { st.events.collect { post(it.toEvent()) } } }
+        }
+    }
+
+    /**
+     * Read the stored state back with no call (R-CONV-3): the off-call service calls this after
+     * process death so unfinished tasks are recovered (with the one `TaskRecovery` run) and their
+     * results recorded and notified. Nothing is spoken; the mic stays off. Idempotent, and a later
+     * [start] continues from the same state.
+     */
+    fun restore() {
+        post(Event.Restore())
+        listenToHermes()
+    }
+
+    @Synchronized
+    private fun listenToHermes() {
+        if (hermesCollectors != null) return
+        hermesCollectors = actorScope.launch {
+            launch { hermes.sessions.collect { (task, stored) -> post(Event.TaskSessionBound(task, stored)) } }
+            launch { hermes.connected.collect { post(Event.HermesConnection(it)) } }
         }
     }
 
@@ -158,6 +173,15 @@ class CascadeActor(
     /** Any other input (taps, resume choice, hold-to-talk). */
     fun send(event: Event) = post(event)
 
+    /**
+     * Open past conversation [conversationId] from the history list (`ConversationHistory.list`).
+     * The stored state is read back first if no call or restore has yet (an off-call restore).
+     */
+    fun openConversation(conversationId: String) {
+        restore()
+        post(Event.OpenConversation(conversationId))
+    }
+
     private fun post(event: Event) {
         channel.trySend(event)
     }
@@ -166,7 +190,12 @@ class CascadeActor(
 
     private fun step(input: Event) {
         val before = _state.value.copy(nowMs = clock.nowMs(), wallMs = clock.wallMs(), settings = settings())
-        val event = if (input is Event.Start && input.restored == null && !before.started) Event.Start(restore(before)) else input
+        val event = when {
+            input is Event.Start && input.restored == null && !before.started -> Event.Start(readBack(before))
+            input is Event.Restore && input.restored == null && !before.restored && !before.started -> Event.Restore(readBack(before))
+            input is Event.OpenConversation && input.loaded == null -> input.copy(loaded = env.conversation.load(store, input.conversationId))
+            else -> input
+        }
         val (after, effects) = reducer.reduce(before, event)
         _state.value = after
         _ui.value = UiProjection.project(after)
@@ -186,7 +215,7 @@ class CascadeActor(
     }
 
     /** The persistence seam's saved state, with the conversation seam's Resume candidate (R-CONV-2). */
-    private fun restore(fresh: State): State = env.persistence.restore(store, fresh).let { s ->
+    private fun readBack(fresh: State): State = env.persistence.restore(store, fresh).let { s ->
         s.copy(conversation = s.conversation.copy(resume = env.conversation.resumeCandidate(store, s)))
     }
 
@@ -237,6 +266,7 @@ class CascadeActor(
             is Effect.Play -> player.play(effect.piece)
             Effect.StopPlayback -> player.stopPlayback()
             is Effect.SubmitTask -> tasks.submit(effect)
+            is Effect.OpenTaskSession -> tasks.open(effect)
             is Effect.InterruptTask -> tasks.interrupt(effect.taskId)
             is Effect.CancelTaskRuns -> tasks.cancelRuns(effect.taskId)
             is Effect.ReadBusyMode -> tasks.busyMode(effect.seq)
@@ -248,7 +278,7 @@ class CascadeActor(
             is Effect.Report -> runCatching { telemetry.event(effect.name, effect.attrs, warn = effect.warn) }
             is Effect.Emit -> bus.emit(effect.event)
             is Effect.EndCall -> onEndCall(effect.tasksRunning)
-            is Effect.Notify, is Effect.Haptic -> onAppEffect(effect)
+            is Effect.Notify, is Effect.Haptic, is Effect.LearnWord -> onAppEffect(effect)
         }
     }
 

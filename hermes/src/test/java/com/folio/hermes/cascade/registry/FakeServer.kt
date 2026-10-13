@@ -48,8 +48,10 @@ class FakeServer {
 
 /**
  * One app process's view of [server] (a [HermesPort] plus [SessionRecovery]), like the gateway:
- * a task's session is created on its first submit (the stored id is minted just before the prompt
- * goes out, then reported on [sessions]), or resumed from the stored id given to [open].
+ * [create] makes a task's session with no prompt (session-first, as `session.create`); with
+ * [createAhead] false it cannot, and the first submit creates it (the stored id is minted just
+ * before the prompt goes out, then reported on [sessions]). A stored id given to [open] is resumed.
+ * [probe] reports the prompts the session holds, like `session.resume` with messages.
  */
 class ClientHermes(private val server: FakeServer) : HermesPort, SessionRecovery {
     private val bound = linkedMapOf<String, String?>()
@@ -60,6 +62,19 @@ class ClientHermes(private val server: FakeServer) : HermesPort, SessionRecovery
 
     /** The next [failSubmits] submits fail before reaching the server (no session, no prompt). */
     var failSubmits = 0
+
+    /** Session-first (the gateway's behaviour); false models a port that cannot create ahead. */
+    var createAhead = true
+    val created = mutableListOf<String>()
+
+    override suspend fun create(taskId: String, label: String): String? {
+        if (!createAhead) return null
+        val session = server.create()
+        bound[taskId] = session.id
+        created += session.id
+        sessions.tryEmit(taskId to session.id)
+        return session.id
+    }
 
     override fun open(taskId: String, label: String, storedSessionId: String?) {
         if (taskId in bound) return
@@ -105,7 +120,8 @@ class ClientHermes(private val server: FakeServer) : HermesPort, SessionRecovery
         probes += storedSessionId
         val s = server.sessions[storedSessionId] ?: return SessionProbe.Unknown
         if (s.prompts.isEmpty()) return SessionProbe.NeverPrompted
-        s.ended?.let { return SessionProbe.Ended(it.first, it.second) }
-        return SessionProbe.Running(flow { val (text, status) = s.done.await(); emit(TurnUpdate.Completed(text, status, null)) })
+        val prompts = s.prompts.toList()
+        s.ended?.let { return SessionProbe.Ended(it.first, it.second, prompts) }
+        return SessionProbe.Running(flow { val (text, status) = s.done.await(); emit(TurnUpdate.Completed(text, status, null)) }, prompts)
     }
 }
