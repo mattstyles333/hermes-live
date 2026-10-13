@@ -22,6 +22,7 @@ import com.folio.hermes.cascade.writer.BriefTemplate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -259,5 +260,42 @@ class CeoTasksTest {
         assertTrue(h.effects.none { it is Effect.CallJev })
         assertEquals(listOf("u1"), h.s.outbox.ids())
         assertTrue(commit.none { it is Effect.SubmitTask })
+    }
+}
+
+/** R-CTX-2: the conversation summary is asked for in the background and never holds a turn up. */
+class BackgroundSummariesTest {
+    @Test fun offByDefaultAndOffTheCriticalPathWhenOn() {
+        val off = CeoHarness()
+        repeat(6) { i -> off.turn("hello $i", i * 10_000L, "action" to answer("reply"), "line" to answer("social.thanks"), "enough" to answer("line_only")) }
+        assertTrue(off.effects.none { it is Effect.Write })
+
+        val summaries = BackgroundSummaries(enabled = true)
+        val bank = PhraseBank.load()
+        val memo = MemoRouting(java.time.ZoneOffset.UTC)
+        val env = com.folio.hermes.cascade.CascadeEnv(bank, CeoRouting.registry(memo, summaries), com.folio.hermes.cascade.budget.CappedJevStateBudget())
+        val reducer = com.folio.hermes.cascade.CascadeReducer(env)
+        var s = reducer.reduce(com.folio.hermes.cascade.State(), Event.Start()).first
+        val writes = mutableListOf<Effect.Write>()
+        fun at(ms: Long, e: Event): List<Effect> {
+            val (n, out) = reducer.reduce(s.copy(nowMs = ms, wallMs = ms), e)
+            s = n
+            writes += out.filterIsInstance<Effect.Write>()
+            return out
+        }
+        repeat(6) { i ->
+            val t = i * 10_000L
+            at(t, Event.SpeechStarted); at(t, Event.Final("hello $i")); at(t, Event.SpeechEnded)
+            val call = at(t + 500, Event.TimerFired(com.folio.hermes.cascade.Timer(com.folio.hermes.cascade.TurnRules.EARLY, s.turn.pauseSeq))).filterIsInstance<Effect.CallJev>().single()
+            at(t + 600, Event.JevAnswered(call.seq, com.folio.hermes.openrouter.OpenRouterResult.Ok(mapOf("turn" to answer("done"), "action" to answer("reply"), "line" to answer("social.thanks"), "enough" to answer("line_only"))), t + 600))
+            at(t + 1_000, Event.TimerFired(com.folio.hermes.cascade.Timer(com.folio.hermes.cascade.TurnRules.COMMIT, s.turn.pauseSeq)))
+        }
+        val request = writes.single()
+        assertEquals(com.folio.hermes.cascade.writer.Summaries.SYSTEM, request.system)
+        assertNull("no action waits for it", s.actions.active)
+        val tx = com.folio.hermes.cascade.Tx(s, env)
+        assertTrue((env.handlers.hooks as CeoHooks).backgroundWrote(tx, request.seq, com.folio.hermes.openrouter.OpenRouterResult.Ok("x ".repeat(500))))
+        assertTrue(tx.s.conversation.summary.length <= 600)
+        assertFalse("not ours", (env.handlers.hooks as CeoHooks).backgroundWrote(tx, 999, com.folio.hermes.openrouter.OpenRouterResult.Ok("y")))
     }
 }

@@ -68,7 +68,7 @@ object RoutingEvals {
         settings: CascadeSettings = CascadeSettings(),
         budget: JevStateBudget = CappedJevStateBudget(),
     ): JevRequest {
-        val request = CascadeBrain.request(context(case), bank, settings.backchannel)
+        val request = CeoRouting.hooks().ask(context(case), bank, settings)
         return request.copy(state = budget.fit(request.state, settings))
     }
 }

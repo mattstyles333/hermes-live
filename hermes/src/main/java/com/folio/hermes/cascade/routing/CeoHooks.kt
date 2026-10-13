@@ -26,6 +26,7 @@ import com.folio.hermes.cascade.writer.Repair
 import com.folio.hermes.cascade.writer.WriterPrompts
 import com.folio.hermes.openrouter.FailureKind
 import com.folio.hermes.openrouter.JevAnswer
+import com.folio.hermes.openrouter.OpenRouterResult
 
 /**
  * The routing slice's turn hooks (spec v2): R-RT-3/5/6/7 decisions ([CeoRouter]), R-RT-8 (no Jev
@@ -33,7 +34,7 @@ import com.folio.hermes.openrouter.JevAnswer
  * transcript and R-STT-5 clarity, confirmations after `Accepted`, queued tasks starting as slots
  * free, and the task-card taps.
  */
-class CeoHooks(private val memo: MemoRouting) : TurnHooks {
+class CeoHooks(private val memo: MemoRouting, private val summaries: BackgroundSummaries = BackgroundSummaries()) : TurnHooks {
     /** R-RT-8: offline, the turn commits on `pause_ms + 500` with no Jev call (then memo mode holds it). */
     override fun useJev(state: State): Boolean = state.connection.online
 
@@ -66,8 +67,12 @@ class CeoHooks(private val memo: MemoRouting) : TurnHooks {
             tx.emit(CascadeEvent.ClarityDoubt(action.turnId, clarity.choice!!))
         }
         val withTranscript = action.copy(transcript = transcript)
+        summaries.afterTurn(tx)
         return KeyDoubt.absorb(tx, withTranscript) ?: withTranscript
     }
+
+    /** R-CTX-2: a whole-writer answer no action waited for (needs the hub to route it here). True if it was ours. */
+    fun backgroundWrote(tx: Tx, seq: Long, result: OpenRouterResult<String>): Boolean = summaries.wrote(tx, seq, result)
 
     /** The accurate pass for a turn (R-STT-2, S-C): its transcript replaces the fast one. */
     override fun accurate(tx: Tx, event: Event.AccurateFinal) {

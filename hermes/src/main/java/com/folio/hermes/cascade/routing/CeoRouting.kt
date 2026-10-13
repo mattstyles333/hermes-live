@@ -23,7 +23,7 @@ import java.time.ZoneId
  */
 object CeoRouting {
     /** The registry: CEO handlers for every route, [CeoHooks] and [CeoResults]. */
-    fun registry(memo: MemoRouting = MemoRouting()): HandlerRegistry = HandlerRegistry(
+    fun registry(memo: MemoRouting = MemoRouting(), summaries: BackgroundSummaries = BackgroundSummaries()): HandlerRegistry = HandlerRegistry(
         mapOf(
             Route.Reply.wire to CeoReplyHandler,
             Route.Clarify.wire to ClarifyHandler,
@@ -35,7 +35,7 @@ object CeoRouting {
             Route.ReadResult("").wire to CeoReadResultHandler,
             Route.EndCall.wire to EndCallHandler,
         ).mapValues { (_, h) -> MemoAware(h, memo) },
-        hooks = CeoHooks(memo),
+        hooks = CeoHooks(memo, summaries),
         result = CeoResults,
     )
 
