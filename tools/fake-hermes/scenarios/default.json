@@ -1,0 +1,85 @@
+{
+  "name": "default",
+  "busy_mode": "interrupt",
+  "stream": {"chunk_words": 4, "chunk_delay_ms": 60},
+  "rules": [
+    {
+      "name": "fail",
+      "match": ["fail on purpose", "break it", "simulate a failure"],
+      "steps": [
+        {"tool": "terminal", "context": "Running the check", "ms": 600},
+        {"fail": "The tool crashed (fake failure)."}
+      ]
+    },
+    {
+      "name": "slow",
+      "match": ["take your time", "deep dive", "full audit", "slowly"],
+      "steps": [
+        {"tool": "web_search", "context": "Gathering sources", "ms": 4000, "summary": "12 results"},
+        {"interim": "Still going. This one takes a while."},
+        {"tool": "read_file", "context": "Reading the notes", "ms": 6000, "summary": "3 files"},
+        {"tool": "execute_code", "context": "Crunching numbers", "ms": 8000, "summary": "done"}
+      ],
+      "reply": "Here is the deep dive. Three things stood out: the test frames sell fastest on Mondays, the sample supplier ships in four days, and returns are down a little."
+    },
+    {
+      "name": "stock_check",
+      "match": ["stock", "how many", "in store", "warehouse"],
+      "steps": [
+        {"tool": "s4l_ops_get_sku", "context": "Looking up the SKU", "ms": 900, "summary": "found SKU TEST-0001"},
+        {"tool": "s4l_ops_get_latest_stock_comparison", "context": "Checking stock", "ms": 1200, "summary": "2 locations"}
+      ],
+      "reply": "Sample Frame TEST-0001 has 14 in stock: 9 on the main shelf and 5 in overflow. Nothing is on back order."
+    },
+    {
+      "name": "email",
+      "match": ["email", "reply to", "write to", "send a message"],
+      "steps": [
+        {"tool": "gmail_search_threads", "context": "Finding the thread", "ms": 800, "summary": "1 thread"},
+        {"interim": "I have drafted the reply."},
+        {
+          "approval": {
+            "command": "send_email to=customer@example.com subject=\"Re: your order\"",
+            "description": "Send the drafted reply to the example customer."
+          },
+          "deny_reply": "OK, I kept it as a draft and did not send it."
+        },
+        {"tool": "gmail_send_message", "context": "Sending", "ms": 600, "summary": "sent"}
+      ],
+      "reply": "Sent. I told the example customer their order ships tomorrow and copied the order number."
+    },
+    {
+      "name": "supplier_chase",
+      "match": ["chase", "supplier", "purchase order", "delivery"],
+      "steps": [
+        {"tool": "s4l_ops_get_supplier", "context": "Opening the supplier", "ms": 700, "summary": "Example Optics Ltd"},
+        {
+          "clarify": {
+            "questions": [
+              {"qid": "channel", "question": "Chase them by email or by phone note?", "choices": ["email", "phone note"]}
+            ]
+          }
+        },
+        {"tool": "s4l_ops_list_runs", "context": "Checking open orders", "ms": 900, "summary": "2 open"}
+      ],
+      "reply": "Done by {answer.channel}. Example Optics Ltd has two open orders, PO-1001 and PO-1002; I asked for delivery dates on both."
+    },
+    {
+      "name": "summary",
+      "match": ["summar", "what happened", "overnight", "catch me up", "report"],
+      "steps": [
+        {"tool": "s4l_ops_get_attention", "context": "Reading what needs a person", "ms": 800, "summary": "3 items"},
+        {"interim": "Pulling yesterday's numbers."},
+        {"tool": "s4l_ops_get_summary", "context": "Summary", "ms": 1000, "summary": "ok"}
+      ],
+      "reply": "Quick summary: 3 items need you, 2 reviews are waiting, and yesterday's test orders were 41, up 5 on the day before. Nothing failed overnight."
+    }
+  ],
+  "fallback": {
+    "name": "fallback",
+    "steps": [
+      {"tool": "memory", "context": "Thinking", "ms": 500}
+    ],
+    "reply": "Done. I handled that for you."
+  }
+}

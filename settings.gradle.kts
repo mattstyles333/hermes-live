@@ -22,3 +22,4 @@ dependencyResolutionManagement {
 rootProject.name = "HermesLive"
 include(":hermes")
 include(":live")
+include(":tools:fake-hermes")
