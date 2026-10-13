@@ -6,11 +6,7 @@ import com.folio.hermes.cascade.writer.BriefSet
 import com.folio.hermes.cascade.writer.Briefs
 import com.folio.hermes.openrouter.FailureKind
 import com.folio.hermes.openrouter.OpenRouterResult
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
@@ -111,17 +107,15 @@ class CeoNewTaskHandler(private val memo: MemoRouting) : RouteHandler {
                 briefs.forEach { b -> add(buildJsonObject { put("brief", b.brief); put("label", b.label); b.summary?.let { put("summary", it) } }) }
             }
             (next?.repaired ?: prev?.repaired)?.let { put("repaired", it) }
+            putJsonArray("fixes") {
+                (prev?.fixes.orEmpty() + next?.fixes.orEmpty()).forEach { (from, to) -> add(buildJsonObject { put("from", from); put("to", to) }) }
+            }
             listOfNotNull(prev?.notes, next?.notes).filter { it.isNotBlank() }.joinToString(" ").takeIf { it.isNotEmpty() }?.let { put("notes", it) }
             put("complete", (prev?.complete ?: true) && (next?.complete ?: false))
         }.toString()
     }
 
-    private fun decode(acc: String?): BriefSet? {
-        val o = acc?.let { runCatching { Json.parseToJsonElement(it).jsonObject }.getOrNull() } ?: return null
-        val set = Briefs.parse(o.toString()) ?: return null
-        val complete = (o["complete"] as? JsonPrimitive)?.contentOrNull != "false"
-        return set.copy(complete = complete)
-    }
+    private fun decode(acc: String?): BriefSet? = acc?.let { Briefs.parse(it) }
 
     companion object {
         /** The outbox stage that says this turn's tasks exist (shared with the C1 handler). */

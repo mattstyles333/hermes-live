@@ -35,6 +35,18 @@ class WriterRulesTest {
         assertNull(Briefs.parse("{\"briefs\":[]}"))
     }
 
+    @Test fun aCutAfterTheBriefsKeepsTheSetCompleteAndFixesApplyInCode() {
+        // The likeliest cut (a short token budget): inside the fixes, after the briefs array closed.
+        val raw = "{\"briefs\":[{\"brief\":\"Goal: email Safilo\",\"label\":\"supplier email\",\"summary\":\"emailing Safilo\"}],\"fixes\":[{\"from\":\"Sapph"
+        val set = Briefs.parse(raw)!!
+        assertTrue("only the fixes were lost", set.complete)
+        assertEquals(1, set.briefs.size)
+        val whole = Briefs.parse("{\"briefs\":[{\"brief\":\"Goal: x\",\"label\":\"x job\",\"summary\":\"x\"}],\"fixes\":[{\"from\":\"Sapphire\",\"to\":\"Safilo\"}],\"notes\":\"\"}")!!
+        assertEquals(listOf("Sapphire" to "Safilo"), whole.fixes)
+        assertEquals("email Safilo about the Sapphires", Briefs.applyFixes("email sapphire about the Sapphires", whole.fixes))
+        assertNull(Briefs.applyFixes("no match here", whole.fixes))
+    }
+
     @Test fun inventedNumbersAreCaught() {
         val said = "order forty frames, two hundred and fifty lenses and 1,500 cases by the 3rd; order 40-1187"
         assertEquals(emptyList<String>(), Verbatim.invented(said, "Order 40 frames, 250 lenses, 1500 cases by the 3rd (order 40-1187)."))

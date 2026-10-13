@@ -17,8 +17,10 @@ import com.folio.hermes.cascade.registry.TaskRegistry
  *   together, once every one of them is accepted or failed;
  * - an update's `update.*` line waits for that run's `Accepted`;
  * - a failed submit is always spoken (`error.gave_up`), once per task or update. With a task
- *   registry that retries (S-B), it is spoken when the registry gives up (`NotSent`); with no
- *   registry, at the first failure.
+ *   registry that retries (S-B), it is spoken when the registry gives up (`NotSent`, which the
+ *   registry must set in its `taskUpdated` for the `Failed` update); with no registry, at the
+ *   first failure.
+ * Nothing is spoken after hang-up (it would play out of context at the next call).
  */
 object Confirmations {
     const val QUEUED = "limit.queued"
@@ -52,7 +54,8 @@ object Confirmations {
         val mark = tx.marks(taskKey(taskId)).firstOrNull { it.startsWith("ack:$runId:") } ?: return false
         tx.unmark(taskKey(taskId), mark)
         val slot = if (accepted) mark.removePrefix("ack:$runId:") else AppLines.GAVE_UP
-        tx.line(slot)?.let { tx.speak(SpeechKind.Reply, listOf(it), taskId = taskId) }
+        // After hang-up nothing is queued: it would play out of context at the next call (the card shows it).
+        if (tx.s.started) tx.line(slot)?.let { tx.speak(SpeechKind.Reply, listOf(it), taskId = taskId) }
         return true
     }
 
@@ -60,7 +63,7 @@ object Confirmations {
         if (tx.marked(taskKey(t.id), GAVE_UP)) return
         if (t.send != SendState.NotSent && tx.env.registry !== TaskRegistry.None) return
         tx.mark(taskKey(t.id), GAVE_UP)
-        tx.say(AppLines.GAVE_UP, SpeechKind.Reply)
+        if (tx.s.started) tx.say(AppLines.GAVE_UP, SpeechKind.Reply)
     }
 
     /** Confirm the tasks turn [turnId] started, once all of them are accepted or failed. */
@@ -75,7 +78,7 @@ object Confirmations {
             queued.forEach { tx.mark(turnId, "queued:${it.id}") }
             tx.line(QUEUED)?.let { sentences += it }
         }
-        tx.speak(SpeechKind.Notice, sentences, turnId = turnId)
+        if (tx.s.started) tx.speak(SpeechKind.Notice, sentences, turnId = turnId)
     }
 
     private fun settled(t: TaskRecord): Boolean = t.send != SendState.Sending || t.state != TaskState.Running || t.lastFailed

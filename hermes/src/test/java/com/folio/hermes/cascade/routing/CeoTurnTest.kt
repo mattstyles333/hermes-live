@@ -69,6 +69,35 @@ class CeoTurnTest {
         assertTrue(h.effects.filterIsInstance<Effect.StreamWriter>().size == 1)
     }
 
+    @Test fun anUnrelatedTurnDuringTheWaitIsItsOwnTask() {
+        val h = CeoHarness()
+        h.turn("email Sapphire about forty units", 0, *newTask("key_doubt"))
+        val wait = h.stream("Safilo or Sapphire?").filterIsInstance<Effect.StartTimer>().single { it.timer.name == KeyDoubt.TIMER }
+        val other = h.turn("also check how many RB2140 frames we have", 3_000, *newTask())
+        assertTrue("the doubted work goes ahead now, unanswered", Effect.StartTimer(wait.timer, 0) in other)
+        h.at(3_100, Event.TimerFired(wait.timer))
+        h.write(briefs(brief("Email Sapphire about forty units.", "supplier email", "emailing Sapphire")))
+        assertTrue("no answer, so going with what was heard" in h.submits().single().text)
+        h.write(briefs(brief("Check RB2140 frames.", "stock check", "checking RB2140 frames")))
+        assertEquals(listOf("supplier email", "stock check"), h.s.tasks.tasks.map { it.label })
+        assertFalse("also check" in h.submits().first().text)
+    }
+
+    @Test fun writerFixesRepairOnlyDoubtedWords() {
+        val h = CeoHarness()
+        h.at(0, Event.SpeechStarted)
+        h.at(0, Event.Final("email Sapphire about forty units", listOf(Word("email"), Word("Sapphire", 0.2, listOf("Safilo")), Word("about"), Word("forty"), Word("units"))))
+        h.at(0, Event.SpeechEnded)
+        val call = h.at(500, Event.TimerFired(Timer(com.folio.hermes.cascade.TurnRules.EARLY, h.s.turn.pauseSeq))).filterIsInstance<Effect.CallJev>().single()
+        h.at(600, Event.JevAnswered(call.seq, OpenRouterResult.Ok(mapOf("turn" to answer("done")) + newTask("minor_doubt", 0.7)), 600))
+        h.at(1_000, Event.TimerFired(Timer(com.folio.hermes.cascade.TurnRules.COMMIT, h.s.turn.pauseSeq)))
+        h.write("{\"briefs\":[" + brief("Email Safilo about forty units.", "supplier email", "emailing Safilo") + "],\"fixes\":[{\"from\":\"Sapphire\",\"to\":\"Safilo\"},{\"from\":\"forty\",\"to\":\"fourteen\"}],\"notes\":\"\"}")
+        val text = h.submits().single().text
+        // "forty" was heard with confidence, so the whole repair is refused and the verbatim text stands.
+        assertTrue("Transcript: email Sapphire about forty units" in text)
+        assertTrue("repair not applied" in text)
+    }
+
     @Test fun scrapThatDuringTheWaitDropsIt() {
         val h = CeoHarness()
         h.turn("email Sapphire", 0, *newTask("key_doubt"))

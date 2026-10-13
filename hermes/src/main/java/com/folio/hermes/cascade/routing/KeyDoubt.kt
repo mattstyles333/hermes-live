@@ -12,9 +12,10 @@ import com.folio.hermes.cascade.writer.WriterPrompts
  * targeted question (the writer, e.g. "Safilo or Sapphire?"), waits `keyDoubtWaitMs` for an
  * answer, then proceeds, with the answer or with notes for the agent.
  *
- * The action waits on a slice timer; the user's next committed turn is taken as the answer
- * ([absorb]): it is folded into the waiting action and fires the timer at once. "Scrap that"
- * instead drops the waiting action.
+ * The action waits on a slice timer; the user's next committed turn, if it sounds like an answer
+ * ([answerLike]), is folded into the waiting action and fires the timer at once ([absorb]).
+ * "Scrap that" drops the waiting action; any other turn lets it go ahead unanswered and then runs
+ * on its own.
  */
 object KeyDoubt {
     const val TIMER = "key_doubt"
@@ -73,6 +74,11 @@ object KeyDoubt {
             DROPPED to ""
         } else if (route == Route.EndCall) {
             return null
+        } else if (!answerLike(active, next)) {
+            // Something else ("also check the stock"): the doubted work goes ahead unanswered, and
+            // this turn is carried out on its own after it.
+            tx.fireWaitingTimer(TIMER)
+            return null
         } else {
             ANSWER to next.text
         }
@@ -82,6 +88,22 @@ object KeyDoubt {
         tx.fireWaitingTimer(TIMER)
         return next.copy(decision = Decision(Route.Reply, null, writer = false), data = next.data + (ABSORBED to active.turnId))
     }
+
+    /**
+     * An answer to "Safilo or Sapphire?": a reply or clarify turn, a short turn (≤ [SHORT_ANSWER]
+     * words), or one naming a doubted word or one of its alternatives.
+     */
+    fun answerLike(waiting: ActionState, next: ActionState): Boolean {
+        val route = next.decision.route
+        if (route == Route.Reply || route == Route.Clarify || route == Route.AskRepeat) return true
+        val words = next.text.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (words.size <= SHORT_ANSWER) return true
+        val said = words.map { w -> w.lowercase().filter { it.isLetterOrDigit() } }.toSet()
+        val doubted = waiting.transcript?.uncertain.orEmpty().flatMap { listOf(it.text) + it.alternatives }
+        return doubted.any { d -> d.lowercase().filter { it.isLetterOrDigit() } in said }
+    }
+
+    const val SHORT_ANSWER = 4
 
     /** Marks a turn folded into another as its answer (its own action does nothing). */
     const val ABSORBED = "absorbed_by"

@@ -64,7 +64,7 @@ object BriefPlanner {
      */
     fun plan(tx: Tx, a: ActionState, set: BriefSet?, offline: String?): List<PlannedTask> {
         val t = transcript(tx, a)
-        val repaired = Repair.check(t, set?.repaired, tx.s.settings.vocabulary)
+        val repaired = Repair.check(t, set?.repaired ?: Briefs.applyFixes(t.text, set?.fixes.orEmpty()), tx.s.settings.vocabulary)
         val notes = listOfNotNull(
             set?.notes?.takeIf { it.isNotBlank() },
             repaired.rejected.takeIf { it.isNotEmpty() }?.let { r -> "repair not applied (only uncertain or vocabulary words may change): " + r.joinToString("; ") { "\"${it.first}\" -> \"${it.second}\"" } },

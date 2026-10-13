@@ -3,6 +3,7 @@ package com.folio.hermes.cascade.writer
 import com.folio.hermes.cascade.Exchange
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -19,6 +20,8 @@ data class BriefSet(
     val repaired: String?,
     val notes: String?,
     val complete: Boolean,
+    /** The writer's word fixes (`from` → `to`), applied to the transcript in code ([Briefs.applyFixes]). */
+    val fixes: List<Pair<String, String>> = emptyList(),
 )
 
 /** What the writer is told about one turn of new work. */
@@ -52,13 +55,13 @@ object Briefs {
 
     const val SYSTEM =
         "You turn what a user dictated to their voice assistant into briefs for AI agents that have tools. " +
-            "Answer with JSON only, no markdown: {\"briefs\":[{\"brief\":\"…\",\"label\":\"…\",\"summary\":\"…\"}],\"repaired\":\"…\",\"notes\":\"…\"}\n" +
+            "Answer with JSON only, no markdown: {\"briefs\":[{\"brief\":\"…\",\"label\":\"…\",\"summary\":\"…\"}],\"fixes\":[{\"from\":\"…\",\"to\":\"…\"}],\"notes\":\"…\"}\n" +
             "- One brief per separate, independent job when split is several; otherwise one brief (steps that follow each other stay one job). At most 8.\n" +
             "- brief: short lines \"Goal: …\", \"Constraints: …\", \"Done when: …\" in the second person. Every detail the user gave; invent nothing.\n" +
             "- Copy names, numbers, amounts and dates exactly as the transcript has them.\n" +
             "- label: 2 to 4 words naming the job. summary: at most 12 words Bill says to confirm it, e.g. \"reorder email to Safilo, 40 units, for your approval\".\n" +
-            "- repaired: the transcript with speech-to-text slips fixed. Change ONLY words marked [word|alternative] or words that match the vocabulary; " +
-            "keep every other word as it is. Empty when nothing needs fixing.\n" +
+            "- fixes: speech-to-text slips to correct, as {from, to} word pairs. ONLY words marked [word|alternative] or words that match " +
+            "the vocabulary; an empty list when nothing needs fixing.\n" +
             "- notes: one short line about any repair or doubt, else empty.\n" +
             "Be brief: the whole answer must stay short."
 
@@ -93,10 +96,31 @@ object Briefs {
         if (whole != null) {
             val briefs = (whole["briefs"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::brief) }.orEmpty()
             if (briefs.isEmpty()) return null
-            return BriefSet(briefs.take(MAX_BRIEFS), whole.str("repaired"), whole.str("notes"), complete = true)
+            val complete = (whole["complete"] as? JsonPrimitive)?.contentOrNull != "false"
+            return BriefSet(briefs.take(MAX_BRIEFS), whole.str("repaired")?.takeIf { it.isNotEmpty() }, whole.str("notes"), complete, fixes(whole["fixes"]))
         }
-        val briefs = salvage(json).take(MAX_BRIEFS)
-        return if (briefs.isEmpty()) null else BriefSet(briefs, null, null, complete = false)
+        // Cut short: keep the whole briefs. The set is complete if the cut came after the array
+        // closed (only the fixes or notes were lost, and the verbatim transcript stands).
+        val (briefs, closed) = salvage(json)
+        return if (briefs.isEmpty()) null else BriefSet(briefs.take(MAX_BRIEFS), null, null, complete = closed)
+    }
+
+    private fun fixes(e: JsonElement?): List<Pair<String, String>> =
+        (e as? JsonArray)?.mapNotNull { f -> (f as? JsonObject)?.let { o -> o.str("from")?.let { from -> o.str("to")?.let { to -> from to to } } } }
+            ?.filter { it.first.isNotBlank() && it.second.isNotBlank() }.orEmpty()
+
+    /**
+     * [text] with each fix applied once, whole words only, case-insensitive (null if nothing
+     * changed). The result still goes through [Repair.check], so fixing a word that was neither
+     * uncertain nor in the vocabulary is refused there.
+     */
+    fun applyFixes(text: String, fixes: List<Pair<String, String>>): String? {
+        var out = text
+        for ((from, to) in fixes) {
+            val m = Regex("(?<![\\p{L}\\p{N}])" + Regex.escape(from) + "(?![\\p{L}\\p{N}])", RegexOption.IGNORE_CASE).find(out) ?: continue
+            out = out.replaceRange(m.range, to)
+        }
+        return out.takeIf { it != text }
     }
 
     private fun brief(o: JsonObject): WrittenBrief? {
@@ -116,12 +140,12 @@ object Briefs {
         return text.replaceFirstChar { it.uppercaseChar() }.let { if (it.last() in ".!?") it else "$it." }
     }
 
-    /** The whole `{…}` objects inside the `briefs` array of a cut-short answer. */
-    private fun salvage(json: String): List<WrittenBrief> {
+    /** The whole `{…}` objects inside the `briefs` array of a cut-short answer, and whether the array closed. */
+    private fun salvage(json: String): Pair<List<WrittenBrief>, Boolean> {
         val key = json.indexOf("\"briefs\"")
-        if (key < 0) return emptyList()
+        if (key < 0) return emptyList<WrittenBrief>() to false
         val open = json.indexOf('[', key)
-        if (open < 0) return emptyList()
+        if (open < 0) return emptyList<WrittenBrief>() to false
         val out = mutableListOf<WrittenBrief>()
         var depth = 0
         var inString = false
@@ -148,11 +172,11 @@ object Briefs {
                         objectStart = -1
                     }
                 }
-                c == ']' && depth == 0 -> return out
+                c == ']' && depth == 0 -> return out to true
             }
             i++
         }
-        return out
+        return out to false
     }
 
     private fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull?.trim()
