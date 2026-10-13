@@ -98,7 +98,7 @@ class OpenRouterKeyStore(
 
     // The exception's type only: a message could echo what was being sealed.
     private fun report(name: String, e: Exception) = runCatching {
-        telemetry.event(name, mapOf("item" to "openrouter_key", "type" to e.javaClass.simpleName), true)
+        telemetry.event(name, mapOf("item" to "openrouter_key", "type" to e.javaClass.simpleName.lowercase()), true)
     }
 
     companion object {

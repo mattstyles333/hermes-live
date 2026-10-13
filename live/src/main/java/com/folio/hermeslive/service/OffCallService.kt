@@ -44,6 +44,8 @@ class OffCallService : Service() {
     private var timer: Job? = null
     private var gateway: AutoCloseable? = null
     private var startedAt = 0L
+    private var timerFrom = 0L
+    private var keepAliveMs = 0L
     private var lastCount = 0
     private var stopped = false
 
@@ -71,7 +73,7 @@ class OffCallService : Service() {
                 startForeground(NOTIFICATION_ID, notification(this, tasks))
             }
         } catch (e: RuntimeException) {
-            runCatching { telemetry.event("offcall.stop", mapOf("reason" to OffCallStop.Refused.wire, "type" to e.javaClass.simpleName), true) }
+            runCatching { telemetry.event("offcall.stop", mapOf("reason" to OffCallStop.Refused.wire, "type" to e.javaClass.simpleName.lowercase()), true) }
             stopSelf()
             return START_NOT_STICKY
         }
@@ -93,7 +95,7 @@ class OffCallService : Service() {
         watcher = scope.launch {
             hooks.tasksRunning.collect { n ->
                 lastCount = n
-                val reason = OffCallPolicy.stopReason(activeProvider(), n, 0, keepAlive)
+                val reason = OffCallPolicy.stopReason(activeProvider(), n, SystemClock.elapsedRealtime() - timerFrom, keepAliveMs)
                 if (reason != null) {
                     finish(reason)
                 } else {
@@ -104,10 +106,20 @@ class OffCallService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun restartTimer(keepAliveMs: Long) {
+    /**
+     * The keep-alive runs on `elapsedRealtime` (which counts deep sleep), checked at least every
+     * minute: a plain `delay` counts uptime only and could stretch 30 minutes into hours.
+     */
+    private fun restartTimer(keepAlive: Long) {
+        keepAliveMs = keepAlive
+        timerFrom = SystemClock.elapsedRealtime()
         timer?.cancel()
         timer = scope.launch {
-            delay(keepAliveMs)
+            while (true) {
+                val remaining = keepAliveMs - (SystemClock.elapsedRealtime() - timerFrom)
+                if (remaining <= 0) break
+                delay(minOf(remaining, TICK_MS))
+            }
             finish(OffCallStop.Timeout)
         }
     }
@@ -174,6 +186,7 @@ class OffCallService : Service() {
                 .build()
         }
 
+        private const val TICK_MS = 60_000L
         private const val REQUEST_OPEN = 21
         private const val REQUEST_STOP = 22
     }

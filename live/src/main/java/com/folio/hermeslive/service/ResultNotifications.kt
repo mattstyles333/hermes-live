@@ -29,10 +29,12 @@ object ResultNotifications {
     fun notificationId(taskId: String): Int = 3000 + (taskId.hashCode() and 0x7fff)
 
     fun build(context: Context, notice: TaskResultNotice): Notification {
+        // Hear it on the public version too: a lock screen that hides sensitive content shows only this.
         val public = Notification.Builder(context, CallNotifications.CHANNEL_RESULTS)
             .setSmallIcon(R.drawable.ic_stat_call)
             .setContentTitle("A task finished")
             .setContentText("Hermes Live")
+            .addAction(Notification.Action.Builder(Icon.createWithResource(context, R.drawable.ic_stat_call), "Hear it", hearIt(context, notice.taskId)).build())
             .build()
         return Notification.Builder(context, CallNotifications.CHANNEL_RESULTS)
             .setSmallIcon(R.drawable.ic_stat_call)

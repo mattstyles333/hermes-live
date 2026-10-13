@@ -338,8 +338,8 @@ fun VoiceSettingsSection(ui: VoiceUi, actions: VoiceActions) {
             Choice("Tasks at once", "${s.maxTasks} (more wait their turn)", "max-tasks") {
                 actions.onChange { it.copy(maxTasks = if (it.maxTasks >= LiveSettings.MAX_TASKS) LiveSettings.MIN_TASKS else it.maxTasks + 1) }
             }
-            TextSetting("Voice", s.billVoice, "bill-voice") { v -> actions.onChange { it.copy(billVoice = v) } }
-            TextSetting("Speech model", s.ttsModel, "tts-model") { v -> actions.onChange { it.copy(ttsModel = v) } }
+            TextSetting("Voice", s.billVoice, "bill-voice", valid = { it.isNotBlank() && it.none(Char::isWhitespace) }) { v -> actions.onChange { it.copy(billVoice = v) } }
+            TextSetting("Speech model", s.ttsModel, "tts-model", valid = ::isModelId) { v -> actions.onChange { it.copy(ttsModel = v) } }
             Text("Changing the voice or model means preparing Bill's voice again.", style = SmallStyle, color = PrintMute)
             Toggle("Small listening noises", "Bill says \"mm-hm\" while you talk. Off by default: it can talk over you.", s.backchannel, "backchannel") { v ->
                 actions.onChange { it.copy(backchannel = v) }
@@ -410,20 +410,25 @@ private fun PauseSlider(pauseMs: Int, onDone: (Int) -> Unit) {
 }
 
 @Composable
-private fun TextSetting(label: String, value: String, tag: String, onSave: (String) -> Unit) {
+private fun TextSetting(label: String, value: String, tag: String, valid: (String) -> Boolean, onSave: (String) -> Unit) {
     var text by remember(value) { mutableStateOf(value) }
     OutlinedTextField(
         value = text,
         onValueChange = { v ->
             text = v
-            if (v.isNotBlank()) onSave(v.trim())
+            // Saved only once it is usable, so leaving mid-edit keeps the last good value.
+            if (valid(v.trim())) onSave(v.trim())
         },
+        isError = !valid(text.trim()),
         label = { Text(label) },
         singleLine = true, colors = fieldColors(), textStyle = BodyStyle,
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done, autoCorrectEnabled = false),
         modifier = Modifier.fillMaxWidth().padding(top = 4.dp).testTag(tag),
     )
 }
+
+/** An OpenRouter model id: `vendor/model`, no spaces. */
+fun isModelId(s: String): Boolean = Regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$").matches(s)
 
 @Composable
 private fun VocabularyBlock(ui: VoiceUi, actions: VoiceActions) {

@@ -16,6 +16,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.folio.hermes.cascade.RenderProgress
@@ -127,6 +128,19 @@ class VoiceSettingsScreenTest {
         assertEquals(listOf("Spex4Less", "InvenTree"), settings.cascadeSettings().vocabulary)
         compose.onNodeWithTag("decision-log").performScrollTo().performClick()
         assertFalse(settings.decisionLog)
+    }
+
+    @Test fun aHalfTypedModelIdIsNotSaved() {
+        settings = LiveSettings(voiceEngine = VoiceEngine.Cascade)
+        show { ui(KeyStatus(true, KeyCheck.Valid)) }
+        compose.onNodeWithTag("tts-model").performScrollTo().performTextClearance()
+        compose.onNodeWithTag("tts-model").performTextInput("elevenlabs")
+        assertEquals("elevenlabs/eleven-v4-turbo", settings.ttsModel)
+        compose.onNodeWithTag("tts-model").performTextInput("/eleven-v5")
+        assertEquals("elevenlabs/eleven-v5", settings.ttsModel)
+        assertTrue(isModelId("elevenlabs/eleven-v4-turbo"))
+        assertFalse(isModelId("eleven labs/x"))
+        assertFalse(isModelId("noslash"))
     }
 
     @Test fun learnedCorrectionsAndTheDecisionLogHaveTheirActions() {

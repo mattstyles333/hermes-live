@@ -161,6 +161,9 @@ class OffCallServiceTest {
         assertEquals("Supplier prices", n.extras.getString(Notification.EXTRA_TITLE))
         assertEquals(Notification.VISIBILITY_PRIVATE, n.visibility)
         assertEquals("A task finished", n.publicVersion.extras.getString(Notification.EXTRA_TITLE))
+        assertEquals("Hear it works from a lock screen that hides content", listOf("Hear it"), n.publicVersion.actions.map { it.title.toString() })
+        assertEquals("task-1", shadowOf(n.publicVersion.actions[0].actionIntent).savedIntent.getStringExtra(ResultNotifications.EXTRA_TASK_ID))
+        assertFalse("the public version shows no headline", n.publicVersion.extras.getCharSequence(Notification.EXTRA_TEXT).toString().contains("Prices"))
         assertEquals(listOf("Hear it", "Open"), n.actions.map { it.title.toString() })
 
         val hear = shadowOf(n.actions[0].actionIntent)
