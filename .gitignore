@@ -20,3 +20,5 @@ keystore.properties
 .kotlin/
 local.properties
 screenshots/
+# The call screen renders (S-D, ui/cascade) are committed.
+!live/docs/screenshots/

@@ -16,6 +16,7 @@ import com.folio.hermes.cascade.Timer
 import com.folio.hermes.cascade.TurnRules
 import com.folio.hermes.cascade.answer
 import com.folio.hermes.cascade.conversation.ConversationPolicy
+import com.folio.hermes.cascade.registry.TaskRegistry
 import com.folio.hermes.openrouter.JevAnswer
 import com.folio.hermes.openrouter.OpenRouterResult
 import java.time.ZoneOffset
@@ -28,9 +29,10 @@ class CeoHarness(
     settings: CascadeSettings = CascadeSettings(),
     conversation: ConversationPolicy = ConversationPolicy.None,
     val memo: MemoRouting = MemoRouting(ZoneOffset.UTC),
+    registry: TaskRegistry = TaskRegistry.None,
 ) {
     val bank: PhraseBank = PhraseBank.load()
-    val env: CascadeEnv = CeoRouting.env(bank, memo, conversation = conversation)
+    val env: CascadeEnv = CeoRouting.env(bank, memo, registry = registry, conversation = conversation)
     private val reducer = CascadeReducer(env)
     val epoch = 1_760_000_000_000L
     var now = 0L
