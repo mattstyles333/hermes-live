@@ -50,7 +50,7 @@ object UiProjection {
 }
 
 /** The call screen's view of a task (C1 fields plus the CEO ones). */
-fun TaskRecord.toUi(): TaskUi = snapshot().toUi().copy(
+fun TaskRecord.toUi(): TaskUi = snapshot().toUi().let { if (queued && state == TaskState.Running && runs.isEmpty()) it.copy(status = TaskUiStatus.Queued) else it }.copy(
     brief = brief,
     summary = summary,
     send = send,

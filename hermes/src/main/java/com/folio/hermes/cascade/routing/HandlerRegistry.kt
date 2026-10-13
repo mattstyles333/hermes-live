@@ -84,6 +84,12 @@ interface TurnHooks {
     /** The Jev request for a pause (R-RT-2, R-RT-4). The reducer then applies the R-CTX-1 budget. */
     fun ask(ctx: TurnContext, bank: PhraseBank, settings: CascadeSettings): JevRequest = CascadeBrain.request(ctx, bank, settings.backchannel)
 
+    /**
+     * The Jev request with the whole [state] at hand (the reducer calls this one): a hook can add
+     * the conversation summary or uncertain spans (R-CTX-1/2, R-STT-4). Default: [ask] without it.
+     */
+    fun ask(ctx: TurnContext, bank: PhraseBank, settings: CascadeSettings, state: State): JevRequest = ask(ctx, bank, settings)
+
     /** R-RT-8: false makes this pause commit on the timer alone (`pause + noJevCommitExtraMs`), with no Jev call. */
     fun useJev(state: State): Boolean = true
 
@@ -130,6 +136,15 @@ interface TurnHooks {
 
     /** A task update the task table applied (e.g. speak the summary after `Accepted`, R-TASK-2; `error.gave_up` on a failed submit). */
     fun taskUpdated(tx: Tx, event: Event.TaskUpdated) = Unit
+
+    /** One of a task's runs ended and the table settled it (its slot may be free now). */
+    fun taskRunEnded(tx: Tx, event: Event.TaskRunEnded) = Unit
+
+    /** The stored state was read back for the first time (call start or off-call restore), after the registry settled it. */
+    fun restored(tx: Tx) = Unit
+
+    /** A whole-writer answer no action waited for (R-CTX-2 background work). Return true if it was the hook's. */
+    fun backgroundWrote(tx: Tx, seq: Long, result: OpenRouterResult<String>): Boolean = false
 
     /** A timer the reducer does not own (a slice's). Return true if handled. */
     fun timer(tx: Tx, timer: Timer): Boolean = false

@@ -7,29 +7,10 @@ import com.folio.hermes.cascade.Timer
 import com.folio.hermes.cascade.Tx
 
 /*
- * Tx helpers for the routing slice (S-A), as extensions so the hub's `Tx` stays untouched.
- *
- * Marks: small facts the routing slice must remember across events ("this turn's summary was
- * spoken", "this run's update line waits for Accepted"). They live in the outbox's stage map,
- * keyed by turn id (or `task:<id>`), so they are persisted with the outbox and a resend never
- * repeats them. A hub-owned scratch field would be cleaner; see the slice report.
+ * Tx helpers for the routing slice (S-A), as extensions so the hub's `Tx` stays small. Marks
+ * (small facts remembered across events) are `Tx.mark`/`marked`/`marks`/`unmark` on
+ * `State.marks`, stored with the outbox.
  */
-
-/** Remember [value] under [key] (a turn id or `task:<id>`). */
-internal fun Tx.mark(key: String, value: String) {
-    s = s.copy(outbox = s.outbox.markStage(key, value))
-}
-
-internal fun Tx.marked(key: String, value: String): Boolean = s.outbox.stageDone(key, value)
-
-/** Every mark under [key]. */
-internal fun Tx.marks(key: String): Set<String> = s.outbox.stages[key].orEmpty()
-
-/** Forget mark [value] under [key]. */
-internal fun Tx.unmark(key: String, value: String) {
-    val left = s.outbox.stages[key].orEmpty() - value
-    s = s.copy(outbox = s.outbox.copy(stages = if (left.isEmpty()) s.outbox.stages - key else s.outbox.stages + (key to left)))
-}
 
 /** Queue [action] behind the running one (the reducer starts it after this event). */
 internal fun Tx.enqueueAction(action: ActionState) {

@@ -237,6 +237,7 @@ class CascadeActor(
             is Effect.Play -> player.play(effect.piece)
             Effect.StopPlayback -> player.stopPlayback()
             is Effect.SubmitTask -> tasks.submit(effect)
+            is Effect.OpenTaskSession -> tasks.open(effect)
             is Effect.InterruptTask -> tasks.interrupt(effect.taskId)
             is Effect.CancelTaskRuns -> tasks.cancelRuns(effect.taskId)
             is Effect.ReadBusyMode -> tasks.busyMode(effect.seq)
@@ -248,7 +249,7 @@ class CascadeActor(
             is Effect.Report -> runCatching { telemetry.event(effect.name, effect.attrs, warn = effect.warn) }
             is Effect.Emit -> bus.emit(effect.event)
             is Effect.EndCall -> onEndCall(effect.tasksRunning)
-            is Effect.Notify, is Effect.Haptic -> onAppEffect(effect)
+            is Effect.Notify, is Effect.Haptic, is Effect.LearnWord -> onAppEffect(effect)
         }
     }
 

@@ -58,10 +58,10 @@ class CeoUpdateTaskHandler(private val memo: MemoRouting) : RouteHandler {
         val route = a.decision.route as Route.UpdateTask
         val slot = a.decision.slot ?: if (route.mode == UpdateMode.Queue) "update.queued" else "update.redirect"
         val memoTurn = MemoRouting.isMemo(tx, a.turnId)
-        when (val r = CeoTasks.update(tx, route.taskId, text(tx), kind)) {
+        when (val r = CeoTasks.update(tx, route.taskId, text(tx), kind, a.turnId)) {
             is CeoTasks.Updated.Sent -> if (!memoTurn) Confirmations.expectAck(tx, route.taskId, r.runId, slot)
             CeoTasks.Updated.Amended -> if (!memoTurn) tx.play(slot)
-            is CeoTasks.Updated.Retried -> Unit // the retry's summary follows its Accepted
+            is CeoTasks.Updated.Retried, CeoTasks.Updated.AlreadySent -> Unit // the retry's summary follows its Accepted; a resend says nothing new
             CeoTasks.Updated.AtCap -> tx.play(AppLines.LIMIT_FULL)
             CeoTasks.Updated.NotFound -> tx.play(AppLines.WHICH_UPDATE)
         }

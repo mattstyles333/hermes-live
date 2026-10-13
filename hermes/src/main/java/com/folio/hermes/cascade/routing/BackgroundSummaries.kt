@@ -9,9 +9,8 @@ import com.folio.hermes.openrouter.OpenRouterResult
  * R-CTX-2 off the critical path: the conversation summary is a whole-writer request that no action
  * waits on; its answer lands in `State.conversation.summary` whenever it comes.
  *
- * Off by default ([enabled] false): today the reducer drops a `WriterWrote` that no action waits
- * for, so a request would be wasted. It needs one hub line routing an unmatched `WriterWrote` to
- * [wrote] (see the slice report); then S-F turns it on.
+ * The reducer routes a `WriterWrote` no action waits for to `TurnHooks.backgroundWrote`, which
+ * lands here. [CeoRouting.registry] turns it on; `BackgroundSummaries()` alone stays off (tests).
  */
 class BackgroundSummaries(val enabled: Boolean = false) {
     /** After a committed turn: ask for a fresh conversation summary when it is due. */

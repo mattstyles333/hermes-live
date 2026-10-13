@@ -3,8 +3,6 @@ package com.folio.hermes.cascade.routing
 import com.folio.hermes.cascade.ActionState
 import com.folio.hermes.cascade.Decision
 import com.folio.hermes.cascade.DecisionRecord
-import com.folio.hermes.cascade.Effect
-import com.folio.hermes.cascade.FlushState
 import com.folio.hermes.cascade.HeldTurn
 import com.folio.hermes.cascade.OutboxEntry
 import com.folio.hermes.cascade.Route
@@ -44,7 +42,7 @@ class MemoRouting(val zone: ZoneId = ZoneId.systemDefault()) {
         if (s.flush != null || segmenting(s)) return true
         val sessions = sessions(tx)
         if (sessions.isEmpty()) {
-            startFlush(tx)
+            tx.startFlush()
             return true
         }
         val id = "memo:" + sessions.first().turnIds.first()
@@ -65,7 +63,8 @@ class MemoRouting(val zone: ZoneId = ZoneId.systemDefault()) {
     /** The held turns not segmented yet, as dictation sessions (S-B's, else grouped by `memoGapMs`). */
     fun sessions(tx: Tx): List<MemoBatchSession> {
         val s = tx.s
-        val raw = s.outbox.held.filter { !isMemo(tx, it.turnId) }
+        // Carried turns (hang-up, restart) are not offline dictation: the plain flush sends them.
+        val raw = s.outbox.held.filter { !isMemo(tx, it.turnId) && !it.turn.carried }
         if (raw.isEmpty()) return emptyList()
         val byId = raw.associateBy { it.turnId }
         val fromPolicy = s.ceo.memoSessions.mapNotNull { m ->
@@ -113,15 +112,7 @@ class MemoRouting(val zone: ZoneId = ZoneId.systemDefault()) {
     }
 
     /** Send the outbox through Jev, one held turn at a time (the reducer's flush continues it). */
-    fun startFlush(tx: Tx) {
-        val s = tx.s
-        val entry = s.outbox.first() ?: return
-        if (s.flush != null) return
-        val seq = s.turn.jevSeq + 1
-        val request = tx.jevRequest(entry.turn.text, emptyList(), s.settings.pause, speaking = false)
-        tx.s = tx.s.copy(turn = tx.s.turn.copy(jevSeq = seq), flush = FlushState(turnId = entry.turnId, jevSeq = seq, request = request, startedAt = s.nowMs))
-        tx.effects += Effect.CallJev(seq, request, s.settings.jevTimeoutMs, early = false)
-    }
+    fun startFlush(tx: Tx) = tx.startFlush()
 
     /** "Dictated offline 14:32–14:41." for an instruction from offline dictation, else null. */
     fun offlineNote(tx: Tx, turnId: String): String? {

@@ -40,6 +40,9 @@ interface ConversationPolicy {
     /** ▶ on a finished task card: its spoken briefing, mic off (R-CONV-2). */
     fun play(tx: Tx, taskId: String) = Unit
 
+    /** A past conversation was opened from the history list (R-CONV-1): make it the current one. Default: nothing. */
+    fun open(tx: Tx, conversationId: String) = Unit
+
     companion object {
         val None: ConversationPolicy = object : ConversationPolicy {}
     }

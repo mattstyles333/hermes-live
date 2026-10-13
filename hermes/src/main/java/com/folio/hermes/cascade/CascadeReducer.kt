@@ -75,13 +75,22 @@ class CascadeReducer(val env: CascadeEnv) {
                 else -> env.handlers.hooks.tap(this, event)
             }
             is Event.WordChosen -> env.handlers.hooks.wordChosen(this, event)
-            is Event.ResumeChosen -> env.conversation.resume(this, event.choice)
+            is Event.ResumeChosen -> {
+                env.conversation.resume(this, event.choice)
+                releaseOffCall(speakResults = event.choice != ResumeChoice.New)
+            }
             is Event.TimerFired -> timer(event.timer)
             is Event.JevAnswered ->
                 if (s.flush?.jevSeq == event.seq) flushAnswered(event.result) else turn(TurnRules.answered(s.turn, event.seq, event.result, event.atMs, ask))
             is Event.WriterSentence -> sentence(event.seq, event.text)
             is Event.WriterFinished -> s.writers[event.seq]?.let { writerEnded(it, event.failure) }
-            is Event.WriterWrote -> resume("plan:${event.seq}", ActionResult.Wrote(event.result))
+            is Event.WriterWrote ->
+                if (s.actions.active?.waitingOn == "plan:${event.seq}") {
+                    resume("plan:${event.seq}", ActionResult.Wrote(event.result))
+                } else {
+                    // Off the critical path (R-CTX-2): a whole answer no action waits for.
+                    env.handlers.hooks.backgroundWrote(this, event.seq, event.result)
+                }
             is Event.BusyModeRead -> resume("busy:${event.seq}", ActionResult.Busy(event.mode))
             is Event.ClipReady -> clipReady(event.piece, event.outcome)
             is Event.PlaybackStarted -> playbackStarted(event.piece, event.atMs)
@@ -94,26 +103,56 @@ class CascadeReducer(val env: CascadeEnv) {
                     env.handlers.hooks.taskUpdated(this, event)
                 }
             }
-            is Event.TaskRunEnded -> tasks(s.tasks.runEnded(event.taskId, event.runId, s.wallMs))
+            is Event.TaskRunEnded -> {
+                val known = s.tasks[event.taskId]?.runs?.containsKey(event.runId) == true
+                tasks(s.tasks.runEnded(event.taskId, event.runId, s.wallMs))
+                if (known) env.handlers.hooks.taskRunEnded(this, event)
+            }
             is Event.TaskInterrupted -> {
                 tasks(s.tasks.interrupted(event.taskId, event.ok))
                 resume("interrupt:${event.taskId}", ActionResult.Interrupted(event.taskId, event.ok))
             }
             is Event.TaskSessionBound -> s = s.copy(tasks = s.tasks.bound(event.taskId, event.storedSessionId))
+            is Event.TaskSessionOpened -> tasks(s.tasks.sessionOpened(event.taskId, event.runId, event.storedSessionId))
+            is Event.RunNotReceived -> env.registry.notReceived(this, event)
+            is Event.Restore -> restore(event.restored, call = false)
+            is Event.OpenConversation -> env.conversation.open(this, event.conversationId)
         }
     }
 
     private fun Tx.start(event: Event.Start) {
         if (s.started) return
-        val stamp = s
-        val base = event.restored ?: s
-        s = base.copy(nowMs = stamp.nowMs, wallMs = stamp.wallMs, settings = stamp.settings, started = true)
-        // What arrived while no call was open is handled now (C1: buffered until the next start).
-        val waiting = s.offCall
-        s = s.copy(offCall = OffCallState())
-        waiting.results.forEach { env.handlers.result.arrived(this, it) }
-        waiting.requests.forEach { env.handlers.hooks.taskRequest(this, it) }
+        restore(event.restored, call = true)
+        // What arrived while no call was open is handled now (C1: buffered until the next start),
+        // unless the Resume card is up: then after Play or Continue (R-CONV-2), never over it.
+        if (s.conversation.resume == null) releaseOffCall(speakResults = true)
         env.conversation.briefing(this)
+    }
+
+    /**
+     * Take the stored state ([restored], read by the actor) and, the first time, let the seams
+     * settle it: the registry starts again what never left, the hooks fill free slots. [call]:
+     * a call starts now; otherwise this is the off-call [Event.Restore] (tasks run, nothing is said).
+     */
+    private fun Tx.restore(restored: State?, call: Boolean) {
+        if (s.started || (!call && s.restored)) return
+        val stamp = s
+        val first = !s.restored
+        val base = restored ?: s
+        s = base.copy(nowMs = stamp.nowMs, wallMs = stamp.wallMs, settings = stamp.settings, started = call, restored = true)
+        if (first) {
+            env.registry.restored(this)
+            env.handlers.hooks.restored(this)
+        }
+    }
+
+    /** Results and requests held while no call was open (or while the Resume card showed). New: results stay unread on their cards. */
+    private fun Tx.releaseOffCall(speakResults: Boolean) {
+        val waiting = s.offCall
+        if (waiting.results.isEmpty() && waiting.requests.isEmpty()) return
+        s = s.copy(offCall = OffCallState())
+        if (speakResults) waiting.results.filter { it.taskId !in s.resultUtterances }.forEach { env.handlers.result.arrived(this, it) }
+        waiting.requests.forEach { env.handlers.hooks.taskRequest(this, it) }
     }
 
     /**
@@ -132,6 +171,7 @@ class CascadeReducer(val env: CascadeEnv) {
         s.writers.values.filter { it.owner is WriterOwner.Result }.forEach { env.handlers.result.written(this, it, it.pieces > 0) }
         val (cut, _) = s.speech.cutIn()
         val current = cut.current
+        holdUnfinished()
         s = s.copy(
             writers = emptyMap(),
             writer = s.writer.copy(streaming = false),
@@ -144,6 +184,27 @@ class CascadeReducer(val env: CascadeEnv) {
         )
         flushAwaiting()
     }
+
+    /**
+     * Hang-up mid-action (R-DUR-5): a committed turn whose work may not have reached Hermes
+     * (new task, update, cancel) is held in the outbox and carried out at the next reconnect;
+     * steps already done (`task`, `update:<id>`, lines) are not repeated. A conversational turn
+     * (reply, status, read a result, clarify, goodbye) is dropped: its answer would be out of
+     * context at the next call.
+     */
+    private fun Tx.holdUnfinished() {
+        val unfinished = listOfNotNull(s.actions.active) + s.actions.waiting
+        for (a in unfinished) {
+            if (a.resend || a.turnId in s.outbox.sent || !a.decision.route.isWork) continue
+            if (s.outbox.stageDone(a.turnId, NEW_TASK_STAGE) || (a.decision.route as? Route.UpdateTask)?.let { updateSent(a.turnId, it.taskId) } == true) continue
+            val (box, held) = s.outbox.hold(a.turnId, HeldTurn(a.text, a.speechEndAt, s.wallMs, a.transcript, carried = true))
+            if (!held) continue
+            s = s.copy(outbox = box)
+            report("cascade.outbox", mapOf("event" to "held_at_stop", "size" to s.outbox.size))
+        }
+    }
+
+    private val Route.isWork: Boolean get() = this is Route.NewTask || this is Route.UpdateTask || this is Route.CancelTask
 
     // ── turn-taking ─────────────────────────────────────────────────────────────────────────
 
@@ -457,26 +518,18 @@ class CascadeReducer(val env: CascadeEnv) {
         val wasOffline = !s.connection.online
         if (wasOffline) emit(CascadeEvent.Online)
         s = s.copy(connection = s.connection.copy(online = true))
-        if (s.outbox.size == 0) return
+        if (s.outbox.size == 0) {
+            // Nothing held: memo mode ends here (with held turns, the conversation seam ends it).
+            if (s.connection.memo) {
+                s = s.copy(connection = s.connection.copy(memo = false))
+                emit(CascadeEvent.Memo(false))
+            }
+            return
+        }
         if (env.conversation.online(this)) return
         if (s.flush != null) return
         if (wasOffline) say(AppLines.ONLINE)
-        s = s.copy(flush = FlushState(turnId = ""))
-        flushNext()
-    }
-
-    /** Send the next held turn again: Jev decides afresh; steps that already happened are not repeated. */
-    private fun Tx.flushNext() {
-        val f = s.flush ?: return
-        val entry = s.outbox.first()
-        if (entry == null) {
-            endFlush()
-            return
-        }
-        val seq = s.turn.jevSeq + 1
-        val request = jevRequest(entry.turn.text, emptyList(), s.settings.pause, speaking = false)
-        s = s.copy(turn = s.turn.copy(jevSeq = seq), flush = f.copy(turnId = entry.turnId, jevSeq = seq, request = request, startedAt = s.nowMs))
-        effects += Effect.CallJev(seq, request, s.settings.jevTimeoutMs, early = false)
+        startFlush()
     }
 
     private fun Tx.flushAnswered(result: OpenRouterResult<Map<String, JevAnswer>>) {
@@ -498,26 +551,16 @@ class CascadeReducer(val env: CascadeEnv) {
                 )
                 enqueue(ActionState(entry.turnId, entry.turn.text, decision, entry.turn.speechEndAt, record, resend = true))
             }
-            is OpenRouterResult.Failed ->
-                if (result.kind == FailureKind.Offline) {
-                    endFlush()
-                } else {
-                    say(AppLines.SAY_AGAIN, SpeechKind.Reply)
-                    flushSent(entry.turnId)
+            is OpenRouterResult.Failed -> {
+                // Never drop a held turn on a failed resend (R-DUR-4): it stays held and goes
+                // with the next reconnect or call. Offline needs no word; anything else is said once.
+                if (result.kind != FailureKind.Offline) {
+                    report("cascade.outbox", mapOf("event" to "resend_failed", "kind" to result.kind.wire, "size" to s.outbox.size), warn = true)
+                    if (s.started) say(AppLines.GAVE_UP, SpeechKind.Reply)
                 }
+                endFlush()
+            }
         }
-    }
-
-    private fun Tx.flushSent(turnId: String) {
-        val f = s.flush ?: return
-        s = s.copy(outbox = s.outbox.markSent(turnId), flush = f.copy(sent = f.sent + 1, jevSeq = null))
-        flushNext()
-    }
-
-    private fun Tx.endFlush() {
-        val f = s.flush ?: return
-        s = s.copy(flush = null)
-        if (f.sent > 0) report("cascade.outbox", mapOf("event" to "sent", "count" to f.sent, "size" to s.outbox.size))
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────────────────────
@@ -530,6 +573,8 @@ class CascadeReducer(val env: CascadeEnv) {
     private fun Map<String, JevAnswer>.logged(): Map<String, LoggedAnswer> = mapValues { (_, a) -> LoggedAnswer(a.choice, a.confidence, a.probabilities) }
 
     companion object {
+        /** The outbox stage that says a turn's tasks exist (the new-task handlers mark it). */
+        const val NEW_TASK_STAGE = "task"
         const val TICK = "pause.tick"
         const val TICK_MS = 50L
         private const val KEEP_TURNS = 64

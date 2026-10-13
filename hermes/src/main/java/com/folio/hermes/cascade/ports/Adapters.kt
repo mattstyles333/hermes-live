@@ -72,6 +72,14 @@ class GatewayHermesPort(
         }
     }
 
+    /** A fresh conversation for [taskId] (never the stored id it had), created now; its stored id. */
+    override suspend fun create(taskId: String, label: String): String? {
+        val conversation = HermesConversation(gateway, config, options(label), null) { stored -> minted.tryEmit(taskId to stored) }
+        conversations[taskId] = conversation
+        conversation.ensureSession()
+        return conversation.storedSessionId
+    }
+
     override fun submit(taskId: String, text: String, voiceContext: String, queued: Boolean, interruptFirst: Boolean): Flow<TurnUpdate> {
         val conversation = conversations[taskId] ?: return emptyFlow()
         return conversation.turn(text, PromptSurface.VoiceLive, voiceContext, interruptFirst = interruptFirst, queued = queued)

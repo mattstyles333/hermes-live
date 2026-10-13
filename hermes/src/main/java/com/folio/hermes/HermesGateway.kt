@@ -158,12 +158,14 @@ class HermesGateway(
     /**
      * `session.resume {session_id: stored, omit_messages: true}`: bind a stored session to this
      * socket (returns the live runtime id, possibly new). Unanswered approval/clarify requests in
-     * the reply are re-delivered on [events].
+     * the reply are re-delivered on [events]. With [withMessages] the transcript comes too
+     * ([ResumedSession.messages], images as `[image]`), to read how the last turn ended.
      */
-    suspend fun resumeSession(storedSessionId: String, profile: String? = null): ResumedSession {
+    suspend fun resumeSession(storedSessionId: String, profile: String? = null, withMessages: Boolean = false): ResumedSession {
         val params = buildJsonObject {
             put("session_id", storedSessionId)
-            put("omit_messages", true)
+            put("omit_messages", !withMessages)
+            if (withMessages) put("inline_images", false)
             profile?.let { put("profile", it) }
         }
         val result = call("session.resume", params).jsonObject
@@ -177,6 +179,9 @@ class HermesGateway(
             status = result.string("status") ?: "idle",
             messageCount = result.long("message_count")?.toInt() ?: 0,
             openRequests = open.size,
+            messages = (result["messages"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+                .mapNotNull { m -> m.string("role")?.let { SessionMessage(it, m.string("text").orEmpty()) } },
+            pendingUserText = listOfNotNull(result.obj("inflight")?.string("user"), result.obj("queued")?.string("user")).filter { it.isNotBlank() },
         )
     }
 

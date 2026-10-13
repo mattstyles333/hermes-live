@@ -85,7 +85,17 @@ data class ResumedSession(
     val status: String,
     val messageCount: Int,
     val openRequests: Int,
+    /** The transcript as the server shows it; empty unless asked for (`omit_messages: false`). */
+    val messages: List<SessionMessage> = emptyList(),
+    /** User text the server holds but has not stored as a message yet: the live turn's (`inflight`) and the next queued one (`queued`). */
+    val pendingUserText: List<String> = emptyList(),
 )
+
+/** One transcript row from `session.resume` (`messages[]`: `role` and `text`; tool rows have no text). */
+data class SessionMessage(val role: String, val text: String)
+
+/** `session.resume` answered 4007: the server has no such stored session (never prompted, or deleted). */
+val HermesRpcException.isUnknownSession: Boolean get() = code == 4007
 
 /** What `prompt.submit` did with the text. */
 enum class SubmitStatus {

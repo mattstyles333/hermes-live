@@ -108,9 +108,32 @@ sealed interface Event {
 
     /** Hermes minted a stored session id for [taskId] (persist it; R-DUR-3). */
     data class TaskSessionBound(val taskId: String, val storedSessionId: String) : Event
+
+    /**
+     * [Effect.OpenTaskSession] for run [runId] is done: the session's [storedSessionId] (null when
+     * the port cannot create ahead). The reducer stores it, then submits (R-DUR-2).
+     */
+    data class TaskSessionOpened(val taskId: String, val runId: Long, val storedSessionId: String?) : Event
+
+    /**
+     * Crash recovery found that Hermes never got run [runId] of [taskId] (the session has no such
+     * prompt): send it again, exactly once ([com.folio.hermes.cascade.registry.TaskRecovery]).
+     */
+    data class RunNotReceived(val taskId: String, val runId: Long) : Event
+
+    /**
+     * Restore the stored state without starting a call (the off-call service, after process
+     * death; R-CONV-3): tasks are recovered and finish, nothing is spoken. [restored] is what the
+     * persistence seam read back (the actor fills it in).
+     */
+    data class Restore(val restored: State? = null) : Event
+
+    /** Open past conversation [conversationId] from the history list (R-CONV-1): it becomes the current one. */
+    data class OpenConversation(val conversationId: String) : Event
 }
 
 /** Events handled with no call open: tasks belong to the user and keep running between calls (R-CONV-3). */
 val Event.offCall: Boolean
     get() = this is Event.Start || this is Event.TaskUpdated || this is Event.TaskRunEnded || this is Event.TaskInterrupted ||
-        this is Event.TaskSessionBound || this is Event.HermesConnection || this is Event.RenderProgressed
+        this is Event.TaskSessionBound || this is Event.HermesConnection || this is Event.RenderProgressed ||
+        this is Event.TaskSessionOpened || this is Event.RunNotReceived || this is Event.Restore || this is Event.OpenConversation

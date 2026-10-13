@@ -40,12 +40,17 @@ class CeoHarness(
     /** Everything Bill has said (stock lines and written sentences), in play order. */
     val spoken = mutableListOf<Piece>()
 
+    /** Session-first opens are answered at once (as the gateway would), so the submit follows in the same call. */
+    var openSessions = true
+
     fun at(ms: Long, event: Event): List<Effect> {
         now = maxOf(now, ms)
         val (next, out) = reducer.reduce(s.copy(nowMs = now, wallMs = epoch + now), event)
         s = next
         effects += out
-        return out
+        if (!openSessions) return out
+        val opened = out.filterIsInstance<Effect.OpenTaskSession>().flatMap { o -> at(ms, Event.TaskSessionOpened(o.taskId, o.runId, "stored-${o.taskId}")) }
+        return out + opened
     }
 
     fun on(event: Event): List<Effect> = at(now, event)

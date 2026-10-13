@@ -17,21 +17,16 @@ data class Placed(val started: List<String>, val queued: List<String>)
 
 /**
  * Voice tasks beyond the cap wait on the phone (R-TASK-1, R-TASK-2: "split into ≤ 4, the rest
- * queued"). A queued task is a [TaskRecord] that is running but has no runs and no events yet:
- * the card shows it as Queued, its `last_event` reads "queued", and nothing reaches Hermes until
- * [pump] launches it when a slot frees.
- *
- * Slots: a task whose turn has completed or failed no longer holds a Hermes worker, so it frees
- * its slot at that update (the reducer has no hook after `TaskRunEnded`).
+ * queued"). A queued task is a running [TaskRecord] marked [TaskRecord.queued], with no runs: the
+ * card shows it as Queued, its `last_event` reads "queued", and nothing reaches Hermes until
+ * [pump] launches it when a slot frees. The hooks pump after every run ends and when the stored
+ * state is read back (a queued task survives restarts and is never resumed).
  */
 object TaskQueue {
-    fun isQueued(t: TaskRecord): Boolean = t.state == TaskState.Running && t.events.isEmpty() && t.runs.isEmpty()
-
-    private fun finishing(t: TaskRecord): Boolean =
-        t.active <= 1 && t.events.lastOrNull().let { it is TaskEvent.Finished || it is TaskEvent.Failed }
+    fun isQueued(t: TaskRecord): Boolean = t.state == TaskState.Running && t.runs.isEmpty() && (t.queued || t.events.isEmpty())
 
     /** Tasks holding a Hermes slot. */
-    fun busy(table: TaskTable): Int = table.tasks.count { it.state == TaskState.Running && !isQueued(it) && !finishing(it) }
+    fun busy(table: TaskTable): Int = table.tasks.count { it.state == TaskState.Running && !isQueued(it) }
 
     fun queued(table: TaskTable): List<TaskRecord> = table.tasks.filter(::isQueued)
 
@@ -45,11 +40,7 @@ object TaskQueue {
         for (p in planned) {
             val s = tx.s
             val id = "t${s.tasks.counter + 1}"
-            val record = TaskRecord(
-                id, p.label, s.wallMs, brief = p.brief, summary = p.summary, turnId = turnId, offline = offline,
-                // Shown as Queued (not Starting) until it launches; `accepted` is reset then.
-                queuedAtServer = true, accepted = true,
-            )
+            val record = TaskRecord(id, p.label, s.wallMs, brief = p.brief, summary = p.summary, turnId = turnId, offline = offline, queued = true)
             tx.s = s.copy(tasks = s.tasks.copy(tasks = s.tasks.tasks + record, counter = s.tasks.counter + 1))
             val room = busy(tx.s.tasks) < tx.s.settings.taskCap && started.size < tx.s.settings.maxBriefsPerTurn.coerceAtLeast(1)
             if (room && queued.isEmpty()) {
@@ -86,7 +77,7 @@ object TaskQueue {
     fun drop(tx: Tx, id: String): Boolean {
         val t = tx.s.tasks[id]?.takeIf(::isQueued) ?: return false
         val now = tx.s.wallMs
-        val record = t.copy(state = TaskState.Cancelled, cancelled = true, finishedAt = now, queuedAtServer = false).log(TaskEvent.Cancelled(now))
+        val record = t.copy(state = TaskState.Cancelled, cancelled = true, finishedAt = now, queued = false).log(TaskEvent.Cancelled(now))
         tx.s = tx.s.copy(tasks = tx.s.tasks.copy(tasks = tx.s.tasks.tasks.map { if (it.id == id) record else it }))
         tx.emit(CascadeEvent.TaskCancelled(id))
         return true
@@ -95,8 +86,8 @@ object TaskQueue {
     private fun launch(tx: Tx, id: String) {
         val s = tx.s
         val t = s.tasks[id] ?: return
-        val table = s.tasks.copy(tasks = s.tasks.tasks.map { if (it.id == id) it.copy(startedAt = s.wallMs, lastEventAt = s.wallMs, queuedAtServer = false, accepted = false) else it })
-        val step = table.launch(id, t.brief.orEmpty(), tx.voiceContext(), RunKind.Start, s.wallMs)
+        val table = s.tasks.copy(tasks = s.tasks.tasks.map { if (it.id == id) it.copy(startedAt = s.wallMs, lastEventAt = s.wallMs, queued = false) else it })
+        val step = table.launch(id, t.brief.orEmpty(), tx.voiceContext(), RunKind.Start, s.wallMs, t.turnId)
         tx.tasks(
             TaskStep(
                 step.table,

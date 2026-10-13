@@ -19,14 +19,17 @@ object Snapshots {
 
     /** Turns committed and still being acted on (R-DUR-1): stored as held so a restart carries them out. */
     fun pendingTurns(s: State): List<HeldDto> =
-        (listOfNotNull(s.actions.active) + s.actions.waiting).map { HeldDto(it.turnId, it.text, it.speechEndAt, it.record.atMs) }
+        (listOfNotNull(s.actions.active) + s.actions.waiting).map { HeldDto(it.turnId, it.text, it.speechEndAt, it.record.atMs, carried = true) }
 
-    /** Turns whose task was submitted and not yet `Accepted` (R-DUR-2). */
-    fun awaiting(s: State): List<String> =
-        s.tasks.tasks.filter { it.send == SendState.Sending && it.state == TaskState.Running }.mapNotNull { it.turnId }.distinct()
+    /** Turns whose task, or whose update run, was submitted and not yet `Accepted` (R-DUR-2). */
+    fun awaiting(s: State): List<String> {
+        val tasks = s.tasks.tasks.filter { it.send == SendState.Sending && it.state == TaskState.Running }.mapNotNull { it.turnId }
+        val updates = s.tasks.tasks.flatMap { t -> t.runs.values.filter { !it.accepted }.mapNotNull { it.turnId } }
+        return (tasks + updates).distinct()
+    }
 
     fun outbox(s: State): OutboxDto {
-        val held = s.outbox.held.map { HeldDto(it.turnId, it.turn.text, it.turn.speechEndAt, it.turn.wallMs) }
+        val held = s.outbox.held.map { HeldDto(it.turnId, it.turn.text, it.turn.speechEndAt, it.turn.wallMs, it.turn.carried) }
         val heldIds = held.map { it.turnId }.toSet()
         val pending = pendingTurns(s).filter { it.turnId !in heldIds && it.turnId !in s.outbox.sent }
         val awaiting = awaiting(s)
@@ -64,10 +67,12 @@ object Snapshots {
         conversation = conversation(s),
         memo = s.ceo.memoSessions.map { MemoDto(it.id, it.startedWallMs, it.endedWallMs, it.turnIds, it.speechMs) },
         offCall = s.offCall.results.map { OffCallDto(it.taskId, it.ok) },
+        marks = s.marks.mapValues { (_, v) -> v.sorted() },
     )
 
     /** True if nothing [core] reads changed between [a] and [b] (a cheap check before building it). */
     fun sameCore(a: State, b: State): Boolean =
         a.outbox === b.outbox && a.actions === b.actions && a.tasks === b.tasks && a.conversation === b.conversation &&
-            a.ceo === b.ceo && a.offCall === b.offCall && a.recent === b.recent && a.speech === b.speech && a.turn.turns == b.turn.turns
+            a.ceo === b.ceo && a.offCall === b.offCall && a.recent === b.recent && a.speech === b.speech && a.turn.turns == b.turn.turns &&
+            a.marks === b.marks
 }

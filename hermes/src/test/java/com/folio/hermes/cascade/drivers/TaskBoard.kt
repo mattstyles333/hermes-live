@@ -77,6 +77,7 @@ class TaskBoard(
     private fun run(effect: Effect) {
         when (effect) {
             is Effect.SubmitTask -> runner.submit(effect)
+            is Effect.OpenTaskSession -> runner.open(effect)
             is Effect.InterruptTask -> runner.interrupt(effect.taskId)
             is Effect.CancelTaskRuns -> runner.cancelRuns(effect.taskId)
             else -> error("unexpected effect $effect")
@@ -87,6 +88,7 @@ class TaskBoard(
         when (event) {
             is Event.TaskUpdated -> apply { it.update(event.taskId, event.runId, event.update, now()) }
             is Event.TaskRunEnded -> apply { it.runEnded(event.taskId, event.runId, now()) }
+            is Event.TaskSessionOpened -> apply { it.sessionOpened(event.taskId, event.runId, event.storedSessionId) }
             is Event.TaskInterrupted -> {
                 apply { it.interrupted(event.taskId, event.ok) }
                 synchronized(lock) { interrupts.remove(event.taskId) }?.complete(Unit)

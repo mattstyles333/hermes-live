@@ -39,6 +39,9 @@ object DurablePersistence : StatePersistence {
     /** Finished, read tasks kept across restarts (running, unheard, waiting and not-sent tasks are always kept). */
     const val KEEP_FINISHED = 30
 
+    private const val NEW_TASK_STAGE = "task"
+    private const val UPDATE_STAGE = "update:"
+
     override fun save(before: State, after: State): List<Effect> {
         if (after.conversation.id == null) return emptyList()
         val firstWrite = before.conversation.id == null
@@ -70,13 +73,16 @@ object DurablePersistence : StatePersistence {
         val wall = fresh.wallMs
         val stored = store.keys(StoreKeys.TASK_PREFIX).mapNotNull { StoreCodec.decodeTask(store.get(it)) }
         val tasks = prune(store, stored.map { recover(it, wall) }.sortedWith(compareBy({ idNumber(it.id) }, { it.startedAt })))
-        val owned = tasks.mapNotNull { it.turnId }.toSet()
-
         val outbox = core.outbox
+        // A turn whose task or update exists (or whose work step was marked done) belongs to the
+        // registry: it is never sent again from the outbox (R-DUR-2).
+        val worked = outbox.stages.filterValues { v -> v.any { it == NEW_TASK_STAGE || it.startsWith(UPDATE_STAGE) } }.keys
+        val owned = tasks.mapNotNull { it.turnId }.toSet() + tasks.flatMap { t -> t.runs.values.mapNotNull { it.turnId } } + worked
+
         val held = outbox.held.filter { it.turnId !in owned }.distinctBy { it.turnId }
         val sent = (outbox.sent + outbox.awaiting + outbox.held.map { it.turnId }.filter { it in owned }).distinct().takeLast(OutboxState.KEEP)
         val box = OutboxState(
-            held = held.map { OutboxEntry(it.turnId, HeldTurn(it.text, it.speechEndAt, it.wallMs)) },
+            held = held.map { OutboxEntry(it.turnId, HeldTurn(it.text, it.speechEndAt, it.wallMs, carried = it.carried)) },
             sent = sent,
             stages = outbox.stages.mapValues { (_, v) -> v.toSet() },
         )
@@ -101,13 +107,22 @@ object DurablePersistence : StatePersistence {
             outbox = box,
             ceo = fresh.ceo.copy(memoSessions = memo),
             offCall = OffCallState(results = offCall),
+            marks = core.marks.mapValues { (_, v) -> v.toSet() },
         )
         return Recent.seed(base, conversation?.id ?: Snapshots.conversationId(wall), conversation?.summary.orEmpty(), conversation?.recent.orEmpty())
     }
 
-    /** Crash recovery for one stored task (first load only). */
+    /**
+     * Crash recovery for one stored task (first load only):
+     * - bound to a stored session with runs: kept; [com.folio.hermes.cascade.registry.TaskRecovery] asks Hermes;
+     * - queued on the phone (nothing sent): kept, it starts when a slot frees (never resumed);
+     * - every run still opening its session: the prompt never left, so it starts again ([TaskRecord.relaunch]);
+     * - otherwise (a port that cannot create ahead): failed, and `NotSent` if it may have gone.
+     */
     private fun recover(t: TaskRecord, wall: Long): TaskRecord {
         if (t.state != TaskState.Running || (t.storedSessionId != null && t.runs.isNotEmpty())) return t
+        if (t.queued || (t.runs.isEmpty() && t.events.isEmpty())) return t.copy(active = 0)
+        if (t.runs.isNotEmpty() && t.runs.values.all { it.opening }) return t.copy(relaunch = true)
         val stopped = t.copy(state = TaskState.Failed, active = 0, runs = emptyMap(), lastFailed = true, finishedAt = wall, currentTool = null, queuedAtServer = false)
             .log(TaskEvent.Failed(wall))
         // Sent or not, nobody can tell: never resent on its own (no double submit); the card offers a retry.

@@ -17,6 +17,7 @@ import com.folio.hermes.cascade.writer.WriterPrompts
 object UpdateTaskHandler : RouteHandler {
     override fun start(tx: Tx): Next {
         val route = tx.action.decision.route as Route.UpdateTask
+        if (tx.updateSent(tx.action.turnId, route.taskId)) return Next.Done
         when (val r = tx.tasks(tx.s.tasks.reopen(route.taskId, tx.s.settings.taskCap))) {
             UpdateResult.NotFound -> {
                 tx.play(AppLines.WHICH_UPDATE)
@@ -39,9 +40,11 @@ object UpdateTaskHandler : RouteHandler {
 
     private fun send(tx: Tx, route: Route.UpdateTask, kind: RunKind): Next {
         val a = tx.action
-        tx.tasks(tx.s.tasks.launch(route.taskId, a.text, tx.voiceContext(), kind, tx.s.wallMs))
-        tx.emit(CascadeEvent.UpdateSent(route.taskId, route.mode))
-        tx.report("cascade.task", mapOf("event" to "update", "running" to tx.s.tasks.runningCount, "how" to kind.how))
+        // Exactly once per turn (R-DUR-2): a resend of this turn finds its update already sent.
+        if (tx.launchUpdate(route.taskId, a.text, kind, a.turnId) != null) {
+            tx.emit(CascadeEvent.UpdateSent(route.taskId, route.mode))
+            tx.report("cascade.task", mapOf("event" to "update", "running" to tx.s.tasks.runningCount, "how" to kind.how))
+        }
         val label = tx.s.tasks[route.taskId]?.label.orEmpty()
         if (a.decision.writer) return tx.write(WriterPrompts.spoken(a.line, 1), WriterPrompts.updated(label, route.mode), null)
         if (a.slot == null) tx.play(if (route.mode == UpdateMode.Queue) "update.queued" else "update.redirect")

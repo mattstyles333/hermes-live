@@ -74,6 +74,13 @@ sealed interface Effect {
         val stopOnRedirect: Boolean,
     ) : Effect
 
+    /**
+     * Create task [taskId]'s Hermes session ahead of run [runId]'s prompt (`HermesPort.create`).
+     * Result: [Event.TaskSessionOpened]; on failure the run fails like a submit
+     * ([Event.TaskUpdated] `Failed`, then [Event.TaskRunEnded]).
+     */
+    data class OpenTaskSession(val taskId: String, val runId: Long, val label: String) : Effect
+
     /** `session.interrupt`. Result: [Event.TaskInterrupted]. */
     data class InterruptTask(val taskId: String) : Effect
 
@@ -108,4 +115,7 @@ sealed interface Effect {
 
     /** A haptic tick ([kind]: `turn_committed`, `task_finished`). */
     data class Haptic(val kind: String) : Effect
+
+    /** The user corrected [heard] to [chosen] on screen: the app adds it to the vocabulary (`VocabularyStore.learn`). */
+    data class LearnWord(val heard: String, val chosen: String) : Effect
 }

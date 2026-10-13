@@ -34,17 +34,17 @@ import org.junit.Test
  * ([com.folio.hermes.cascade.store.DurablePersistence], the task registry and conversations):
  * run a scenario, kill the actor before its k-th effect (for every k, durable writes included),
  * start a new actor and a [TaskRecovery] on the same [Store] and the same [FakeServer], and check
- * that across every kill point of the new-task scenarios (offline flush and online)
+ * that across every kill point of every scenario (offline flush, online, an update with the
+ * writer, an update with the line only)
  * - **no double submit:** the server never gets a turn's text twice;
  * - **no lost turn:** every committed turn (stored at any point, or past its commit step's durable
  *   writes) is submitted, still held, or a `NotSent` task with its brief ("tap to retry"; R-DUR-4);
- * - **persist before network (R-DUR-1):** whatever new task the server got at the kill, the store had.
+ * - **persist before network (R-DUR-1):** whatever task or update the server got at the kill, the store had.
  *
- * Updates to a running task have a measured gap outside S-B (see the update tests).
- *
- * The one honest grey zone: a kill after the prompt left but before Hermes's session id was
- * stored. Nobody can tell whether it arrived, so the task is `NotSent` (never resent on its own).
- * Those kills are counted and must stay inside that window.
+ * Exact idempotency (R-DUR-2): the task's session is created and its id stored before the prompt
+ * leaves, and an update's run (turn id, text) is stored before it leaves, so recovery can ask
+ * Hermes which prompts arrived. Nothing is left to the user: `NotSent` is 0. A port that cannot
+ * create ahead keeps the old grey zone (the last test), bounded and never doubled.
  */
 class CascadeKillRestartTest {
     private val bank = PhraseBank.load()
@@ -79,6 +79,8 @@ class CascadeKillRestartTest {
         mapOf("turn" to answer("done"), "action" to answer("update_task"), "task" to answer("t1"), "line" to answer("update.queued"), "enough" to answer(enough)),
     )
 
+    private var createAhead = true
+
     private fun TestScope.actor(store: Store, server: FakeServer, gate: EffectGate): Run {
         val clock = TestClock(this)
         val openRouter = FakeOpenRouter(clock).apply {
@@ -86,7 +88,7 @@ class CascadeKillRestartTest {
             // The brief is the request itself, so each turn's submit is recognisable.
             plan = { prompt -> OpenRouterResult.Ok("LABEL: job\nPROMPT: ${prompt.substringAfter("The request: \"").trimEnd('"')}\nSAY: On it.") }
         }
-        val hermes = ClientHermes(server)
+        val hermes = ClientHermes(server).apply { createAhead = this@CascadeKillRestartTest.createAhead }
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
         val actor = CascadeActor(
             scope = scope, env = durableEnv(bank), settings = { CascadeSettings() },
@@ -182,31 +184,28 @@ class CascadeKillRestartTest {
     @Test fun killingTheOnlineScenarioAnywhereLosesNothingAndNeverSubmitsTwice() = killEverywhere("online") { online(it) }
 
     /*
-     * Updates to a running task: a measured gap outside S-B, held to its current size so a fix shows.
-     * Nothing links an update's run to its turn: `TaskRun` has no turn id and `UpdateTaskHandler`
-     * marks no outbox stage. So the outbox cannot keep an update turn until its run is accepted, and
-     * a resend cannot tell that the update already went out.
-     * - Writer on: the turn stays held while Bill speaks after the submit; a kill there resends it (2 doubles).
-     * - Line only: the turn commits, submits and finishes in one step, so it is never stored; a kill
-     *   before the submit runs loses it (8 lost).
-     * Fix (hub/S-A): mark an outbox stage when an update launches and skip it on resend, and add
-     * the turn id to `TaskRun` (additive) so the store keeps the turn until that run is accepted.
+     * Updates to a running task (spec v2 §14 item 1). Before: 2 doubles with the writer on, 8 lost
+     * with the line only. Now the run carries its turn id and text until `Accepted`, the outbox
+     * marks `update:<task>` in the same step, and recovery resends only what Hermes never got.
      */
-    @Test fun killingAnUpdateWithTheWriterStaysWithinItsKnownGap() {
+    @Test fun killingAnUpdateWithTheWriterLosesNothingAndNeverSubmitsTwice() {
         updateAnswer = update("line_then_writer")
-        killEverywhere("update+writer", listOf(texts[0], UPDATE), knownGap = 2) { updating(it) }
+        killEverywhere("update+writer", listOf(texts[0], UPDATE)) { updating(it) }
     }
 
-    @Test fun killingAnUpdateWithTheLineOnlyStaysWithinItsKnownGap() {
+    @Test fun killingAnUpdateWithTheLineOnlyLosesNothingAndNeverSubmitsTwice() {
         updateAnswer = update("line_only")
-        killEverywhere("update+line", listOf(texts[0], UPDATE), knownGap = 8) { updating(it) }
+        killEverywhere("update+line", listOf(texts[0], UPDATE)) { updating(it) }
     }
 
-    /**
-     * Kill before every effect k and restart. [knownGap]: lost turns plus double submits this
-     * scenario may still show (0 unless a gap outside S-B is documented at the call).
-     */
-    private fun killEverywhere(name: String, texts: List<String> = this.texts, knownGap: Int = 0, scenario: TestScope.(Run) -> Unit) {
+    /** A port that cannot create a session ahead (the old path): no double and no loss, but some kills end `NotSent`. */
+    @Test fun withoutSessionFirstTheGreyZoneIsBoundedAndNeverDoubled() {
+        createAhead = false
+        killEverywhere("online, no session-first", allowNotSent = true) { online(it) }
+    }
+
+    /** Kill before every effect k and restart. [allowNotSent]: the old grey zone is expected (no session-first). */
+    private fun killEverywhere(name: String, texts: List<String> = this.texts, allowNotSent: Boolean = false, scenario: TestScope.(Run) -> Unit) {
         val total = countEffects(scenario)
         assertTrue("the scenario runs a real number of effects ($total)", total > 40)
         var lost = 0
@@ -232,8 +231,9 @@ class CascadeKillRestartTest {
                 first.close()
                 val atKill = Durable.read(store)
                 everDurable += atKill.turnIds
-                // R-DUR-1: a new task never reaches Hermes before it is stored.
+                // R-DUR-1: a new task never reaches Hermes before it is stored, nor an update before its run or stage.
                 server.prompts.filter { it != UPDATE }.forEach { p -> assertTrue("k=$k: '$p' reached Hermes before its task was stored", atKill.tasks.any { it.brief == p }) }
+                if (UPDATE in server.prompts) assertTrue("k=$k: the update reached Hermes before it was stored", "u2" in atKill.updates)
 
                 val second = actor(store, server, EffectGate.Open)
                 second.actor.start()
@@ -273,18 +273,18 @@ class CascadeKillRestartTest {
             }
         }
         println("kill-restart $name: $total effects, $durableKills kills with durable turns, lost=$lost doubles=$doubles notSent=$notSent (grey zone $greyZone)")
-        if (knownGap == 0) {
-            assertEquals("lost turns", 0, lost)
-            assertEquals("double submits", 0, doubles)
-        } else {
-            assertTrue("$name: lost + doubles stay within the documented gap ($lost + $doubles <= $knownGap)", lost + doubles <= knownGap)
-        }
+        assertEquals("$name: lost turns", 0, lost)
+        assertEquals("$name: double submits", 0, doubles)
         assertTrue("most kills happen with durable turns ($durableKills)", durableKills > total / 3)
-        assertTrue("NotSent only in the narrow window between persist and Hermes's session id ($notSent)", notSent <= total / 5)
+        if (allowNotSent) {
+            assertTrue("NotSent only in the narrow window between persist and Hermes's session id ($notSent)", notSent <= total / 5)
+        } else {
+            assertEquals("$name: session-first leaves nothing for the user to retry", 0, notSent)
+        }
     }
 
     /** What the store holds, read with the real codec. */
-    private class Durable(val tasks: List<TaskRecord>, val held: Set<String>, val turnIds: Set<String>) {
+    private class Durable(val tasks: List<TaskRecord>, val held: Set<String>, val turnIds: Set<String>, val updates: Set<String>) {
         override fun toString() = "tasks=${tasks.map { "${it.id}/${it.turnId}/${it.send}/${it.storedSessionId}" }} held=$held"
 
         companion object {
@@ -292,7 +292,9 @@ class CascadeKillRestartTest {
                 val core = StoreCodec.decode(CoreDto.serializer(), store.get(StoreKeys.CORE)) ?: CoreDto()
                 val tasks = store.keys(StoreKeys.TASK_PREFIX).mapNotNull { StoreCodec.decodeTask(store.get(it)) }
                 val held = core.outbox.held.map { it.turnId }.toSet()
-                return Durable(tasks, held, held + core.outbox.awaiting + core.outbox.sent + tasks.mapNotNull { it.turnId })
+                val updates = tasks.flatMap { t -> t.runs.values.mapNotNull { it.turnId } }.toSet() +
+                    core.outbox.stages.filterValues { v -> v.any { it.startsWith("update:") } }.keys
+                return Durable(tasks, held, held + core.outbox.awaiting + core.outbox.sent + tasks.mapNotNull { it.turnId } + updates, updates)
             }
         }
     }
