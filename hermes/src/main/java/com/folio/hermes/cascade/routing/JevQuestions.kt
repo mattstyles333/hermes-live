@@ -48,9 +48,9 @@ object JevQuestions {
         ),
     )
 
-    /** Note: the probe's wording names `heard`, which the R-RT-4 state no longer has (it has `utterance`). Kept verbatim as measured. */
+    /** Judges `utterance`, the field the R-RT-4 state actually has (the probe named `heard` before 2026-10-13). */
     val CLARITY = JevQuestion(
-        "How clear is the transcript `heard` (speech-to-text can mishear)?",
+        "How clear is the transcript `utterance` (speech-to-text can mishear)?",
         linkedMapOf(
             CascadeBrain.CLEAR to "Clear and sensible",
             CascadeBrain.MINOR_DOUBT to "Sensible overall, but a word looks like a speech-to-text slip: an odd or split word " +

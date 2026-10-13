@@ -5,6 +5,7 @@ import com.folio.hermes.cascade.PhraseBank
 import com.folio.hermes.cascade.TaskBrief
 import com.folio.hermes.cascade.TaskState
 import com.folio.hermes.cascade.TurnContext
+import com.folio.hermes.cascade.Word
 import java.security.MessageDigest
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -28,10 +29,27 @@ class JevQuestionsTest {
         assertEquals("check stock of RB2140 and the blue ones", state["utterance"]!!.jsonPrimitive.content)
         assertEquals("and the blue ones", state["latest"]!!.jsonPrimitive.content)
         val task = state["tasks"]!!.jsonArray[0].jsonObject
-        assertEquals(listOf("id", "label", "status"), task.keys.toList())
+        // The probe's three fields, plus last_event and age_s (R-CTX-1, R-RT-7); the wording names none of them.
+        assertEquals(listOf("id", "label", "status", "last_event", "age_s"), task.keys.toList())
         assertEquals("running", task["status"]!!.jsonPrimitive.content)
+        assertEquals("working", task["last_event"]!!.jsonPrimitive.content)
+        assertEquals(40L, task["age_s"]!!.jsonPrimitive.content.toLong())
         assertEquals("Hello.", state["recent"]!!.jsonArray[0].jsonObject["bill"]!!.jsonPrimitive.content)
         assertFalse("no pending/heard fields any more", "pending" in state || "heard" in state)
+    }
+
+    @Test fun lastEventIsCappedAndExtrasOnlyWhenSet() {
+        val long = running.copy(lastEvent = "x".repeat(200))
+        val task = CascadeBrain.state(ctx(listOf(long)))["tasks"]!!.jsonArray[0].jsonObject
+        assertEquals(CascadeBrain.LAST_EVENT_CHARS, task["last_event"]!!.jsonPrimitive.content.length)
+        val plain = CascadeBrain.state(ctx(emptyList()), JevExtras())
+        assertFalse("uncertain" in plain || "conversation_summary" in plain || "held_summary" in plain)
+        val extras = CascadeBrain.state(
+            ctx(emptyList()),
+            JevExtras(listOf(Word("Sapphire", 0.3, listOf("Safilo"), uncertain = true)), heldSummary = "three jobs", conversationSummary = "talked stock"),
+        )
+        assertEquals(listOf("utterance", "latest", "silence_ms", "tasks", "recent", "speaking", "uncertain", "held_summary", "conversation_summary"), extras.keys.toList())
+        assertEquals("Safilo", extras["uncertain"]!!.jsonArray[0].jsonObject["alternatives"]!!.jsonArray[0].jsonPrimitive.content)
     }
 
     @Test fun splitAndClarityAreAskedOnEveryCall() {
@@ -70,6 +88,7 @@ class JevQuestionsTest {
             "Stop or drop a task: 'stop', 'kill', 'cancel', 'scrap that', 'never mind', 'forget it'",
             JevQuestions.ACTION.criteria["cancel_task"],
         )
+        assertEquals("How clear is the transcript `utterance` (speech-to-text can mishear)?", JevQuestions.CLARITY.instructions)
         // Every string at once: a wording change must come with a new probe run and a new fingerprint.
         val all = listOf(JevQuestions.TURN, JevQuestions.ACTION, JevQuestions.SPLIT, JevQuestions.CLARITY, JevQuestions.ENOUGH, JevQuestions.UPDATE_MODE)
             .joinToString("\n") { q -> q.instructions + "\n" + q.criteria.entries.joinToString("\n") { "${it.key}=${it.value}" } } +
@@ -79,7 +98,10 @@ class JevQuestionsTest {
     }
 
     private companion object {
-        /** SHA-256 of the probe5 strings, computed from the probe file itself (not from this copy). */
-        const val FINGERPRINT = "1edc308bba0cb44fe237c5a5515957f520a6dbc7104faa8afd1780592565934e"
+        /**
+         * SHA-256 of the probe strings, computed from the probe file itself (not from this copy):
+         * `~/reports/assets/hermes-cascade-jev-probe.py` as of 2026-10-13, whose CLARITY names `utterance`.
+         */
+        const val FINGERPRINT = "2bc9ccee6d23a90819360d97f758254c8900a07584564a4ad3242a46c7b89e02"
     }
 }
