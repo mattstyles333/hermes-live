@@ -55,7 +55,10 @@ data class VoiceUi(
     val decisionTurns: Int? = null,
     val corrections: List<Correction> = emptyList(),
     val message: String? = null,
-)
+) {
+    /** The cascade may run: Bill chosen and a usable key saved (the off-state gate's answer). */
+    val cascadeActive: Boolean get() = engine.state == EngineState.NeedsVoice || engine.state == EngineState.Ready
+}
 
 /**
  * Settings › Voice's state and actions over the [VoiceShell]. Reads that would create files

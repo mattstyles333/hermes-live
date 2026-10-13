@@ -39,6 +39,11 @@ object MemoEntry {
         else -> Mode.Cascade
     }
 
+    /** Tell the launcher the Memo shortcut was used (S-F calls this when a memo starts from it). */
+    fun reportUsed(context: Context) {
+        runCatching { context.getSystemService(ShortcutManager::class.java)?.reportShortcutUsed(SHORTCUT_ID) }
+    }
+
     fun isMemo(intent: Intent?): Boolean =
         intent != null && (intent.action == ACTION_MEMO || intent.getBooleanExtra(EXTRA_MEMO, false))
 
