@@ -44,6 +44,16 @@ class BargeInTest {
         assertTrue(decisions.dropWhile { it !is BargeIn.Decision.CutIn }.drop(1).all { it == BargeIn.Decision.Open })
     }
 
+    @Test fun acceptedAudioStartsWhereTheUsersRunBegan() {
+        val gate = BargeIn()
+        repeat(80) { gate.frame(-35.0, true, true, -20.0, floor) }
+        // A soft start: every other frame clears the estimate (below the quorum), then a firm voice.
+        repeat(10) { i -> assertEquals(BargeIn.Decision.Hold, gate.frame(if (i % 2 == 0) -18.0 else -30.0, true, true, -20.0, floor)) }
+        var cut: BargeIn.Decision.CutIn? = null
+        repeat(8) { if (cut == null) cut = gate.frame(-15.0, true, true, -20.0, floor) as? BargeIn.Decision.CutIn }
+        assertTrue("framesBack ${cut?.framesBack}", cut!!.framesBack in 12..16)
+    }
+
     @Test fun loudButNotSpeechDoesNotCutIn() {
         val gate = BargeIn()
         repeat(80) { gate.frame(-35.0, false, true, -20.0, floor) }

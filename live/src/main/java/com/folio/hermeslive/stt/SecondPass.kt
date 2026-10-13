@@ -22,6 +22,8 @@ class SecondPass(
     private val engine: OfflineEngine?,
     private val hotwords: () -> String,
     private val uncertainBelow: () -> Double,
+    /** Threshold for words both passes agree on (see [TranscriptMerge]). */
+    private val agreedBelow: () -> Double = { 0.0 },
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "stt-second-pass").apply { isDaemon = true } },
 ) {
     private class Held(val fast: List<FastWord>, val audioMs: Long) {
@@ -82,7 +84,8 @@ class SecondPass(
         lastTiming = Timing(segments.size, segments.sumOf { it.audioMs }, segments.sumOf { it.decodeMs }, waitMs)
         val threshold = uncertainBelow()
         if (texts.any { it == null }) return TranscriptMerge.fastOnly(segments.flatMap { it.fast }, threshold)
-        val parts = segments.zip(texts).map { (s, t) -> TranscriptMerge.merge(s.fast, t, threshold) }
+        val agreed = agreedBelow()
+        val parts = segments.zip(texts).map { (s, t) -> TranscriptMerge.merge(s.fast, t, threshold, agreed) }
         return Transcript(
             text = parts.joinToString(" ") { it.text }.trim(),
             words = parts.flatMap { it.words },

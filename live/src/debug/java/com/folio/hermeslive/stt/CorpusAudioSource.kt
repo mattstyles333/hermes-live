@@ -38,6 +38,9 @@ class CorpusAudioSource(
     @Volatile var currentId: String? = null
         private set
 
+    /** Clip id -> the sample index where it started (for latency measurements). */
+    val clipStarts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     var mix: ((startSample: Long, chunk: ShortArray, count: Int) -> Unit)? = null
 
     override var onRouteChanged: (() -> Unit)? = null
@@ -88,6 +91,7 @@ class CorpusAudioSource(
             }
             current = clip
             currentId = clip.id
+            clipStarts[clip.id] = emitted.get()
             at = 0
         }
         val n = minOf(buffer.size, clip.samples.size - at)
@@ -109,6 +113,9 @@ class CorpusAudioSource(
         }
         return n
     }
+
+    /** `System.nanoTime()` at which sample [sample] is due (paced sources only). */
+    fun nanosAt(sample: Long): Long = startNanos + nanosFor(sample)
 
     private fun nanosFor(samples: Long): Long =
         if (pace <= 0) 0 else (samples * 1_000_000_000.0 / AudioSource.SAMPLE_RATE / pace).toLong()

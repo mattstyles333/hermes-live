@@ -14,7 +14,10 @@ data class CutInReport(val playedMs: Long, val continuousMs: Long, val atSample:
 
 /** Pipeline knobs read at each segment start. */
 data class PipelineConfig(
-    val uncertainBelow: Double = 0.5,
+    /** Fast-pass words below this `ysProbs` confidence are uncertain (`CascadeSettings.uncertainBelow`; bench: 0.45). */
+    val uncertainBelow: Double = 0.45,
+    /** In an accurate transcript, words both passes agree on are uncertain below this (bench: 0, i.e. never). */
+    val agreedUncertainBelow: Double = 0.0,
     val bargeInMs: Long = 250L,
     /** Audio before the VAD fired that joins the segment (the VAD needs `minSpeech` to fire). */
     val preRollMs: Long = 480L,

@@ -44,6 +44,10 @@ data class BargeInConfig(
     val echoWindowMs: Long = 160L,
     /** Share of the last [bargeInMs] frames that must beat the estimate. */
     val quorum: Double = 0.6,
+    /** Gaps (frames) allowed inside the user's run of above-echo frames (syllable breaks). */
+    val runGapFrames: Int = 4,
+    /** At most this far back (ms) the accepted audio may start before the confirmation. */
+    val maxLookBackMs: Long = 1_500L,
     /** After playback stops, the room still rings for this long: keep gating. */
     val hangoverMs: Long = 250L,
     /** Playback quieter than this is not used for learning. */
@@ -53,6 +57,7 @@ data class BargeInConfig(
     val echoFrames: Int get() = maxOf(1, ceil(echoWindowMs / frameMs).toInt())
     val hangoverFrames: Int get() = ceil(hangoverMs / frameMs).toInt()
     val learnFrames: Int get() = maxOf(1, ceil(learnMs / frameMs).toInt())
+    val maxLookBackFrames: Int get() = ceil(maxLookBackMs / frameMs).toInt()
 }
 
 /**
@@ -106,7 +111,8 @@ class BargeIn(
 
         /**
          * Confirmed: the user has spoken over Bill for [continuousMs]. Accept audio from
-         * [framesBack] frames ago (the start of the confirming window), this frame included.
+         * [framesBack] frames ago (the start of the user's run of frames above the echo
+         * estimate, at least the confirming window), this frame included.
          */
         data class CutIn(val continuousMs: Long, val framesBack: Int) : Decision
     }
@@ -116,6 +122,10 @@ class BargeIn(
     private var quietFrames = Int.MAX_VALUE
     private var cut = false
     private var vadFrames = 0
+
+    /** Frames since the user's current run of above-estimate frames began, and since its last such frame. */
+    private var runFrames = 0
+    private var sinceAbove = Int.MAX_VALUE
 
     /** Frames of playback seen since the last [reset] (for tests and reports). */
     var playingFrames: Int = 0
@@ -140,13 +150,20 @@ class BargeIn(
         val isAbove = micDb > echo.estimateDb(refDb) + config.marginDb && micDb > floorDb + config.floorMarginDb
         above.addLast(isAbove)
         while (above.size > config.windowFrames) above.removeFirst()
+        if (isAbove) {
+            runFrames = if (sinceAbove > config.runGapFrames) 1 else runFrames + sinceAbove + 1
+            sinceAbove = 0
+        } else if (sinceAbove != Int.MAX_VALUE) {
+            sinceAbove++
+        }
         vadFrames = if (vadSpeech) vadFrames + 1 else 0
         val share = above.count { it }.toDouble() / config.windowFrames
         if (vadSpeech && above.size == config.windowFrames && share >= config.quorum) {
             cut = true
             val run = maxOf(config.bargeInMs, (vadFrames * config.frameMs).toLong())
+            val back = (runFrames + sinceAbove).coerceIn(config.windowFrames, config.maxLookBackFrames)
             clearRun()
-            return Decision.CutIn(run, config.windowFrames)
+            return Decision.CutIn(run, back)
         }
         return Decision.Hold
     }
@@ -160,6 +177,8 @@ class BargeIn(
     private fun clearRun() {
         above.clear()
         vadFrames = 0
+        runFrames = 0
+        sinceAbove = Int.MAX_VALUE
         if (quietFrames > config.hangoverFrames) playbackDb.clear()
     }
 }

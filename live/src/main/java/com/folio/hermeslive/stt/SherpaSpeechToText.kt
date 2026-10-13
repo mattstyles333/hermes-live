@@ -67,6 +67,7 @@ class SherpaSpeechToText(
         engine = engines.offline,
         hotwords = { engines.offlineHotwords(hotwords()) },
         uncertainBelow = { settings().uncertainBelow },
+        agreedBelow = { pipelineConfig(settings()).agreedUncertainBelow },
     )
 
     private val pipeline = SttPipeline(

@@ -59,9 +59,13 @@ object Casing {
  *
  * - No accurate text: the fast words, `pass: fast`; uncertain where confidence < [uncertainBelow].
  * - Otherwise the accurate words, `pass: accurate`. A word both passes agree on (by
- *   [TextNorm.key], via LCS) carries the fast pass's confidence and is uncertain below the
- *   threshold. A word the passes disagree on is uncertain with no confidence (the second pass
- *   gives none in Kotlin), and keeps the fast pass's reading of that gap as an alternative.
+ *   [TextNorm.key], via LCS) carries the fast pass's confidence and is uncertain below
+ *   `agreedBelow`. A word the passes disagree on is uncertain with no confidence (the second
+ *   pass gives none in Kotlin), and keeps the fast pass's reading of that gap as an alternative.
+ *
+ * Calibration (S-C corpus bench, 2026-10-13): on agreed words the streaming `ysProbs` only add
+ * false flags (best F1 at a threshold of 0), so `agreedBelow` defaults to 0 in
+ * [PipelineConfig]; disagreement is the signal there. For the fast-only fallback 0.45 is best.
  */
 object TranscriptMerge {
     fun fastOnly(fast: List<FastWord>, uncertainBelow: Double): Transcript {
@@ -69,7 +73,7 @@ object TranscriptMerge {
         return Transcript(Casing.sentence(fast.map { it.text }), words, TranscriptPass.Fast)
     }
 
-    fun merge(fast: List<FastWord>, accurate: String?, uncertainBelow: Double): Transcript {
+    fun merge(fast: List<FastWord>, accurate: String?, uncertainBelow: Double, agreedBelow: Double = uncertainBelow): Transcript {
         if (accurate == null) return fastOnly(fast, uncertainBelow)
         val acc = TextNorm.words(accurate)
         if (acc.isEmpty() && fast.isNotEmpty()) return fastOnly(fast, uncertainBelow)
@@ -91,7 +95,7 @@ object TranscriptMerge {
             }
             if (ai < acc.size) {
                 val f = fast[matched.getValue(ai)]
-                words += Word(acc[ai], f.confidence, uncertain = f.confidence != null && f.confidence < uncertainBelow)
+                words += Word(acc[ai], f.confidence, uncertain = f.confidence != null && f.confidence < agreedBelow)
             }
             prevAcc = ai
             prevFast = fi

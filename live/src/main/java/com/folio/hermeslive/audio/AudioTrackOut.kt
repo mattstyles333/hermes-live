@@ -40,6 +40,9 @@ class AudioTrackOut(
     private class Playing(val track: AudioTrack, val rate: Int, val levels: DoubleArray, val chunkFrames: Int, val frames: Long, base: Long) {
         @Volatile var stopped = false
 
+        /** Frames heard, fixed when the clip is halted (before the flush resets the head). */
+        @Volatile var playedFrames = 0L
+
         /** Head position at the clip's start; 0 once the platform resets the head after the flush. */
         @Volatile var base: Long = base
     }
@@ -93,13 +96,11 @@ class AudioTrackOut(
             }
         } finally {
             withContext(NonCancellable) {
-                val heard = minOf(headFrames(p), totalFrames)
                 halt(p)
-                lastPlayedMs = heard * 1000 / rate
                 onLevel(0f)
             }
         }
-        lastPlayedMs
+        p.playedFrames * 1000 / rate
     }
 
     override fun stop() {
@@ -120,7 +121,8 @@ class AudioTrackOut(
         synchronized(lock) {
             if (p.stopped) return
             p.stopped = true
-            lastPlayedMs = minOf(headFrames(p), p.frames) * 1000 / p.rate
+            p.playedFrames = minOf(headFrames(p), p.frames)
+            lastPlayedMs = p.playedFrames * 1000 / p.rate
             runCatching {
                 p.track.pause()
                 p.track.flush()

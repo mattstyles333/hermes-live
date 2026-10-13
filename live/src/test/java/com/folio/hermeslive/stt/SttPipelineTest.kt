@@ -26,7 +26,7 @@ class SttPipelineTest {
         val offline = FakeOffline(offlineText)
         val playback = FakePlayback()
         var hotwords = listOf<String>()
-        val second = SecondPass(offline, { "" }, { 0.5 }, DirectExecutor())
+        val second = SecondPass(offline, { "" }, { 0.5 }, executor = DirectExecutor())
         val gate = BargeIn(BargeInConfig(bargeInMs = 250))
         val engines = SttEngines(vad, streaming, offline, streamingHotwords = { it.joinToString("\n") })
         val pipeline = SttPipeline(engines, second, gate, NoiseFloor(), playback, { config }, { hotwords }, { events += it }, onCutIn = { cutIns += it })

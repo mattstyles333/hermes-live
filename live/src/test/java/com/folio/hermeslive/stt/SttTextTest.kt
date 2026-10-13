@@ -53,11 +53,15 @@ class SttTextTest {
         assertEquals(0.95, t.words[0].confidence!!, 1e-9)
     }
 
-    @Test fun agreedButLowConfidenceIsStillUncertain() {
+    @Test fun agreedWordsUseTheirOwnThreshold() {
         val fast = listOf(FastWord("ninety", 0.3), FastWord("days", 0.9))
-        val t = TranscriptMerge.merge(fast, "90 days", uncertainBelow = 0.5)
-        assertEquals(listOf(true, false), t.words.map { it.uncertain })
-        assertTrue(t.words[0].alternatives.isEmpty())
+        val strict = TranscriptMerge.merge(fast, "90 days", uncertainBelow = 0.5)
+        assertEquals(listOf(true, false), strict.words.map { it.uncertain })
+        assertTrue(strict.words[0].alternatives.isEmpty())
+        // The calibrated default: when the passes agree, the streaming confidence is not used.
+        val calibrated = TranscriptMerge.merge(fast, "90 days", uncertainBelow = 0.5, agreedBelow = 0.0)
+        assertEquals(listOf(false, false), calibrated.words.map { it.uncertain })
+        assertEquals(0.3, calibrated.words[0].confidence!!, 1e-9)
     }
 
     @Test fun noAccurateTextFallsBackToFast() {
