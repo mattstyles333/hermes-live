@@ -73,6 +73,9 @@ class HermesGateway(
     @Volatile
     private var live: Conn? = null
 
+    @Volatile
+    private var busyModeCache: Pair<Long, BusyMode?>? = null
+
     /** Connection state. */
     val connection: StateFlow<GatewayConnection> = _connection.asStateFlow()
 
@@ -180,12 +183,15 @@ class HermesGateway(
     /**
      * `prompt.submit`. [surface] [PromptSurface.VoiceLive] marks a GPT-Live delegation and
      * [voiceContext] (the recent spoken exchange, ≤6000 chars) rides the model input only.
+     * [queued] sends `queued: true`: on a busy session the text runs after the current turn and
+     * never becomes a live correction, whatever the server's busy mode (omitted when false).
      */
     suspend fun submitPrompt(
         sessionId: String,
         text: String,
         surface: PromptSurface? = null,
         voiceContext: String? = null,
+        queued: Boolean = false,
     ): PromptSubmitResult {
         val params = buildJsonObject {
             put("session_id", sessionId)
@@ -194,9 +200,28 @@ class HermesGateway(
                 put("surface", surface.wire)
                 if (!voiceContext.isNullOrEmpty()) put("voice_context", voiceContext.take(6_000))
             }
+            if (queued) put("queued", true)
         }
         val result = call("prompt.submit", params, config.promptSubmitTimeoutMs).jsonObject
         return PromptSubmitResult(GatewayFrames.submitStatus(result), result)
+    }
+
+    /**
+     * The server's `display.busy_input_mode` (`interrupt`, `queue` or `steer`), read with
+     * `config.get {key: "busy"}`. Read-only: this client never changes server config. Null when
+     * the server does not say (older server, error, or a reply shape this client does not know);
+     * callers then treat a redirect as interrupt-then-submit. Cached per connection.
+     */
+    suspend fun busyMode(): BusyMode? {
+        val ready = awaitReady()
+        busyModeCache?.let { (gen, mode) -> if (gen == ready.generation) return mode }
+        val mode = try {
+            GatewayFrames.busyMode(call("config.get", buildJsonObject { put("key", "busy") }))
+        } catch (e: HermesRpcException) {
+            null
+        }
+        busyModeCache = ready.generation to mode
+        return mode
     }
 
     /** `session.interrupt`. Returns the server's status (`interrupted`, or `not_interrupted`). */

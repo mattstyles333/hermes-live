@@ -47,6 +47,18 @@ enum class PromptSurface(val wire: String) {
     VoiceLive("voice-live"),
 }
 
+/** The server's `display.busy_input_mode`: what a `prompt.submit` to a busy session does. */
+enum class BusyMode(val wire: String) {
+    /** Redirect the live turn (the server default). */
+    Interrupt("interrupt"),
+
+    /** Run after the live turn. */
+    Queue("queue"),
+
+    /** Inject into the live turn as a steer. */
+    Steer("steer"),
+}
+
 /** Options for `session.create`. Unset fields are omitted so the server's own defaults apply. */
 data class SessionOptions(
     /** Shown in the dashboard's session list. */
