@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hermes Live</string>
+    <string name="tile_label">Hermes Live</string>
+    <string name="share_label">Talk to Hermes</string>
+    <string name="permission_hermes_label">Use your Hermes session</string>
+    <string name="permission_hermes_description">Lets Folio talk to Hermes with the session you signed in to in Hermes Live.</string>
+    <string name="shortcut_talk_short">Talk</string>
+    <string name="shortcut_talk_long">Talk to Hermes</string>
+    <string name="shortcut_muted_short">Talk muted</string>
+    <string name="shortcut_muted_long">Start a call muted</string>
+    <string name="shortcut_new_short">New conversation</string>
+    <string name="shortcut_new_long">Talk in a new conversation</string>
+</resources>

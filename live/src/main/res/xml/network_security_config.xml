@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HTTPS everywhere. Plain http:// only for Tailscale MagicDNS names (*.ts.net), e.g.
+  http://<machine>.<tailnet>.ts.net:9119. The config cannot express the CGNAT range
+  100.64.0.0/10, so a bare Tailscale IP over http:// is refused by Android; use the ts.net name.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">ts.net</domain>
+    </domain-config>
+</network-security-config>

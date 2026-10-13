@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_talk"
+        android:shortcutId="talk"
+        android:shortcutLongLabel="@string/shortcut_talk_long"
+        android:shortcutShortLabel="@string/shortcut_talk_short">
+        <intent
+            android:action="com.folio.hermeslive.action.TALK"
+            android:targetClass="com.folio.hermeslive.LiveActivity"
+            android:targetPackage="com.folio.hermeslive" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_talk"
+        android:shortcutId="talk_muted"
+        android:shortcutLongLabel="@string/shortcut_muted_long"
+        android:shortcutShortLabel="@string/shortcut_muted_short">
+        <intent
+            android:action="com.folio.hermeslive.action.TALK_MUTED"
+            android:targetClass="com.folio.hermeslive.LiveActivity"
+            android:targetPackage="com.folio.hermeslive" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_talk"
+        android:shortcutId="new_conversation"
+        android:shortcutLongLabel="@string/shortcut_new_long"
+        android:shortcutShortLabel="@string/shortcut_new_short">
+        <intent
+            android:action="com.folio.hermeslive.action.NEW_CONVERSATION"
+            android:targetClass="com.folio.hermeslive.LiveActivity"
+            android:targetPackage="com.folio.hermeslive" />
+    </shortcut>
+</shortcuts>
