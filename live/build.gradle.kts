@@ -91,6 +91,27 @@ android {
             // x86_64 for the emulator.
             ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         }
+        // Release-like (R8, shrink, the release keep rules) but debug-signed, with x86_64, beside
+        // the debug app (`.staging`): proves R8 + sherpa's JNI + the cascade on the emulator.
+        // Never shipped; no diagnostics; no test hooks (it takes release's BuildHooks).
+        create("staging") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".staging"
+            versionNameSuffix = "-staging"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            buildConfigField("String", "DIAGNOSTICS_URL", "\"\"")
+            ndk {
+                abiFilters.clear()
+                abiFilters += listOf("arm64-v8a", "x86_64")
+            }
+        }
+    }
+
+    sourceSets {
+        // src/hooks: the corpus audio source and the capturing output (test input, never in release).
+        getByName("debug").kotlin.srcDir("src/hooks/java")
+        getByName("staging").kotlin.srcDirs("src/release/java", "src/hooks/java")
     }
 
     compileOptions {

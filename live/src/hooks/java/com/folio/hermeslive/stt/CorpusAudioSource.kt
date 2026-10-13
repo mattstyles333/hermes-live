@@ -8,8 +8,9 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Debug only: feeds 16 kHz mono WAV files through the **real** VAD and speech-to-text pipeline
- * in place of the mic (S-F's emulator end-to-end tests, and S-C's corpus bench).
+ * Debug and staging only (`src/hooks`, never in release): feeds 16 kHz mono WAV files through
+ * the **real** VAD and speech-to-text pipeline in place of the mic (S-F's emulator end-to-end
+ * tests, through `BuildHooks.cascadeAudio`; S-C's corpus bench; the staging smoke test).
  *
  * - [pace] 1.0 is real time, 4.0 four times faster, 0 as fast as the pipeline goes. The
  *   pipeline is sample-driven (VAD and segments count samples), so the text does not depend on

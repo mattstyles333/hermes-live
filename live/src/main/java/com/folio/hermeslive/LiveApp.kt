@@ -14,6 +14,7 @@ import com.folio.hermeslive.data.SecureTokenStore
 import com.folio.hermeslive.data.SettingsStore
 import com.folio.hermeslive.hermes.RealHermesLink
 import com.folio.hermeslive.hermes.SignedOutLink
+import com.folio.hermeslive.hooks.BuildHooks
 import com.folio.hermeslive.provider.ConnectionProvider
 import com.folio.hermeslive.service.CallNotifications
 import com.folio.hermeslive.webrtc.WebRtcTransport
@@ -47,6 +48,8 @@ class LiveGraph(private val app: Context) {
     val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val client: OkHttpClient = OkHttpClient.Builder()
+        // The system DNS, except in debug builds under an end-to-end test (BuildHooks).
+        .dns(BuildHooks.dns)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()

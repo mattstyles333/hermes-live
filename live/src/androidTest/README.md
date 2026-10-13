@@ -25,3 +25,40 @@ $ADB shell am instrument -w -e download true -e class com.folio.hermeslive.stt.M
 ```
 
 Keep `leaveApksInstalledAfterRun=true`: uninstalling wipes the installed models (about 1.3 GB).
+
+## Debug hooks for the end-to-end tests (S-F2b)
+
+Debug builds only (`src/debug/.../hooks/BuildHooks.kt`); release and staging have a fixed
+`BuildHooks` with no overrides. The instrumentation runs in the app's process, so a test sets
+them directly and calls `BuildHooks.reset()` in its teardown. Nothing is committed: no key, no host.
+
+- **Fake Hermes.** Run it on the host, then
+  `BuildHooks.hosts = mapOf(BuildHooks.FAKE_HERMES_HOST to "10.0.2.2")` and sign in with
+  `context.graph.account.signIn("http://fake-hermes.ts.net:<port>", "<user>", "<password>")`.
+  The `*.ts.net` name passes `HermesEndpoint` and the cleartext rule, and the app's OkHttp DNS
+  maps it to the emulator's host. Sign out (`graph.account.signOut()`) at the end.
+- **OpenRouter key at test time.** Pass it as an instrumentation argument (never in a file the
+  repo sees): `am instrument -e openrouterKey "$OPENROUTER_API_KEY" …`, read it with
+  `InstrumentationRegistry.getArguments().getString("openrouterKey")`, then
+  `VoiceShell.of(context).keys.save(key, KeyCheck.Valid)` and
+  `context.graph.settings.update { it.copy(voiceEngine = VoiceEngine.Cascade) }`; at the end
+  `keys.remove()` and the engine back to `GptLive`. The key is sealed in the app's Keystore
+  prefs on the emulator only.
+- **Corpus in, capture out.** Before the call starts:
+  ```kotlin
+  val corpus = CorpusAudioSource(pace = 1.0)   // src/hooks: debug and staging only
+  val out = CapturingAudioOut()                // real-time, a PlaybackMonitor, records each clip
+  BuildHooks.cascadeAudio = CascadeAudioFactory { _, onLevel ->
+      CascadeAudioIo(source = corpus, out = out, playback = out)
+  }
+  corpus.enqueue(File(corpusDir, "e01-bill.wav"))
+  ```
+  The cascade engine asks `BuildHooks.cascadeAudio` once per call (else the mic and an
+  `AudioTrack`). `out.played` has each clip's start, end, length, `playedMs` and `stopped`
+  (a cut-in) on `System.nanoTime()` ms, the actor's clock. Pass `onLevel` to your out
+  (`CapturingAudioOut(onLevel)`) if a test checks the orb level.
+- **Start a call** from the visible `LiveActivity` (the microphone service's while-in-use rule
+  applies to the corpus source too): launch it with `ActivityScenario`, grant `RECORD_AUDIO`
+  with `uiAutomation.grantRuntimePermission`, then `graph.calls.start(CallRequest(entry = "test"))`
+  on the main thread, or send `LiveIntents.ACTION_CALL`. `graph.calls.cascade` is the
+  `CascadeCallEngine` once a cascade call ran (`ui`, `events`, `core`).
