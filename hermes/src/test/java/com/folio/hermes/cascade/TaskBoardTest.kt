@@ -11,6 +11,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -29,6 +30,8 @@ import org.junit.Test
 
 /** A TaskBoard on a real gateway against [FakeHermesServer]. */
 internal class BoardRig(maxTasks: Int = 4, busy: String? = "interrupt") : AutoCloseable {
+    /** The server's busy mode for `config.get` (null: the server does not say). A field, so a test changes it without a second rig. */
+    @Volatile var busy: String? = busy
     val fake = FakeHermesServer()
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val config = fake.config()
@@ -68,11 +71,13 @@ internal class BoardRig(maxTasks: Int = 4, busy: String? = "interrupt") : AutoCl
             if (running.remove(sid)) s.event("message.complete", sid, """{"text":"","status":"interrupted"}""")
         }
         fake.responders["config.get"] = { s, id, _ ->
-            if (busy == null) s.error(id, -32601, "unknown method") else s.reply(id, """{"key":"busy","value":"$busy"}""")
+            val mode = this.busy
+            if (mode == null) s.error(id, -32601, "unknown method") else s.reply(id, """{"key":"busy","value":"$mode"}""")
         }
         scope.launch { board.results.collect { results += it } }
         scope.launch { board.requests.collect { requests += it } }
-        scope.launch { board.bus.events.collect { events += it } }
+        // Subscribed before the rig is used: the bus has no replay, so a late collector misses the first events.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { board.bus.events.collect { events += it } }
     }
 
     fun frames(method: String): List<JsonObject> = sockets().flatMap { it.frames }.filter { it.string("method") == method }
@@ -95,7 +100,7 @@ internal class BoardRig(maxTasks: Int = 4, busy: String? = "interrupt") : AutoCl
     }
 }
 
-internal suspend fun eventually(timeoutMs: Long = 5_000, what: String = "condition", check: () -> Boolean) {
+internal suspend fun eventually(timeoutMs: Long = 15_000, what: String = "condition", check: () -> Boolean) {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (!check()) {
         if (System.currentTimeMillis() > deadline) throw AssertionError("timed out waiting for $what")
@@ -116,7 +121,7 @@ class TaskBoardTest {
         rig.close()
     }
 
-    private fun test(block: suspend () -> Unit) = runBlocking { withTimeout(20_000) { block() } }
+    private fun test(block: suspend () -> Unit) = runBlocking { withTimeout(40_000) { block() } }
 
     private suspend fun startRunning(label: String = "stock check"): TaskSnapshot {
         val r = rig.board.start("Check RB2140 stock.", label, "User: check stock")
@@ -134,7 +139,8 @@ class TaskBoardTest {
         val create = rig.frames("session.create").single()["params"] as JsonObject
         assertEquals("Voice: stock check", create.string("title"))
         assertEquals(TaskState.Running, rig.board.snapshot(task.id)!!.state)
-        assertTrue(rig.events.contains(CascadeEvent.TaskStarted(task.id)))
+        // The bus reaches rig.events through an async collector.
+        eventually(what = "started event") { rig.events.contains(CascadeEvent.TaskStarted(task.id)) }
     }
 
     @Test fun statusNeverSubmits() = test {
@@ -168,19 +174,35 @@ class TaskBoardTest {
         assertEquals(1, rig.board.snapshot(task.id)!!.pendingUpdates)
     }
 
+    /*
+     * The flake (spec v2 §14 item 20), reproduced at 24 of 200 runs under 48-way load:
+     * - the fake sent the running turn's end, the queued turn's start and its end in one burst.
+     *   Each run reads them on its own flow (its own coroutine), so the second run could post its
+     *   result before the first: results out of order. A real queued turn starts only after the
+     *   running one ends, so the server now sends the queued turn once the first result is in;
+     * - `TaskFinished` reaches `rig.events` through an async collector after the state turns
+     *   Done, so the count was read too early. It is now awaited.
+     * - the rig's event collector subscribed lazily on another thread, so a fast first event
+     *   (`TaskStarted`) could be emitted before it listened, and was lost; it now subscribes at once;
+     * - `unknownBusyMode…` built a second rig (two servers, two gateways) inside one test; the busy
+     *   mode is now a field of the one rig, and `eventually` waits up to 15 s on a loaded machine.
+     */
     @Test fun aQueuedUpdateGivesTwoResultsInOrder() = test {
         val task = startRunning()
         rig.onSubmit = { s, id, p ->
             val sid = p.string("session_id")!!
             s.reply(id, """{"status":"queued"}""")
             s.event("message.complete", sid, """{"text":"first answer"}""")
-            s.event("message.start", sid)
-            s.event("message.complete", sid, """{"text":"second answer"}""")
         }
         rig.board.update(task.id, "and the blue ones", UpdateMode.Queue, "")
+        eventually(what = "first result") { rig.results.size == 1 }
+        rig.socket!!.event("message.start", "rt1")
+        rig.socket!!.event("message.complete", "rt1", """{"text":"second answer"}""")
         eventually(what = "two results") { rig.results.size == 2 }
         assertEquals(listOf("first answer", "second answer"), rig.results.map { it.text })
         eventually(what = "done") { rig.board.snapshot(task.id)!!.state == TaskState.Done }
+        eventually(what = "finished event") { rig.events.count { it == CascadeEvent.TaskFinished(task.id, true) } == 1 }
+        delay(100)
         assertEquals(1, rig.events.count { it == CascadeEvent.TaskFinished(task.id, true) })
         assertEquals(0, rig.board.snapshot(task.id)!!.pendingUpdates)
     }
@@ -202,8 +224,7 @@ class TaskBoardTest {
     }
 
     @Test fun aRedirectWithQueueBusyModeInterruptsThenSubmits() = test {
-        rig.close()
-        rig = BoardRig(busy = "queue")
+        rig.busy = "queue"
         val task = startRunning()
         rig.onSubmit = { s, id, p ->
             val sid = p.string("session_id")!!
@@ -220,8 +241,7 @@ class TaskBoardTest {
     }
 
     @Test fun unknownBusyModeFallsBackToInterruptFirst() = test {
-        rig.close()
-        rig = BoardRig(busy = null)
+        rig.busy = null
         val task = startRunning()
         assertEquals(UpdateResult.Sent("interrupt_first"), rig.board.update(task.id, "change", UpdateMode.Redirect, ""))
     }
@@ -234,7 +254,7 @@ class TaskBoardTest {
         assertTrue(rig.results.isEmpty())
         assertEquals(TaskState.Cancelled, rig.board.snapshot(task.id)!!.state)
         assertEquals(TaskUiStatus.Cancelled, rig.board.snapshot(task.id)!!.toUi().status)
-        assertTrue(rig.events.contains(CascadeEvent.TaskCancelled(task.id)))
+        eventually(what = "cancelled event") { rig.events.contains(CascadeEvent.TaskCancelled(task.id)) }
         assertEquals(CancelResult.AlreadyFinished, rig.board.cancel(task.id))
         assertEquals(CancelResult.NotFound, rig.board.cancel("t99"))
     }

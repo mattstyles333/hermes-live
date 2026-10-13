@@ -65,11 +65,16 @@ class TaskBoard(
     fun briefs(): List<TaskBrief> = synchronized(lock) { table.briefs(now()) }
     fun markRead(id: String) = synchronized(lock) { table = table.markRead(id) }
 
+    /** One table step; its outputs go out under the lock, so they leave in the order the table made them (as the actor's one loop does). */
     private fun <R> apply(op: (TaskTable) -> TaskStep<R>): R {
-        val step = synchronized(lock) { op(table).also { table = it.table } }
-        step.events.forEach(bus::emit)
-        step.results.forEach { resultChannel.trySend(it) }
-        step.requests.forEach { requestChannel.trySend(it) }
+        val step = synchronized(lock) {
+            op(table).also { step ->
+                table = step.table
+                step.events.forEach(bus::emit)
+                step.results.forEach { resultChannel.trySend(it) }
+                step.requests.forEach { requestChannel.trySend(it) }
+            }
+        }
         step.effects.forEach(::run)
         return step.value
     }
