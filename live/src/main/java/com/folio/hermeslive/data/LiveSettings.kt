@@ -80,6 +80,8 @@ data class LiveSettings(
             holdToTalk = n.holdToTalk,
             vocabulary = n.vocabulary,
             decisionLog = n.decisionLog,
+            // The 0.6B second pass can finish a long dictation's last segments after 1.5 s (S-C bench: 1 in 3).
+            accuratePassWaitMs = if (n.highAccuracySpeech) HIGH_ACCURACY_WAIT_MS else base.accuratePassWaitMs,
         )
     }
 
@@ -94,6 +96,9 @@ data class LiveSettings(
 
     companion object {
         const val DEFAULT_PAUSE_MS = 1_000
+
+        /** `accuratePassWaitMs` with High accuracy on (spec v2 §14 item 11). */
+        const val HIGH_ACCURACY_WAIT_MS = 2_500L
         const val MIN_PAUSE_MS = CascadeSettings.MIN_PAUSE_MS.toInt()
         const val MAX_PAUSE_MS = CascadeSettings.MAX_PAUSE_MS.toInt()
         const val DEFAULT_MAX_TASKS = 4

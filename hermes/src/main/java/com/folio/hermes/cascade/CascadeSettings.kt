@@ -74,10 +74,19 @@ data class CascadeSettings(
     val ttsTimeoutMs: Long = 4_000L,
 
     // ── speech-to-text (R-STT) ───────────────────────────────────────────────────────────────
-    /** Wait at most this for the accurate pass, else use the fast text (`pass: fast`). R-STT-2. */
+    /** Wait at most this for the accurate pass, else use the fast text (`pass: fast`). R-STT-2. `:live` uses 2,500 with High accuracy (spec v2 §14 item 11). */
     val accuratePassWaitMs: Long = 1_500L,
-    /** Words below this confidence are uncertain (v1 CEO §7). R-STT-4. */
-    val uncertainBelow: Double = 0.5,
+    /**
+     * Run the accurate pass on each committed turn (R-STT-2): the turn waits (at most
+     * [accuratePassWaitMs]) for `Event.AccurateFinal`, and an ignored or unanswered turn drops its
+     * audio. Off by default (no speech-to-text in tests); `:live` turns it on with a second-pass model.
+     */
+    val accuratePass: Boolean = false,
+    /**
+     * Fast-pass words below this confidence are uncertain (v1 CEO §7, R-STT-4). 0.45 is the best
+     * F1 on the S-C corpus bench (`hermes-cascade-stt-bench-2026-10-13.md`).
+     */
+    val uncertainBelow: Double = 0.45,
     /** After a `key_doubt` question, proceed with notes when the user says nothing for this long. R-STT-5. */
     val keyDoubtWaitMs: Long = 8_000L,
     /** User vocabulary for hotwords and writer repair (Settings). R-STT-6, R-STT-7. */

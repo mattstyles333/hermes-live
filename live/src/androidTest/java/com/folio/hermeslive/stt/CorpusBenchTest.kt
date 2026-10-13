@@ -75,7 +75,7 @@ class CorpusBenchTest {
                 .put("accurate_share", utts.count { it.transcript?.pass == TranscriptPass.Accurate }.toDouble() / utts.size)
                 .put("event_order_ok", utts.count { it.orderOk })
                 .put("no_speech_found", utts.count { u -> u.events.none { it.event is com.folio.hermes.cascade.ports.SttEvent.SpeechStarted } })
-                .put("segments_per_file", utts.sumOf { u -> u.events.count { it.event is com.folio.hermes.cascade.ports.SttEvent.SpeechEnded } }.toDouble() / utts.size)
+                .put("segments_per_file", utts.sumOf { u -> u.events.count { it.event.isSpeechEnd } }.toDouble() / utts.size)
                 .put("second_pass_decode_ms", Scores.dist(decode))
                 .put("second_pass_rtf", if (audioS > 0) decode.sum() / 1000.0 / audioS else null)
             val (fastHit, fastTotal) = Scores.names(utts, names) { it.fastText }

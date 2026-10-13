@@ -105,6 +105,8 @@ data class TranscriptState(
     val byTurn: Map<String, Transcript> = emptyMap(),
     /** Hold-to-talk is pressed (R-STT-8). */
     val holdToTalk: Boolean = false,
+    /** Hold-to-talk was released mid-speech: the `SpeechEnded` that follows commits at once (R-STT-8). */
+    val released: Boolean = false,
 )
 
 /** Jev's last answers, for the call screen. In flight comes from the turn state. */

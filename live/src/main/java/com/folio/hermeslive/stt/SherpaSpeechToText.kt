@@ -68,6 +68,7 @@ class SherpaSpeechToText(
         hotwords = { engines.offlineHotwords(hotwords()) },
         uncertainBelow = { settings().uncertainBelow },
         agreedBelow = { pipelineConfig(settings()).agreedUncertainBelow },
+        vocabulary = hotwords,
     )
 
     private val pipeline = SttPipeline(
@@ -137,6 +138,9 @@ class SherpaSpeechToText(
     fun dropHeld() = secondPass.drop()
 
     override suspend fun accurate(turnId: String): Transcript? = secondPass.accurate()
+
+    /** The port's drop (an ignored or unanswered turn): [dropHeld]. */
+    override fun drop(turnId: String) = dropHeld()
 
     private fun loop() {
         val buffer = ShortArray(SttPipeline.FRAME)

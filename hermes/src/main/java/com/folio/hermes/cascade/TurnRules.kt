@@ -120,6 +120,8 @@ data class PauseState(
     val turnId: String? = null,
     /** R-RT-8: no Jev for this pause (commit on the timer alone). Off unless the routing hook says so. */
     val withoutJev: Boolean = false,
+    /** Hold-to-talk was released: the turn is done whatever Jev's `turn` says (R-STT-8). */
+    val released: Boolean = false,
 ) {
     val calls: List<JevCall> get() = listOfNotNull(early, commit)
 }
@@ -211,19 +213,46 @@ object TurnRules {
         TurnStep(t.copy(partial = "", finals = if (text.isNotBlank()) t.finals + " " + text.trim() else t.finals))
 
     /**
-     * VAD: the user stopped speaking at [now]. Starts the pause timer if anything was said.
+     * VAD: the user stopped speaking. Starts the pause timer if anything was said.
      * [withoutJev] (R-RT-8 hook, default false): commit at `pause + noJevCommitExtraMs` with no Jev call.
+     *
+     * [endAt] is when speech really ended (`SttEvent.SpeechEndedAt`, the VAD hangover before the
+     * event arrived; S-C bench: about 0.4 s); the pause counts from there, not from [now]. The
+     * time already gone is clamped to `[0, early]`, so a stamp from another clock or a stale
+     * one can at worst fire the early call at once (spec v2 §14, S-C spec problem 2).
      */
-    fun speechEnded(t: TurnState, now: Long, settings: CascadeSettings, withoutJev: Boolean = false): TurnStep {
+    fun speechEnded(t: TurnState, now: Long, settings: CascadeSettings, withoutJev: Boolean = false, endAt: Long = now): TurnStep {
+        val tx = Tx(t)
+        tx.endPause()
+        if (tx.s.heard.isEmpty() && tx.s.pending.isEmpty()) return tx.step()
+        val gone = (now - endAt).coerceIn(0L, settings.early)
+        val seq = tx.s.pauseSeq + 1
+        tx.s = tx.s.copy(pauseSeq = seq, pause = PauseState(seq, now - gone, settings, if (withoutJev) PauseStage.Commit else PauseStage.Early, withoutJev = withoutJev))
+        if (withoutJev) {
+            tx.effects += Effect.StartTimer(Timer(COMMIT, seq), settings.pause + settings.noJevCommitExtraMs - gone)
+        } else {
+            tx.effects += Effect.StartTimer(Timer(EARLY, seq), settings.early - gone)
+        }
+        return tx.step()
+    }
+
+    /**
+     * Hold-to-talk released (R-STT-8): the user said they are done, so the turn commits at once.
+     * One Jev call goes out now (it still picks the action, task and line); its `turn` answer is
+     * read as `done` whatever it says (S-C spec problem 6).
+     */
+    fun released(t: TurnState, now: Long, settings: CascadeSettings, ask: JevAsk, withoutJev: Boolean = false): TurnStep {
         val tx = Tx(t)
         tx.endPause()
         if (tx.s.heard.isEmpty() && tx.s.pending.isEmpty()) return tx.step()
         val seq = tx.s.pauseSeq + 1
-        tx.s = tx.s.copy(pauseSeq = seq, pause = PauseState(seq, now, settings, if (withoutJev) PauseStage.Commit else PauseStage.Early, withoutJev = withoutJev))
+        val p = PauseState(seq, now, settings, PauseStage.Committing, withoutJev = withoutJev, released = true)
+        tx.s = tx.s.copy(pauseSeq = seq, pause = p)
         if (withoutJev) {
-            tx.effects += Effect.StartTimer(Timer(COMMIT, seq), settings.pause + settings.noJevCommitExtraMs)
+            tx.resolve(p, Unanswered(OpenRouterResult.Failed(FailureKind.Offline)), JevTiming(null, null, 0), now, ask)
         } else {
-            tx.effects += Effect.StartTimer(Timer(EARLY, seq), settings.early)
+            val call = tx.fire(ask(tx.s.heard, tx.s.pending, 0L), now, early = false)
+            tx.s = tx.s.copy(pause = tx.s.pause!!.copy(commit = call))
         }
         return tx.step()
     }
@@ -371,7 +400,7 @@ object TurnRules {
                 clearAll()
                 events += TurnEvent.NoAnswer(turnId, words, held, answer.failure, timing, p.endAt)
             }
-            is Answered -> when (Router.verdict(answer.answers, p.settings)) {
+            is Answered -> when (if (p.released) TurnVerdict.Done else Router.verdict(answer.answers, p.settings)) {
                 TurnVerdict.Done -> {
                     clearAll()
                     events += TurnEvent.Done(turnId, words, held, answer.request, answer.answers, timing, p.endAt)

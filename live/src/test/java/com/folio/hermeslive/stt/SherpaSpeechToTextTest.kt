@@ -29,7 +29,7 @@ class SherpaSpeechToTextTest {
         stt.start()
         val events = withTimeout(5_000) { stt.events.take(3).toList() }
         assertEquals(SttEvent.SpeechStarted, events.first())
-        withTimeout(5_000) { stt.events.first { it is SttEvent.SpeechEnded } }
+        withTimeout(5_000) { stt.events.first { it.isSpeechEnd } }
         withTimeout(5_000) { while (stt.isRunning) kotlinx.coroutines.delay(5) }
         assertEquals(1, source.opens)
         assertTrue(stt.samplesProcessed >= 23L * F)

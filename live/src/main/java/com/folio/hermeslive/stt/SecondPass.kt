@@ -24,6 +24,8 @@ class SecondPass(
     private val uncertainBelow: () -> Double,
     /** Threshold for words both passes agree on (see [TranscriptMerge]). */
     private val agreedBelow: () -> Double = { 0.0 },
+    /** The user's words (vocabulary, task labels, corrections): key tokens when the passes disagree ([KeyTokens]). */
+    private val vocabulary: () -> List<String> = { emptyList() },
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "stt-second-pass").apply { isDaemon = true } },
 ) {
     private class Held(val fast: List<FastWord>, val audioMs: Long) {
@@ -85,7 +87,8 @@ class SecondPass(
         val threshold = uncertainBelow()
         if (texts.any { it == null }) return TranscriptMerge.fastOnly(segments.flatMap { it.fast }, threshold)
         val agreed = agreedBelow()
-        val parts = segments.zip(texts).map { (s, t) -> TranscriptMerge.merge(s.fast, t, threshold, agreed) }
+        val vocab = vocabulary()
+        val parts = segments.zip(texts).map { (s, t) -> TranscriptMerge.merge(s.fast, t, threshold, agreed, vocab) }
         return Transcript(
             text = parts.joinToString(" ") { it.text }.trim(),
             words = parts.flatMap { it.words },

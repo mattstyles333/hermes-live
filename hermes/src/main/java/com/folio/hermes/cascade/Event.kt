@@ -55,6 +55,13 @@ sealed interface Event {
     // ── microphone and speech-to-text (S-C, through `SpeechToText`) ─────────────────────────
     data object SpeechStarted : Event
     data object SpeechEnded : Event
+
+    /**
+     * The user stopped speaking, really at [atMs] (the actor's monotonic clock, `Clock.nowMs`):
+     * the VAD reports the end about 0.4 s late, and the pause counts from [atMs] (spec v2 §14,
+     * S-C spec problem 2). Additive: [SpeechEnded] still means "ended now".
+     */
+    data class SpeechEndedAt(val atMs: Long) : Event
     data class Partial(val text: String) : Event
 
     /** A fast-pass final, with per-word confidence when the engine has it (R-STT-4). */
