@@ -1,32 +1,115 @@
 package com.folio.hermes.cascade
 
 /**
- * The cascade's knobs. User settings (pause, task cap, backchannel) are clamped to their ranges;
- * the rest follow the contract and are shortened only by tests.
+ * The cascade's knobs, all defined up front for phase 1 (spec v2 §12 single-owner rule: S0 defines
+ * the fields, S-E builds the Settings UI, slices only read them). User settings are clamped to
+ * their ranges; the rest follow the spec and are shortened only by tests. Each field cites its R-id.
+ *
+ * Not here: the voice engine choice (`gpt-live` | `cascade`) and the OpenRouter key, which live
+ * in `:live`'s `LiveSettings` and secure store (S-E).
+ *
+ * The actor reads this once per event; the turn-taking rules snapshot it once per pause.
  */
 data class CascadeSettings(
-    /** Silence before a turn is committed (Settings, 400–3000, default 1000). */
+    // ── turn-taking and routing (R-RT) ───────────────────────────────────────────────────────
+    /** Silence before a turn is committed (Settings, 400–3000, default 1000). R-RT-1. */
     val pauseMs: Long = 1_000L,
-    /** Voice tasks running at once (Settings, 1–6, default 4). */
-    val maxTasks: Int = 4,
+    /** The early Jev call fires at min(this, pause / 2) of silence. R-RT-1. */
+    val earlyCapMs: Long = 500L,
+    /** One Jev call's budget. R-RT-2, R-OFF-5. */
+    val jevTimeoutMs: Long = 2_500L,
+    /** After keep_listening, ask once more when the silence has lasted this much longer. Spec v2 §0. */
+    val holdRecheckMs: Long = 2_500L,
+    /** Below this, `turn` means keep listening and `action` a clarifying question. R-RT-3. */
+    val confidenceFloor: Double = 0.55,
+    /** Below this, `task` asks which one (unless there is exactly one candidate). R-RT-3. */
+    val taskFloor: Double = 0.5,
+    /** `ignore` is accepted at or above this. R-RT-3. */
+    val ignoreFloor: Double = 0.4,
+    /** `enough = line_only` skips the writer only at or above this. R-RT-6. */
+    val lineOnlyFloor: Double = 0.7,
+    /** An update redirects when the target is the newest task and younger than this. R-RT-7. */
+    val redirectWindowMs: Long = 20_000L,
+    /** An update redirects when Jev's `redirect` confidence is at least this. R-RT-7. */
+    val redirectFloor: Double = 0.6,
+    /** Without Jev (unavailable or offline), a turn commits at `pause + this`. R-RT-8. */
+    val noJevCommitExtraMs: Long = 500L,
     /** Offer Jev the `listen` backchannel lines (Settings, default off). */
     val backchannel: Boolean = false,
-    /** Below this, `turn` means keep listening and `action`/`task` mean a clarifying question. */
-    val confidenceFloor: Double = 0.55,
-    /** `enough = line_only` skips the writer only at or above this. */
-    val lineOnlyFloor: Double = 0.7,
-    /** The early Jev call fires at min(this, pause / 2) of silence. */
-    val earlyCapMs: Long = 500L,
-    /** One Jev call's budget. */
-    val jevTimeoutMs: Long = 2_500L,
-    /** After keep_listening, ask once more when the silence has lasted this much longer. */
-    val holdRecheckMs: Long = 2_500L,
-    /** User speech this long while Bill plays cuts him off. */
-    val bargeInMs: Long = 250L,
-    /** Exchanges in `state.recent`. */
+    /** Exchanges in Jev's `state.recent`. R-CTX-1. */
     val recentExchanges: Int = 6,
-    /** Line ids in `state.recent_lines`. */
-    val recentLines: Int = 5,
+    /** Hard cap on held dictation before it commits anyway (v1 CEO §3). */
+    val holdCapMs: Long = 180_000L,
+    val holdCapWords: Int = 1_500,
+
+    // ── tasks (R-TASK, R-DUR) ────────────────────────────────────────────────────────────────
+    /** Voice tasks running at once (Settings, 1–6, default 4). R-TASK-1. */
+    val maxTasks: Int = 4,
+    /** Briefs a `split=several` turn may start at once; the rest queue. R-TASK-2. */
+    val maxBriefsPerTurn: Int = 4,
+    /** Submit attempts before the card shows "Not sent: tap to retry". R-DUR-4. */
+    val submitAttempts: Int = 2,
+    /** A result is spoken in at most this many sentences (headline plus any decision). R-TASK-5. */
+    val resultSentences: Int = 2,
+
+    // ── speaking (R-SPK) ─────────────────────────────────────────────────────────────────────
+    /** User speech this long while Bill plays cuts him off. R-SPK-4. */
+    val bargeInMs: Long = 250L,
+    /** OpenRouter TTS voice (Settings). */
+    val voice: String = "bill",
+    /** OpenRouter TTS model (Settings). */
+    val ttsModel: String = "elevenlabs/eleven-v4-turbo",
+    /** TTS cache size (LRU). R-SPK-3. */
+    val ttsCacheBytes: Long = 50L * 1024 * 1024,
+    /** Phrase-bank render requests at once. R-SPK-1. */
+    val renderConcurrency: Int = 4,
+    /** Writer first-token budget, then one retry, then `wait.signal`, then the outbox. R-OFF-5. */
+    val writerFirstTokenTimeoutMs: Long = 4_000L,
+    /** TTS budget per clip. R-OFF-5. */
+    val ttsTimeoutMs: Long = 4_000L,
+
+    // ── speech-to-text (R-STT) ───────────────────────────────────────────────────────────────
+    /** Wait at most this for the accurate pass, else use the fast text (`pass: fast`). R-STT-2. */
+    val accuratePassWaitMs: Long = 1_500L,
+    /** Words below this confidence are uncertain (v1 CEO §7). R-STT-4. */
+    val uncertainBelow: Double = 0.5,
+    /** After a `key_doubt` question, proceed with notes when the user says nothing for this long. R-STT-5. */
+    val keyDoubtWaitMs: Long = 8_000L,
+    /** User vocabulary for hotwords and writer repair (Settings). R-STT-6, R-STT-7. */
+    val vocabulary: List<String> = emptyList(),
+    /** Hold-to-talk: commit on release, no pause ring. R-STT-8. */
+    val holdToTalk: Boolean = false,
+
+    // ── context budget (R-CTX) ───────────────────────────────────────────────────────────────
+    /** Cap on Jev's `state`, in characters. R-CTX-1. */
+    val jevStateCapChars: Int = 4_000,
+    /** Rolling conversation summary cap. R-CTX-2. */
+    val conversationSummaryChars: Int = 600,
+    /** The writer works in chunks of [writerChunkChars] above [writerChunkAboveChars]. R-CTX-3. */
+    val writerChunkChars: Int = 20_000,
+    val writerChunkAboveChars: Int = 24_000,
+    /** `voice_context` sent with each task submit, in characters (v1 §9). */
+    val voiceContextChars: Int = 6_000,
+
+    // ── offline and memo mode (R-OFF) ────────────────────────────────────────────────────────
+    /** Held turns with gaps under this form one dictation session. R-OFF-3. */
+    val memoGapMs: Long = 120_000L,
+    /** A dictation session holds at most this much speech. R-OFF-3. */
+    val memoCapMs: Long = 3_600_000L,
+
+    // ── conversations and resume (R-CONV) ────────────────────────────────────────────────────
+    /** Ended conversations kept. R-CONV-1. */
+    val conversationsKept: Int = 10,
+    /** Default to Continue when the last call ended within this. R-CONV-2. */
+    val continueWithinMs: Long = 1_800_000L,
+    /** After hang-up, keep the gateway open this long while tasks run. R-CONV-3. */
+    val offCallKeepAliveMs: Long = 1_800_000L,
+    /** Items in an opening briefing. R-CONV-4. */
+    val briefingItems: Int = 3,
+
+    // ── privacy (R-Q-2) ──────────────────────────────────────────────────────────────────────
+    /** Keep the on-device decision log (Settings, default on). */
+    val decisionLog: Boolean = true,
 ) {
     val pause: Long get() = pauseMs.coerceIn(MIN_PAUSE_MS, MAX_PAUSE_MS)
     val early: Long get() = minOf(earlyCapMs, pause / 2)

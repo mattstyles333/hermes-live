@@ -1,13 +1,21 @@
-package com.folio.hermes.cascade
+package com.folio.hermes.cascade.routing
 
+import com.folio.hermes.cascade.AppLines
+import com.folio.hermes.cascade.CascadeSettings
+import com.folio.hermes.cascade.Decision
+import com.folio.hermes.cascade.PhraseBank
+import com.folio.hermes.cascade.Route
+import com.folio.hermes.cascade.TaskBrief
+import com.folio.hermes.cascade.TaskState
+import com.folio.hermes.cascade.TurnVerdict
+import com.folio.hermes.cascade.UpdateMode
+import com.folio.hermes.cascade.answer
 import com.folio.hermes.openrouter.JevAnswer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-
-internal fun answer(choice: String, confidence: Double = 0.9) = JevAnswer("choice", choice, mapOf(choice to confidence), confidence)
 
 class RouterTest {
     private val bank = PhraseBank.load()

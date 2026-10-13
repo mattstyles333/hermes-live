@@ -1,47 +1,14 @@
-package com.folio.hermes.cascade
+package com.folio.hermes.cascade.routing
 
+import com.folio.hermes.cascade.AppLines
+import com.folio.hermes.cascade.CascadeSettings
+import com.folio.hermes.cascade.Decision
+import com.folio.hermes.cascade.PhraseBank
+import com.folio.hermes.cascade.Route
+import com.folio.hermes.cascade.TaskBrief
+import com.folio.hermes.cascade.TurnVerdict
+import com.folio.hermes.cascade.UpdateMode
 import com.folio.hermes.openrouter.JevAnswer
-
-/** How an update reaches a running task. */
-enum class UpdateMode(val wire: String) {
-    /** `prompt.submit {queued: true}`: after the current step (the default). */
-    Queue("queue"),
-
-    /** Change what it is doing now (server busy mode, or interrupt then submit). */
-    Redirect("redirect"),
-}
-
-/** What Jev's answer to a finished turn means. */
-sealed interface Route {
-    val wire: String
-
-    data object Reply : Route { override val wire = "reply" }
-
-    /** Jev was not sure what to do (or which task): ask, never act. */
-    data object Clarify : Route { override val wire = "clarify" }
-
-    data object NewTask : Route { override val wire = "new_task" }
-
-    data class UpdateTask(val taskId: String, val mode: UpdateMode) : Route { override val wire = "update_task" }
-
-    /** [taskId] null: all tasks. Answered from the phone's event log only. */
-    data class Status(val taskId: String?) : Route { override val wire = "status" }
-
-    data class CancelTask(val taskId: String) : Route { override val wire = "cancel_task" }
-
-    data class ReadResult(val taskId: String) : Route { override val wire = "read_result" }
-
-    data object EndCall : Route { override val wire = "end_call" }
-
-    /** Jev gave nothing usable: say "say that again?" and do nothing else. */
-    data object AskRepeat : Route { override val wire = "ask_repeat" }
-}
-
-/** A finished turn's plan: the [route], the stock [slot] to play first, and whether the [writer] speaks after it. */
-data class Decision(val route: Route, val slot: String?, val writer: Boolean)
-
-/** Jev's `turn` verdict after the confidence floor. */
-enum class TurnVerdict { Done, KeepListening, Ignore }
 
 /**
  * Jev answers → what happens. Code, not Jev, decides whether Jev was sure enough:

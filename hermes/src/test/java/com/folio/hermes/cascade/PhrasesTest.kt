@@ -12,10 +12,10 @@ import org.junit.Test
 class PhrasesTest {
     private val bank = PhraseBank.load()
 
-    @Test fun shippedBankIsVersion2WithSlots() {
-        assertEquals(2, bank.version)
-        assertEquals(74, bank.slots.size)
-        assertEquals(281, bank.slots.sumOf { it.lines.size })
+    @Test fun shippedBankIsVersion3WithSlots() {
+        assertEquals(3, bank.version)
+        assertEquals(75, bank.slots.size)
+        assertEquals(285, bank.slots.sumOf { it.lines.size })
         assertTrue(bank.slots.all { it.lines.size in 2..6 })
         assertEquals(bank.allLines.size, bank.allLines.toSet().size)
     }
@@ -32,7 +32,7 @@ class PhrasesTest {
 
     @Test fun everyAppLineExists() {
         listOf(
-            AppLines.HI, AppLines.WELCOME_BACK, AppLines.WAIT, AppLines.SIGNAL, AppLines.LIMIT_FULL, AppLines.NEEDS_OK,
+            AppLines.HI, AppLines.WELCOME_BACK, AppLines.WHILE_AWAY, AppLines.WAIT, AppLines.SIGNAL, AppLines.LIMIT_FULL, AppLines.NEEDS_OK,
             AppLines.QUESTION, AppLines.HERMES_DOWN, AppLines.OFFLINE, AppLines.ONLINE, AppLines.RETRY, AppLines.GAVE_UP,
             AppLines.BYE, AppLines.BYE_TASKS, AppLines.SAY_AGAIN, AppLines.RESULT_BACK, AppLines.RESULT_FAILED,
             AppLines.ON_SCREEN, AppLines.WHICH_UPDATE, AppLines.WHICH_CANCEL, AppLines.WHICH_ONE,
