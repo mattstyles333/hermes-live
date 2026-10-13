@@ -20,7 +20,7 @@ A Hermes Agent with the dashboard reachable over HTTPS (or plain http on a Tails
 
 ## Install
 
-Download `hermes-live-X.Y.Z.apk` from [Releases](https://github.com/mattstyles333/hermes-live/releases). If you use Folio, install both from Releases signed with the same key.
+Download `hermes-live-X.Y.Z.apk` from the [Folio Releases](https://github.com/mattstyles333/folio-launcher/releases/latest): Folio's release workflow builds Hermes Live from this repo (pinned as a submodule) and signs both apps with the same key, which they need to talk to each other. This repo's own release workflow takes over once it has the signing secrets (see AGENTS.md).
 
 ## Phone checklist
 
