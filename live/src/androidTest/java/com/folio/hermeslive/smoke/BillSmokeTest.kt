@@ -52,6 +52,11 @@ import org.junit.runner.RunWith
  *
  * Arguments: `openrouterKey` (required), `hermesUrl` (default `http://10.0.2.2:18119`),
  * `wav` (a 16 kHz WAV on the device; default: the request spoken by TTS at run time), `say`.
+ *
+ * `dryRun=true` (no key needed, no OpenRouter request): a placeholder key, `openrouter.ai`
+ * mapped to an address that refuses, a corpus WAV. It proves the plumbing (fake Hermes sign-in,
+ * the engine switch, the call service, models, the corpus into the pipeline, a turn decided and
+ * held for the network) and that the fake gets no prompt.
  */
 @RunWith(AndroidJUnit4::class)
 class BillSmokeTest {
@@ -73,8 +78,10 @@ class BillSmokeTest {
     }
 
     @Test fun oneStockCheckCall() {
-        val key = args.getString("openrouterKey")
+        val dry = args.getString("dryRun") == "true"
+        val key = if (dry) DRY_KEY else args.getString("openrouterKey")
         assumeTrue("openrouterKey not given", !key.isNullOrBlank())
+        if (dry) BuildHooks.hosts = mapOf("openrouter.ai" to "127.0.0.1")
         val say = args.getString("say") ?: "Check how many Kestrel aviators we have in stock."
         val g = context.graph
         val shell = VoiceShell.of(context)
@@ -98,7 +105,8 @@ class BillSmokeTest {
             g.settings.update { it.copy(voiceEngine = VoiceEngine.Cascade, startOnOpen = false) }
             assertTrue("gate open", shell.gate.active)
 
-            val pcm = args.getString("wav")?.let { CorpusAudioSource.read(File(it)) } ?: speak(key, say)
+            val wav = args.getString("wav") ?: if (dry) File(context.getExternalFilesDir(null), "stt-corpus/e14-sarah.wav").path else null
+            val pcm = wav?.let { CorpusAudioSource.read(File(it)) } ?: speak(key, say)
             BuildHooks.cascadeAudio = CascadeAudioFactory { _, _ -> CascadeAudioIo(corpus, out, out) }
 
             val scenario = ActivityScenario.launch(LiveActivity::class.java)
@@ -118,6 +126,18 @@ class BillSmokeTest {
             val speechEnd = fedAt + speechMs
             fun at(e: (CascadeEvent) -> Boolean) = synchronized(events) { events.firstOrNull { e(it.second) }?.first }
 
+            if (dry) {
+                // Jev can't be reached: the turn is decided without it and held for the network.
+                waitFor("turn held", 30_000) { at { it is CascadeEvent.TurnHeld } != null || actor.ui.value.connection.outbox > 0 }
+                result.put("speech_end_to_held_ms", at { it is CascadeEvent.TurnHeld }?.let { it - speechEnd })
+                    .put("outbox", actor.ui.value.connection.outbox).put("tasks", actor.ui.value.tasks.size)
+                main { g.calls.end() }
+                waitFor("call ended", 10_000) { !g.calls.state.value.inCall }
+                scenario.close()
+                assertEquals("no task without Jev", 0, actor.ui.value.tasks.size)
+                result.put("pass", true)
+                return
+            }
             waitFor("turn committed", 20_000) { at { it is CascadeEvent.TurnCommitted } != null }
             waitFor("task started", 30_000) { actor.ui.value.tasks.isNotEmpty() }
             waitFor("task running", 30_000) { actor.ui.value.tasks.any { it.status == TaskUiStatus.Running || it.currentTool != null } }
@@ -158,6 +178,11 @@ class BillSmokeTest {
             shell.onSettingsChanged()
             runBlocking { g.account.signOut() }
         }
+    }
+
+    private companion object {
+        /** Shaped like a key, valid nowhere; used only with `openrouter.ai` unreachable. */
+        const val DRY_KEY = "sk-or-v1-dryrun000000000000000000000000000000000000000000000000000000"
     }
 
     /** [text] spoken by OpenRouter TTS (24 kHz), as 16 kHz mono samples for the pipeline. */
