@@ -143,7 +143,7 @@ class VoiceLiveApi(
         const val MAX_MESSAGES = 24
         const val MAX_CHARS = 6_000
         const val MAX_MESSAGE_CHARS = 1_200
-        private val WHITESPACE = Regex("(?U)\\s+")
+        private val WHITESPACE = Regex("\\s+")
 
         /**
          * Port of the desktop `toLiveHistory`: newest first until [maxMessages] or the [maxChars]

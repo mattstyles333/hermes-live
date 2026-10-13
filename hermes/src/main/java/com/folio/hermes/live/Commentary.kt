@@ -5,8 +5,8 @@ object Commentary {
     /** Vendor cap is 500 tokens per append; ~4 chars/token with headroom. */
     const val APPEND_CHAR_LIMIT = 1_400
 
-    private val WHITESPACE = Regex("(?U)\\s+")
-    private val SENTENCE_SPLIT = Regex("(?U)(?<=[.!?])\\s+")
+    private val WHITESPACE = Regex("\\s+")
+    private val SENTENCE_SPLIT = Regex("(?<=[.!?])\\s+")
 
     /** Port of the desktop `chunkForCommentary`: split on sentence boundaries into ≤[limit] chunks. */
     fun chunk(text: String, limit: Int = APPEND_CHAR_LIMIT): List<String> {

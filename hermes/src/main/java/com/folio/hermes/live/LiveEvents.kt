@@ -83,7 +83,7 @@ internal data class LiveWire(
  */
 class LiveClientEvents {
     private val counter = AtomicInteger(0)
-    private val whitespace = Regex("(?U)\\s+")
+    private val whitespace = Regex("\\s+")
 
     private fun nextId(prefix: String) = "${prefix}_${counter.incrementAndGet()}"
 

@@ -48,7 +48,7 @@ object StopPhrases {
     val ADDRESS_PREFIXES: List<String> = listOf("hey hermes", "hey hermes,", "hermes", "hermes,", "ok", "okay", "hey")
 
     private val PUNCTUATION = Regex("\\p{P}+")
-    private val WHITESPACE = Regex("(?U)\\s+")
+    private val WHITESPACE = Regex("\\s+")
     private val NORMALISED_DEFAULTS = DEFAULT_PHRASES.map(::normalize)
 
     /**

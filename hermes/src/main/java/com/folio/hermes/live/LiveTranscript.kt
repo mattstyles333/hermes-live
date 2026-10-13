@@ -39,7 +39,7 @@ class LiveTranscript(
     companion object {
         const val CONTEXT_WINDOW_MS = 5 * 60_000L
         const val CONTEXT_MAX_FRAGMENTS = 80
-        private val WHITESPACE = Regex("(?U)\\s+")
+        private val WHITESPACE = Regex("\\s+")
 
         /**
          * Port of the desktop `delegationPrompt`: merge consecutive fragments per speaker; the prompt
