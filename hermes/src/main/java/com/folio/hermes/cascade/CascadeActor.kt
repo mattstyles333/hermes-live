@@ -115,7 +115,9 @@ class CascadeActor(
 
     /** Start the call: restore what the persistence seam saved, then listen to the ports. */
     fun start() {
-        val restored = env.persistence.restore(store, _state.value)
+        val restored = env.persistence.restore(store, _state.value).let { s ->
+            s.copy(conversation = s.conversation.copy(resume = env.conversation.resumeCandidate(store, s)))
+        }
         collectors?.cancel()
         collectors = actorScope.launch {
             launch { hermes.sessions.collect { (task, stored) -> post(Event.TaskSessionBound(task, stored)) } }

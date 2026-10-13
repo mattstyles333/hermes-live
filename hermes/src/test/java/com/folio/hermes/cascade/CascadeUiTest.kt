@@ -118,4 +118,33 @@ class CascadeUiTest {
         assertTrue("no writer", commit.none { it is Effect.StreamWriter })
         assertEquals("social.thanks", commit.filterIsInstance<Effect.FetchClip>().single().piece.slot)
     }
+
+    /** R-STT-2 through the hooks only: a committed turn waits for the accurate pass (a gate), then runs. */
+    @Test fun aCommitHookCanHoldATurnUntilTheAccuratePass() {
+        val hooks = object : com.folio.hermes.cascade.routing.TurnHooks {
+            override fun committed(tx: Tx, action: ActionState, event: TurnEvent.Done): ActionState {
+                tx.effects += Effect.AccuratePass(action.turnId)
+                return action.copy(gates = setOf("accurate"))
+            }
+
+            override fun accurate(tx: Tx, event: Event.AccurateFinal) {
+                tx.s = tx.s.copy(transcript = tx.s.transcript.copy(byTurn = tx.s.transcript.byTurn + (event.turnId to event.transcript!!)))
+                tx.openGate(event.turnId, "accurate")
+            }
+        }
+        val r = Run(CascadeReducer(CascadeEnv(bank, handlers = HandlerRegistry.default().with(hooks))))
+        r.at(0, Event.SpeechStarted)
+        r.at(0, Event.Final("email Sapphire"))
+        r.at(0, Event.SpeechEnded)
+        val early = r.at(500, Event.TimerFired(Timer(TurnRules.EARLY, 1))).filterIsInstance<Effect.CallJev>().single()
+        r.at(600, Event.JevAnswered(early.seq, ok("turn" to answer("done"), "action" to answer("reply"), "enough" to answer("line_then_writer")), 600))
+        val commit = r.at(1_000, Event.TimerFired(Timer(TurnRules.COMMIT, 1)))
+        assertTrue(Effect.AccuratePass("u1") in commit)
+        assertTrue("held until the accurate pass", commit.none { it is Effect.StreamWriter })
+        val accurate = Transcript("email Safilo", listOf(Word("email", 0.99), Word("Safilo", 0.42, listOf("Sapphire"), uncertain = true)), TranscriptPass.Accurate)
+        val run = r.at(1_400, Event.AccurateFinal("u1", accurate))
+        assertTrue(run.any { it is Effect.StreamWriter })
+        assertEquals(TranscriptPass.Accurate, r.ui.turn.pass)
+        assertEquals(listOf("Safilo"), r.ui.turn.words.filter { it.uncertain }.map { it.text })
+    }
 }

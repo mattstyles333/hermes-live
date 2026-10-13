@@ -128,10 +128,13 @@ interface TurnHooks {
         }
     }
 
+    /** A task update the task table applied (e.g. speak the summary after `Accepted`, R-TASK-2; `error.gave_up` on a failed submit). */
+    fun taskUpdated(tx: Tx, event: Event.TaskUpdated) = Unit
+
     /** A timer the reducer does not own (a slice's). Return true if handled. */
     fun timer(tx: Tx, timer: Timer): Boolean = false
 
-    /** A tap on a task card (cancel, retry, read all, play, tell). Default: none handled yet (phase 1). */
+    /** A tap on a task card: Cancel, ReadAll, Tell (Retry is the registry's, Play the conversation's). Default: none yet (phase 1). */
     fun tap(tx: Tx, event: Event.TaskTapped) = Unit
 
     /** The user picked an alternative for an uncertain word. Default: nothing (phase 1). */

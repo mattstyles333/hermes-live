@@ -23,6 +23,7 @@ class CascadeReducer(val env: CascadeEnv) {
     fun reduce(state: State, event: Event): Pair<State, List<Effect>> {
         val tx = Tx(state, env)
         tx.on(event)
+        if (tx.s.started) tx.advance()
         tx.pump()
         val durable = env.persistence.save(state, tx.s)
         return tx.s to (durable + tx.effects)
@@ -62,7 +63,11 @@ class CascadeReducer(val env: CascadeEnv) {
             is Event.HermesConnection -> s = s.copy(connection = s.connection.copy(hermesUp = event.up))
             is Event.Say -> say(event.slotId, event.kind)
             is Event.RenderProgressed -> s = s.copy(render = event.progress)
-            is Event.TaskTapped -> env.handlers.hooks.tap(this, event)
+            is Event.TaskTapped -> when (event.tap) {
+                TaskTap.Retry -> env.registry.retry(this, event.taskId)
+                TaskTap.Play -> env.conversation.play(this, event.taskId)
+                else -> env.handlers.hooks.tap(this, event)
+            }
             is Event.WordChosen -> env.handlers.hooks.wordChosen(this, event)
             is Event.ResumeChosen -> env.conversation.resume(this, event.choice)
             is Event.TimerFired -> timer(event.timer)
@@ -75,7 +80,14 @@ class CascadeReducer(val env: CascadeEnv) {
             is Event.ClipReady -> clipReady(event.piece, event.outcome)
             is Event.PlaybackStarted -> playbackStarted(event.piece, event.atMs)
             is Event.PlaybackFinished -> playbackFinished(event.piece, event.playedMs, event.durationMs)
-            is Event.TaskUpdated -> tasks(s.tasks.update(event.taskId, event.runId, event.update, s.wallMs))
+            is Event.TaskUpdated -> {
+                val known = s.tasks[event.taskId]?.runs?.containsKey(event.runId) == true
+                tasks(s.tasks.update(event.taskId, event.runId, event.update, s.wallMs))
+                if (known) {
+                    env.registry.taskUpdated(this, event)
+                    env.handlers.hooks.taskUpdated(this, event)
+                }
+            }
             is Event.TaskRunEnded -> tasks(s.tasks.runEnded(event.taskId, event.runId, s.wallMs))
             is Event.TaskInterrupted -> {
                 tasks(s.tasks.interrupted(event.taskId, event.ok))
@@ -238,7 +250,7 @@ class CascadeReducer(val env: CascadeEnv) {
         advance()
     }
 
-    /** Start the next queued action if none is running and its gates are open. */
+    /** Start the next queued action if none is running and its gates are open (also after every event). */
     private fun Tx.advance() {
         while (s.actions.active == null) {
             val next = s.actions.waiting.firstOrNull() ?: return

@@ -17,7 +17,7 @@ import com.folio.hermes.cascade.ports.Store
  *   False keeps C1's outbox flush (each held turn through Jev in order).
  * - [resumeCandidate]: what the Resume card offers when the app opens (reads the [Store]; not in `reduce`).
  * - [briefing]: the opening briefing's items when a call starts with something waiting.
- * - [resume]: the Resume card's choice (Play, Continue, New).
+ * - [resume]: the Resume card's choice (Play, Continue, New); [play]: ▶ on a task card.
  *
  * Interface only in S0; [None] keeps C1's behaviour.
  */
@@ -32,6 +32,9 @@ interface ConversationPolicy {
 
     /** The user chose on the Resume card (R-CONV-2). */
     fun resume(tx: Tx, choice: ResumeChoice) = Unit
+
+    /** ▶ on a finished task card: its spoken briefing, mic off (R-CONV-2). */
+    fun play(tx: Tx, taskId: String) = Unit
 
     companion object {
         val None: ConversationPolicy = object : ConversationPolicy {}

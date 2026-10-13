@@ -24,7 +24,8 @@ object NewTaskHandler : RouteHandler {
             tx.play(AppLines.LIMIT_FULL)
             return Next.Done
         }
-        if (tx.s.outbox.stageDone(a.turnId, TASK_STAGE)) return Next.Done
+        // A resend never starts the same turn's task twice (R-DUR-2).
+        if (tx.s.outbox.stageDone(a.turnId, TASK_STAGE) || tx.env.registry.taskForTurn(tx.s, a.turnId) != null) return Next.Done
         if (a.slot == null) tx.play("ack.do")
         tx.updateAction { it.copy(writerRan = true) }
         return tx.requestWrite(WriterPrompts.PLAN_SYSTEM, WriterPrompts.plan(a.text, tx.recentExchanges()))

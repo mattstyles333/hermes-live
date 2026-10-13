@@ -46,10 +46,27 @@ folio-launcher pulls this repo in as a git submodule and builds `:hermes` from i
 | Account | `data/Account.kt`, `data/SecureTokenStore.kt` (Keystore AES-GCM), `data/SettingsStore.kt` |
 | Foreground call | `service/CallService.kt` (type microphone, CallStyle notification, MediaSession for headset buttons), `service/CallActionReceiver.kt`, `service/CallTileService.kt` |
 | Folio interface | `provider/ConnectionProvider.kt` |
-| Cascade voice (library only, dark; `:live` does not use it yet) | `:hermes` `openrouter/` (`OpenRouter`: Jev System One, writer, TTS) and `cascade/` (`TurnTaker`, `Router`, `TaskBoard`, `SpeechQueue`, `Speaker`, `Outbox`, `PhraseBank` + `LineRotator`, `TtsCache`, `PhraseRenderer`, `DecisionLog`, `CascadeUiState`, `Cascade`). Spec: hub contract `hermes-cascade-contract-2026-10-13.md`. The phrase bank ships as a resource; no audio in the repo |
+| Cascade voice (library only, dark; `:live` does not use it yet) | `:hermes` `openrouter/` (`OpenRouter`: Jev System One, writer, TTS) and `cascade/`. Spec: hub `hermes-cascade-spec-v2-2026-10-13.md` (R-ids); v1 contract is background. One state owner: `CascadeActor` (see "Cascade layout"). The phrase bank (v3) ships as a resource; no audio in the repo |
 | Diagnostics (crash + error reporting) | `:hermes` `telemetry/` (`Telemetry`, `TelemetryCore`, `Scrub`, `Otlp`, `ExitReports`, `Tombstone`, `DiagnosticsEndpoint`); installed first in `LiveApp.onCreate`; Settings › Diagnostics |
 | Entry points | `LiveIntents.kt`, `LiveActivity.kt`, `res/xml/shortcuts.xml` |
 | UI | `ui/` (Compose; Folio's palette copied, no dependency on Folio) |
+
+## Cascade layout (spec v2 R-ARC, §12 ownership)
+
+- **One state owner (R-ARC-1).** `CascadeActor` takes `Event`s from one channel, runs the pure `CascadeReducer.reduce(State, Event) -> (State, List<Effect>)`, and runs the effects. Executors (`TaskRunner`, `SpeechPlayer`, timers, Jev and writer calls) post results back as events with correlation ids (timer seq, call seq, task id + run id); `reduce` drops stale ones. Nothing else holds call state, so there are no locks. `reduce` never reads a clock: the actor stamps `State.nowMs`, `wallMs` and `settings` before each event.
+- **Pure rules** used by the reducer: `TurnRules` (pause, early Jev, commit, race, keep_listening), `TaskTable` (tasks, cap, queued/redirect, status from the log only), `SpeechQueueState` (priority, gate, cut-in, heard words), `OutboxState`, `Rotations`.
+- **Frozen types (R-ARC-4):** `Event`, `State`, `Effect`, `CascadeUiState`, `CascadeEvent`, `Transcript`/`Word`, `CascadeSettings`, the ports. Additive changes only, with a hub change note.
+- **Durable first (R-DUR-1):** the actor runs `Effect.Persist`/`Append` before every other effect of the same step.
+- **Ports (R-ARC-5), `cascade/ports/`:** `Clock`, `Network`, `Store`, `SpeechToText`, `AudioOut`, `HermesPort` (open with a stored session id), `OpenRouterPort`; `MemoryStore`, `GatewayHermesPort`, `LiveOpenRouter`.
+- **Seams (`CascadeEnv`):** phase 1 slices change behaviour in their own package, never in the reducer.
+
+| Package | Owner | What |
+|---|---|---|
+| `cascade/*.kt` (root) | hub (S0) | actor, reducer, `Tx`, frozen types, pure rules, executors, `CascadeSettings` |
+| `cascade/ports/` | hub (S0) | port interfaces and adapters |
+| `cascade/routing/` | S-A | `HandlerRegistry` (one `RouteHandler` per route, `TurnHooks`, `ResultHandler`), `Router`, `CascadeBrain`, `JevQuestions` |
+| `cascade/writer/`, `cascade/budget/` | S-A | `WriterPrompts`; `JevStateBudget` (pass-through in S0) |
+| `cascade/store/`, `cascade/registry/`, `cascade/conversation/` | S-B | `StatePersistence`, `TaskRegistry`, `ConversationPolicy` (C1 defaults in S0) |
 
 ## Rules that matter
 
@@ -124,7 +141,7 @@ Crash and error reporting as OTLP/HTTP JSON logs (`POST <endpoint>/v1/logs`), sh
 - `LiveSettingsTest` (defaults).
 - `ConnectionProviderTest`: permission refused, signed-out shape, signed-in shape, `force_refresh`, state.
 - `:hermes` `openrouter/`: `OpenRouterTest` (MockWebServer: no key means no request, request shapes, failure kinds, retry rules, SSE writer stream, TTS whole clip and streamed with frame alignment, no content or key in telemetry), `SentenceSplitterTest` (the 1–4 word lead is its own piece).
-- `:hermes` `cascade/`: `TurnTakerTest` (virtual time: early call, commit at `pause_ms`, cancelled by speech, racing second call, stale early answer, failures, keep_listening, recheck, parking), `RouterTest` (confidence floors, `line_only` ≥ 0.7, queued by default), `TaskBoardTest` (real gateway against `FakeHermesServer`: status never submits, `queued: true` on the wire, cap under a race, cancel, queued update = two results, redirect = one, busy-mode fallback, never `config.set*`), `SpeechQueueTest`, `PhrasesTest` (bank v2, rotator passes, restart), `AudioCacheTest` (LRU, cached line = no request, renderer fetches only changed lines, 4 at a time), `DecisionLogTest`, `OutboxTest` (a drop resends in order, never twice); `GatewayQueuedTest`.
+- `:hermes` `cascade/`: `CascadeReduceTest` (pure `reduce`: one full turn, stale results dropped, cut-in ends the writer without failing, keep_listening and recheck, new task, status never submits, one flush at a time, nothing before `Start`), `CascadeActorTest` (virtual clock, fake ports: early call at 500 ms, commit at 1000 ms, a raced slow early call, a late final, speech resuming, a task result waiting for the user, cut-in, end call, stop), `CascadeKillRestartTest` (kills the actor before every effect and restarts it on the same `Store`; never submits twice; the persist-to-submit window is left for S-B's registry), `CascadeUiTest` (phases, task cards, offline pill, a registered handler replacing a route, a commit hook gating a turn on the accurate pass). The C1 tests run on the pure rules through test drivers (`drivers/`: `TurnTaker`, `TaskBoard` on `TaskRunner` + `GatewayHermesPort`, `SpeechQueue`): `TurnTakerTest` (virtual time: early call, commit at `pause_ms`, cancelled by speech, racing second call, stale early answer, failures, keep_listening, recheck, parking), `routing/RouterTest` (confidence floors, `line_only` ≥ 0.7, queued by default), `routing/JevQuestionsTest` (probe5 wording pinned by a fingerprint of the probe; `utterance`/`latest` state; `split` and `clarity` every call), `TaskBoardTest` (real gateway against `FakeHermesServer`: status never submits, `queued: true` on the wire, cap under a race, cancel, queued update = two results, redirect = one, busy-mode fallback, never `config.set*`), `SpeechQueueTest`, `PhrasesTest` (bank v3, rotator passes, restart), `AudioCacheTest` (LRU, cached line = no request, renderer fetches only changed lines, 4 at a time), `DecisionLogTest`, `OutboxTest`; `GatewayQueuedTest`.
 - `:hermes` `telemetry/`: `ScrubTest`, `OtlpTest` (exact OTLP JSON), `TelemetryCoreTest` (MockWebServer: off state sends nothing, crash file deleted only on 2xx, backoff, queue bound, pending cap/expiry, exit dedupe), `TombstoneTest` (proto fields per AOSP `tombstone.proto`), `DiagnosticsEndpointTest` (off without a URL, off when switched off, override wins). `OtlpLiveTest` sends one real record only when `TELEMETRY_LIVE_URL` is set; CI never sets it.
 - `LiveIntentsTest`
 - `CallScreenTest` (Robolectric Compose).
