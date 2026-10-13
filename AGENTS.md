@@ -68,6 +68,35 @@ folio-launcher pulls this repo in as a git submodule and builds `:hermes` from i
 | `cascade/writer/`, `cascade/budget/` | S-A | `WriterPrompts`; `JevStateBudget` (pass-through in S0) |
 | `cascade/store/`, `cascade/registry/`, `cascade/conversation/` | S-B | `StatePersistence`, `TaskRegistry`, `ConversationPolicy` (C1 defaults in S0) |
 
+## Cascade app shell (S-E; spec v2 R-CONV-3, R-OFF-2, R-Q-1/2)
+
+All in `:live`, dark: nothing below runs unless Settings › Voice › Voice engine is `cascade` **and** a usable OpenRouter key is saved.
+
+| Area | Where |
+|---|---|
+| Voice settings | `data/LiveSettings.kt` (engine `gpt-live`\|`cascade`, pause 400–3000 ms, tasks 1–6, voice, TTS model, backchannel, hold-to-talk, vocabulary, decision log, echo cancel, high accuracy; `normalized()` clamps; `cascadeSettings()` maps onto S0's `CascadeSettings`), `data/SettingsStore.kt` |
+| OpenRouter key | `data/OpenRouterKey.kt`: `OpenRouterKeyStore` (own Keystore alias and prefs file `hermes_live_openrouter`, so the Hermes sign-out wipe leaves it; status without decrypting), `KeyPaste`, `KeyChecker` (`GET /api/v1/key`) |
+| Off-state gate | `data/CascadeGate.kt`: `CascadeGate`, `CascadeShell` (builds through `CascadeFactory` only while the gate is open, closes when it shuts) |
+| Shell per process | `data/VoiceShell.kt` (`VoiceShell.of(context)`; `CascadeHost` is what `LiveApp` implements to supply the factory, `SpeechModels` and `OffCallHooks`) |
+| Storage | `data/FileStore.kt` (the `Store` port: temp-then-rename, fsync, CRC per value and log line, torn lines skipped, corrupt values quarantined), `data/CascadeStorage.kt` (`noBackupFilesDir/cascade/`: `store/`, `tts/`, `rotations.json`, `decisions.jsonl`, `models/`) |
+| Prepare Bill's voice | `data/VoicePrep.kt` (phrase render + model downloads, cancel/resume), `data/SpeechModels.kt` (the interface S-C's model manager is adapted to) |
+| Vocabulary, decision log | `data/Vocabulary.kt` (learned corrections, hotwords), `data/DecisionLogShare.kt` (Share as one JSON file through `DecisionLogProvider`, not exported, URI grant) |
+| Settings › Voice UI | `ui/SettingsScreen.kt` (`VoiceSettingsSection`, wired by `rememberVoiceSettings()` over `data/VoiceSettingsController.kt`) |
+| Off-call | `service/OffCall.kt` (hooks: `afterHangUp`, `stop`, `postResult`, `playBriefing`; `OffCallHooks`, `OffCallPolicy`), `service/OffCallService.kt`, `service/ResultNotifications.kt`, `service/BriefingService.kt` |
+| Memo entry | `service/MemoEntry.kt` (tile marks an offline start `extra.MEMO`; dynamic "Memo" shortcut `action.MEMO` while the cascade is on) |
+| Private telemetry | `data/SafeTelemetry.kt`: names, codes and timings only; text becomes `redacted` |
+
+**Off-call service type (R-CONV-3).** `OffCallService` keeps the process, and through `OffCallHooks.holdGateway()` the Hermes gateway, alive after hang-up while voice tasks finish. It never opens the mic. It is `specialUse` with a `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` justification:
+- not `microphone`: the mic is off, and the privacy indicator would stay on;
+- not `dataSync`: Android 15 limits it to 6 hours a day and ends it with a timeout, and it is meant for transfers;
+- not `remoteMessaging`: that type is defined for continuing text messages from one device to another, which this isn't;
+- `specialUse` has no runtime limit beyond our own (all tasks done, 30 min, Stop, or the cascade switched off). Hermes Live ships outside Play, so the Play declaration does not apply; if it ever ships there, the declaration text is the manifest property.
+- **Start rule.** Android 12+ refuses a foreground-service start from the background. Call `OffCall.afterHangUp` while the call is still foreground (before `CallService` drops it). If Android refuses, it returns false, reports `offcall.stop reason=refused`, and only the result notifications remain. Not yet tested on a phone.
+
+**Hear it.** `BriefingService` is `mediaPlayback`, started from the notification action (`PendingIntent.getForegroundService`, which Android allows from a notification tap). It plays through an `AudioTrack` as media speech with a `MediaSession` and a public `MediaStyle` notification titled "Bill · result", so it can be played and stopped from the lock screen without showing the task. The result notification itself is `VISIBILITY_PRIVATE`.
+
+**Tests:** `VoiceSettingsTest`, `OpenRouterKeyTest`, `FileStoreTest` (the same contract as `MemoryStore`, atomicity, corruption), `CascadeOffStateTest` (R-Q-1, with a control), `CascadeTelemetryPrivacyTest` (R-Q-2: sentinel key, transcript, headline and vocabulary through a raw sink), `VoicePrepTest`, `VoiceSettingsControllerTest`, `OffCallServiceTest` (lifecycle, timeout, notification intents, Hear it, declared types have no mic bit), `MemoEntryTest`, `VoiceSettingsScreenTest`.
+
 ## Rules that matter
 
 - **Off state.**

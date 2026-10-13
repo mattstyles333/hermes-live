@@ -26,7 +26,7 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
     val username: String? get() = prefs.getString(K_USER, null)
 
     fun update(transform: (LiveSettings) -> LiveSettings) {
-        val next = transform(_settings.value)
+        val next = transform(_settings.value).normalized()
         prefs.edit()
             .putBoolean(K_MUSIC, next.musicInGaps)
             .putBoolean(K_DUCK, next.duckOnSpeaker)
@@ -40,6 +40,17 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
             .putString(K_FALLBACK, next.fallbackRoute.name)
             .putBoolean(K_DIAGNOSTICS, next.diagnostics)
             .putString(K_DIAGNOSTICS_URL, next.diagnosticsUrl.trim())
+            .putString(K_VOICE_ENGINE, next.voiceEngine.wire)
+            .putInt(K_PAUSE_MS, next.pauseMs)
+            .putInt(K_MAX_TASKS, next.maxTasks)
+            .putString(K_BILL_VOICE, next.billVoice)
+            .putString(K_TTS_MODEL, next.ttsModel)
+            .putBoolean(K_BACKCHANNEL, next.backchannel)
+            .putBoolean(K_HOLD_TO_TALK, next.holdToTalk)
+            .putString(K_VOCABULARY, next.vocabulary.joinToString("\n"))
+            .putBoolean(K_DECISION_LOG, next.decisionLog)
+            .putBoolean(K_ECHO_CANCEL, next.echoCancel)
+            .putBoolean(K_HIGH_ACCURACY, next.highAccuracySpeech)
             .apply()
         _settings.value = next
     }
@@ -78,7 +89,18 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
                 ?.let { name -> FallbackRoute.entries.firstOrNull { it.name == name } } ?: d.fallbackRoute,
             diagnostics = prefs.getBoolean(K_DIAGNOSTICS, d.diagnostics),
             diagnosticsUrl = prefs.getString(K_DIAGNOSTICS_URL, null) ?: d.diagnosticsUrl,
-        )
+            voiceEngine = VoiceEngine.parse(prefs.getString(K_VOICE_ENGINE, null)),
+            pauseMs = prefs.getInt(K_PAUSE_MS, d.pauseMs),
+            maxTasks = prefs.getInt(K_MAX_TASKS, d.maxTasks),
+            billVoice = prefs.getString(K_BILL_VOICE, null) ?: d.billVoice,
+            ttsModel = prefs.getString(K_TTS_MODEL, null) ?: d.ttsModel,
+            backchannel = prefs.getBoolean(K_BACKCHANNEL, d.backchannel),
+            holdToTalk = prefs.getBoolean(K_HOLD_TO_TALK, d.holdToTalk),
+            vocabulary = prefs.getString(K_VOCABULARY, null)?.split('\n') ?: d.vocabulary,
+            decisionLog = prefs.getBoolean(K_DECISION_LOG, d.decisionLog),
+            echoCancel = prefs.getBoolean(K_ECHO_CANCEL, d.echoCancel),
+            highAccuracySpeech = prefs.getBoolean(K_HIGH_ACCURACY, d.highAccuracySpeech),
+        ).normalized()
     }
 
     companion object {
@@ -108,6 +130,17 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
         private const val K_START_ON_OPEN = "start_on_open"
         private const val K_KEEP_SCREEN_ON = "keep_screen_on"
         private const val K_FALLBACK = "fallback_route"
+        private const val K_VOICE_ENGINE = "voice_engine"
+        private const val K_PAUSE_MS = "cascade_pause_ms"
+        private const val K_MAX_TASKS = "cascade_max_tasks"
+        private const val K_BILL_VOICE = "cascade_voice"
+        private const val K_TTS_MODEL = "cascade_tts_model"
+        private const val K_BACKCHANNEL = "cascade_backchannel"
+        private const val K_HOLD_TO_TALK = "cascade_hold_to_talk"
+        private const val K_VOCABULARY = "cascade_vocabulary"
+        private const val K_DECISION_LOG = "cascade_decision_log"
+        private const val K_ECHO_CANCEL = "cascade_echo_cancel"
+        private const val K_HIGH_ACCURACY = "cascade_high_accuracy"
         private const val K_SERVER = "server_url"
         private const val K_USER = "username"
         private const val K_SESSION = "stored_session_id"
