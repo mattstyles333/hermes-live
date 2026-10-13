@@ -1,0 +1,179 @@
+package com.folio.hermeslive.smoke
+
+import android.Manifest
+import androidx.test.core.app.ActivityScenario
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.folio.hermes.cascade.CascadeEvent
+import com.folio.hermes.cascade.TaskUiStatus
+import com.folio.hermes.openrouter.OpenRouter
+import com.folio.hermes.openrouter.SpeechAudio
+import com.folio.hermes.openrouter.SpeechDelivery
+import com.folio.hermes.openrouter.SpeechFormat
+import com.folio.hermeslive.LiveActivity
+import com.folio.hermeslive.audio.CascadeAudioFactory
+import com.folio.hermeslive.audio.CascadeAudioIo
+import com.folio.hermeslive.call.CallPhase
+import com.folio.hermeslive.call.CallRequest
+import com.folio.hermeslive.cascade.CascadeCallEngine
+import com.folio.hermeslive.data.KeyCheck
+import com.folio.hermeslive.data.SignInResult
+import com.folio.hermeslive.data.VoiceEngine
+import com.folio.hermeslive.data.VoiceShell
+import com.folio.hermeslive.graph
+import com.folio.hermeslive.hooks.BuildHooks
+import com.folio.hermeslive.hooks.CapturingAudioOut
+import com.folio.hermeslive.service.CallService
+import com.folio.hermeslive.stt.CorpusAudioSource
+import java.io.ByteArrayOutputStream
+import java.io.File
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+
+/**
+ * The one Bill smoke call (spec v2 §11b, cut down): the debug app, engine `cascade`, the real
+ * OpenRouter (Jev, writer, Bill's voice) with a key given at run time, the fake Hermes on the
+ * host, speech from a WAV through the real sherpa pipeline, Bill into a capturing output.
+ *
+ * Expect: Jev routes the stock-check request to `new_task`; a stock line plays; the fake gets
+ * exactly one prompt; the tool steps arrive; the result is spoken. Timings and the outcome go to
+ * `<external files>/smoke/bill.json` (no transcripts). Run it with `tools/cascade-smoke.sh`
+ * (reads `OPENROUTER_API_KEY`); skipped without the `openrouterKey` argument.
+ *
+ * Arguments: `openrouterKey` (required), `hermesUrl` (default `http://10.0.2.2:18119`),
+ * `wav` (a 16 kHz WAV on the device; default: the request spoken by TTS at run time), `say`.
+ */
+@RunWith(AndroidJUnit4::class)
+class BillSmokeTest {
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private val context get() = instrumentation.targetContext
+    private val args get() = InstrumentationRegistry.getArguments()
+
+    private fun shell(cmd: String) = instrumentation.uiAutomation.executeShellCommand(cmd).close()
+
+    private fun main(block: () -> Unit) = instrumentation.runOnMainSync(block)
+
+    private fun waitFor(what: String, timeoutMs: Long, check: () -> Boolean): Long {
+        val t0 = System.nanoTime()
+        while (!check()) {
+            if (System.nanoTime() - t0 > timeoutMs * 1_000_000) throw AssertionError("timed out: $what")
+            Thread.sleep(25)
+        }
+        return System.nanoTime() / 1_000_000
+    }
+
+    @Test fun oneStockCheckCall() {
+        val key = args.getString("openrouterKey")
+        assumeTrue("openrouterKey not given", !key.isNullOrBlank())
+        val say = args.getString("say") ?: "Check how many Kestrel aviators we have in stock."
+        val g = context.graph
+        val shell = VoiceShell.of(context)
+        val out = CapturingAudioOut()
+        val corpus = CorpusAudioSource(pace = 2.0)
+        val events = ArrayList<Pair<Long, CascadeEvent>>()
+        val watch = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val result = JSONObject()
+        try {
+            shell("pm grant ${context.packageName} ${Manifest.permission.RECORD_AUDIO}")
+            shell("pm grant ${context.packageName} ${Manifest.permission.POST_NOTIFICATIONS}")
+            shell("input keyevent KEYCODE_WAKEUP")
+            shell("wm dismiss-keyguard")
+            runBlocking { g.ready.await() }
+            val signIn = runBlocking { g.account.signIn(args.getString("hermesUrl") ?: "http://10.0.2.2:18119", "fake", "fake-password") }
+            assertTrue("signed in to the fake Hermes: $signIn", signIn is SignInResult.Ok)
+            shell.shell.release()
+            shell.keys.save(key!!, KeyCheck.Valid)
+            g.settings.update { it.copy(voiceEngine = VoiceEngine.Cascade, startOnOpen = false) }
+            shell.onSettingsChanged()
+            assertTrue("gate open", shell.gate.active)
+
+            val pcm = args.getString("wav")?.let { CorpusAudioSource.read(File(it)) } ?: speak(key, say)
+            BuildHooks.cascadeAudio = CascadeAudioFactory { _, _ -> CascadeAudioIo(corpus, out, out) }
+
+            val scenario = ActivityScenario.launch(LiveActivity::class.java)
+            scenario.onActivity { CallService.start(it, CallRequest(entry = "smoke")) }
+            val t0 = System.nanoTime() / 1_000_000
+            val live = waitFor("call live", 30_000) { g.calls.state.value.phase == CallPhase.Live }
+            result.put("call_live_ms", live - t0)
+            val engine = g.calls.cascadeEngine as CascadeCallEngine
+            val actor = engine.session!!.core.actor
+            watch.launch { actor.events.collect { e -> synchronized(events) { events += System.nanoTime() / 1_000_000 to e } } }
+            Thread.sleep(500)
+
+            corpus.enqueue(pcm, "request", silenceAfterMs = 4_000)
+            val speechMs = pcm.size * 1000L / 16_000 / 2 // fed at twice real time
+            val fedAt = waitFor("request fed", 30_000) { corpus.clipStarts.containsKey("request") }
+            val speechEnd = fedAt + speechMs
+            fun at(e: (CascadeEvent) -> Boolean) = synchronized(events) { events.firstOrNull { e(it.second) }?.first }
+
+            waitFor("turn committed", 20_000) { at { it is CascadeEvent.TurnCommitted } != null }
+            waitFor("task started", 30_000) { actor.ui.value.tasks.isNotEmpty() }
+            waitFor("task running", 30_000) { actor.ui.value.tasks.any { it.status == TaskUiStatus.Running || it.currentTool != null } }
+            shell("screencap -p /sdcard/Download/bill-smoke-midtask.png")
+            waitFor("task finished", 60_000) { at { it is CascadeEvent.TaskFinished } != null }
+            waitFor("result spoken", 60_000) { at { it is CascadeEvent.ResultSpoken } != null && !actor.speaking }
+            val task = actor.ui.value.tasks.first()
+            val played = out.played
+            result
+                .put("route", actor.ui.value.jev.action?.choice)
+                .put("tasks", actor.ui.value.tasks.size)
+                .put("task_status", task.status.name)
+                .put("task_steps", task.steps)
+                .put("clips_played", played.size)
+                .put("speech_end_to_commit_ms", at { it is CascadeEvent.TurnCommitted }!! - speechEnd)
+                .put("speech_end_to_first_audio_ms", played.firstOrNull()?.let { it.startedAtMs - speechEnd })
+                .put("speech_end_to_accepted_ms", at { it is CascadeEvent.TaskAccepted }?.let { it - speechEnd })
+                .put("task_finished_to_result_audio_ms", at { it is CascadeEvent.TaskFinished }!!.let { fin -> played.firstOrNull { it.startedAtMs >= fin }?.startedAtMs?.minus(fin) })
+                .put("jev_latency_ms", actor.ui.value.jev.latencyMs)
+            main { g.calls.end() }
+            waitFor("call ended", 10_000) { !g.calls.state.value.inCall }
+            scenario.close()
+            assertEquals("new_task", actor.ui.value.jev.action?.choice ?: result.optString("route"))
+            assertEquals(1, result.getInt("tasks"))
+            assertTrue("a stock line and the result were spoken", played.size >= 2)
+            result.put("pass", true)
+        } catch (e: Throwable) {
+            result.put("pass", false).put("error", e.javaClass.simpleName + ": " + e.message?.take(160))
+            throw e
+        } finally {
+            File(context.getExternalFilesDir(null), "smoke").apply { mkdirs() }.resolve("bill.json").writeText(result.toString(2))
+            android.util.Log.i("HermesSmoke", "BILL_SMOKE $result")
+            watch.cancel()
+            runCatching { main { g.calls.end() } }
+            BuildHooks.reset()
+            shell.keys.remove()
+            g.settings.update { it.copy(voiceEngine = VoiceEngine.GptLive, startOnOpen = true) }
+            shell.onSettingsChanged()
+            runBlocking { g.account.signOut() }
+        }
+    }
+
+    /** [text] spoken by OpenRouter TTS (24 kHz), as 16 kHz mono samples for the pipeline. */
+    private fun speak(key: String, text: String): ShortArray {
+        val bytes = ByteArrayOutputStream()
+        var rate = 24_000
+        runBlocking {
+            OpenRouter(key = { key }).speech.speak(text, SpeechFormat.Pcm(), SpeechDelivery.WholeClip, voice = "george").collect { part ->
+                when (part) {
+                    is SpeechAudio.Started -> rate = (part.format as? SpeechFormat.Pcm)?.sampleRateHz ?: rate
+                    is SpeechAudio.Chunk -> bytes.write(part.bytes)
+                    is SpeechAudio.Finished -> Unit
+                }
+            }
+        }
+        val b = bytes.toByteArray()
+        val src = ShortArray(b.size / 2) { i -> ((b[2 * i].toInt() and 0xff) or (b[2 * i + 1].toInt() shl 8)).toShort() }
+        val n = (src.size.toLong() * 16_000 / rate).toInt()
+        return ShortArray(n) { i -> src[minOf(src.size - 1, (i.toLong() * rate / 16_000).toInt())] }
+    }
+}

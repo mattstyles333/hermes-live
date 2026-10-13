@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Staging only (release-like, debug-signed, beside the debug app on the emulator). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Not defined here (like debug): the release Folio defines it with the release key. -->
+    <permission
+        android:name="com.folio.permission.HERMES"
+        tools:node="remove" />
+
+    <application>
+        <!-- Its own authority, so it installs beside the debug app. Folio never talks to staging. -->
+        <provider
+            android:name=".provider.ConnectionProvider"
+            android:authorities="com.folio.hermeslive.staging.connection"
+            tools:replace="android:authorities" />
+
+        <!-- The R8 smoke test: adb shell am start -n com.folio.hermeslive.staging/com.folio.hermeslive.smoke.StagingSmokeActivity -->
+        <activity
+            android:name=".smoke.StagingSmokeActivity"
+            android:exported="true"
+            android:taskAffinity="com.folio.hermeslive.smoke" />
+    </application>
+</manifest>
