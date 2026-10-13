@@ -14,6 +14,8 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
+import androidx.activity.OnBackPressedDispatcher
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.folio.hermes.cascade.CascadeEvent
 import com.folio.hermes.cascade.CascadeUiState
@@ -64,6 +66,7 @@ class CascadeScreenTest {
     private val near = mutableStateOf(false)
     private val gone = mutableStateOf(false)
     private val memory = ScreenMemory()
+    private var back: OnBackPressedDispatcher? = null
     private val events = MutableSharedFlow<CascadeEvent>(extraBufferCapacity = 16)
     private val wall = 1_760_000_000_000L
     private var started = false
@@ -73,6 +76,7 @@ class CascadeScreenTest {
         if (!started) {
             started = true
             compose.setContent {
+                back = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
                 LiveTheme {
                     if (!gone.value) CascadeCallContent(
                         ui, events, intents, motion = CascadeMotion.Reduced, proximityNear = near.value,
@@ -211,6 +215,29 @@ class CascadeScreenTest {
         compose.onNodeWithTag("alt-2104").performClick()
         compose.onNodeWithTag("alternatives").assertDoesNotExist()
         assertEquals(listOf("haptic:TurnCommitted", "word:t1:5:2104"), calls)
+    }
+
+    @Test fun aReplacedWordIsNeverChosen() {
+        val s = FakeCascadeUi().stateAt(6_400)
+        show(s)
+        events.tryEmit(CascadeEvent.TurnCommitted("t1"))
+        compose.waitForIdle()
+        compose.onNodeWithTag("word-5").performClick()
+        compose.onNodeWithTag("alternatives").assertIsDisplayed()
+        // The accurate pass lands while the alternatives are open: word 5 is now another word.
+        ui.value = s.copy(turn = s.turn.copy(words = FakeCascadeUi.words("check stock on the Ray-Ban 2104 and draft", mapOf("2104" to listOf("2140")))))
+        compose.waitForIdle()
+        compose.onNodeWithTag("alternatives").assertDoesNotExist()
+        assertEquals(listOf("haptic:TurnCommitted"), calls)
+    }
+
+    @Test fun backClosesTheSheet() {
+        show(running())
+        compose.onNodeWithTag("card-a").performClick()
+        compose.onNodeWithTag("task-sheet").assertIsDisplayed()
+        compose.runOnUiThread { back!!.onBackPressed() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("task-sheet").assertDoesNotExist()
     }
 
     @Test fun resumeButtonsAndHistory() {

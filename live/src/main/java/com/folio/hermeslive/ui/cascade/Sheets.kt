@@ -1,6 +1,12 @@
 package com.folio.hermeslive.ui.cascade
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -72,6 +78,7 @@ import java.util.Locale
  */
 @Composable
 internal fun BoxScope.SheetFrame(tag: String, onClose: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    BackHandler(onBack = onClose)
     Box(
         Modifier.matchParentSize().background(VoidBlack.copy(alpha = 0.6f))
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClickLabel = "Close", onClick = onClose)
@@ -83,6 +90,8 @@ internal fun BoxScope.SheetFrame(tag: String, onClose: () -> Unit, content: @Com
             .background(SurfaceHigh)
             .border(1.dp, Hairline, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
             .pointerInput(Unit) { detectTapGestures { } } // taps on the panel do not reach the scrim
+            // Edge-to-edge (target 35): keep the buttons above the navigation bar and the field above the keyboard.
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
             .padding(horizontal = 20.dp, vertical = 14.dp)
             .testTag(tag),
     ) {

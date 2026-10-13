@@ -1,5 +1,6 @@
 package com.folio.hermeslive.ui.cascade
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -74,8 +75,12 @@ internal fun CaptionView(cap: State<CaptionModel>, memory: ScreenMemory, onWord:
             )
             c.words.isNotEmpty() -> Words(c.words, ink, memory, onWord)
         }
-        val selected = memory.selectedWord?.let { c.words.getOrNull(it) }
-        if (selected != null && c.partial.isEmpty()) Alternatives(memory.selectedWord!!, selected, memory, onWord)
+        val open = memory.selectedWord
+        val selected = open?.let { sel -> c.words.getOrNull(sel.index)?.takeIf { it.text == sel.text } }
+        if (open != null && selected != null && c.partial.isEmpty()) {
+            BackHandler { memory.selectedWord = null }
+            Alternatives(open.index, selected, memory, onWord)
+        }
         AnimatedContent(
             c.billText,
             transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(200)) },
@@ -118,7 +123,7 @@ private fun Words(words: List<Word>, color: Color, memory: ScreenMemory, onWord:
                 modifier = Modifier
                     .then(
                         if (tappable) Modifier.clip(RoundedCornerShape(4.dp)).clickable(role = Role.Button, onClickLabel = "Show alternatives") {
-                            memory.selectedWord = if (memory.selectedWord == i) null else i
+                            memory.selectedWord = if (memory.selectedWord?.index == i) null else SelectedWord(i, w.text)
                         } else Modifier,
                     )
                     .semantics { contentDescription = "${w.text}, not sure I heard this right" + if (tappable) ". Tap for alternatives" else "" }
@@ -135,7 +140,8 @@ private fun Alternatives(index: Int, word: Word, memory: ScreenMemory, onWord: (
         Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (alt in word.alternatives.take(3)) {
                 Pill(alt, filled = true, tag = "alt-$alt") {
-                    onWord(index, alt)
+                    // Only for the word that is still on screen at that index.
+                    if (memory.selectedWord == SelectedWord(index, word.text)) onWord(index, alt)
                     memory.selectedWord = null
                 }
             }

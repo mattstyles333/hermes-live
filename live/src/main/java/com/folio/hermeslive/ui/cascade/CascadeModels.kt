@@ -105,6 +105,10 @@ internal class Sections(ui: State<CascadeUiState>) {
     val holding: State<Boolean> = derivedStateOf(structuralEqualityPolicy()) { ui.value.turn.holdToTalk }
 }
 
+/** An open word choice. Valid only while `words[index].text == text` (the accurate pass may replace the words). */
+@Immutable
+internal data class SelectedWord(val index: Int, val text: String)
+
 /** A held turn flying out of the offline pill on reconnect. */
 @Immutable
 internal data class HeldFlyout(val turnId: String, val text: String)
@@ -123,7 +127,8 @@ internal class ScreenMemory {
 
     var sheetTaskId by mutableStateOf<String?>(null)
     var decisionsOpen by mutableStateOf(false)
-    var selectedWord by mutableStateOf<Int?>(null)
+    /** The uncertain word whose alternatives are open: its index in `TurnUi.words` and its text. */
+    var selectedWord by mutableStateOf<SelectedWord?>(null)
     var doneExpanded by mutableStateOf(true)
 
     /** Swiped cards waiting out the Undo window: id → label. */

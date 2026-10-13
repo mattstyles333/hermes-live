@@ -104,7 +104,7 @@ fun taskLine(task: TaskUi): String {
         TaskUiStatus.Waiting -> "needs you · approve or answer$steps"
         TaskUiStatus.Queued -> "queued · starts when a slot frees"
         TaskUiStatus.Done -> if (task.unread) "finished · result not heard yet" else "finished$steps"
-        TaskUiStatus.Failed -> "failed$steps · tap to retry"
+        TaskUiStatus.Failed -> "failed$steps · open to retry"
         TaskUiStatus.Cancelled -> "cancelled"
     }
 }

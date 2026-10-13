@@ -131,7 +131,7 @@ class CascadeScreenshotRender {
         val resume = FakeCascadeUi.Moments.resume(wall)
         val scene = SceneModel().apply { replay(1_000, w, h, d, { resume }) }
         still("10-resume", resume, scene, nowMs = 0, history = FakeCascadeUi.Moments.history(wall))
-        scripted("11-uncertain-words", 6_400) { selectedWord = 5 }
+        scripted("11-uncertain-words", 6_400) { selectedWord = SelectedWord(5, "2140") }
         preset("12-reduce-motion", FakeCascadeUi.Moments.threeAgents(), 14_000, CascadeMotion.Reduced)
         scripted("13-decisions", 12_000, decisions = sampleDecisions()) { decisionsOpen = true }
     }
