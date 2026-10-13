@@ -93,8 +93,9 @@ class BillSmokeTest {
             assertTrue("signed in to the fake Hermes: $signIn", signIn is SignInResult.Ok)
             shell.shell.release()
             shell.keys.save(key!!, KeyCheck.Valid)
+            // Not shell.onSettingsChanged(): that would auto-prepare (about 285 TTS requests). Stock
+            // lines are therefore not cached here: their latency is an upper bound.
             g.settings.update { it.copy(voiceEngine = VoiceEngine.Cascade, startOnOpen = false) }
-            shell.onSettingsChanged()
             assertTrue("gate open", shell.gate.active)
 
             val pcm = args.getString("wav")?.let { CorpusAudioSource.read(File(it)) } ?: speak(key, say)
@@ -108,7 +109,8 @@ class BillSmokeTest {
             val engine = g.calls.cascadeEngine as CascadeCallEngine
             val actor = engine.session!!.core.actor
             watch.launch { actor.events.collect { e -> synchronized(events) { events += System.nanoTime() / 1_000_000 to e } } }
-            Thread.sleep(500)
+            // The noise floor learns over the first 2 s: give it quiet first (the source idles in silence).
+            Thread.sleep(2_500)
 
             corpus.enqueue(pcm, "request", silenceAfterMs = 4_000)
             val speechMs = pcm.size * 1000L / 16_000 / 2 // fed at twice real time

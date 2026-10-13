@@ -122,3 +122,12 @@ class ToneSource : AudioSource {
     override fun read(buffer: ShortArray): Int { buffer.fill(1000); return buffer.size }
     override fun close() = Unit
 }
+
+/** Bill's output for JVM tests: plays nothing, is never playing. */
+class SilentOut : com.folio.hermes.cascade.ports.AudioOut, PlaybackMonitor {
+    override suspend fun play(clip: AudioClip): Long = clip.durationMs
+    override fun stop() = Unit
+    override val playing: Boolean get() = false
+    override fun levelDb(): Double = com.folio.hermeslive.audio.Dbfs.FLOOR
+    override fun playedMs(): Long = 0
+}

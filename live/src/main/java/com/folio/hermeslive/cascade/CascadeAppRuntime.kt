@@ -25,8 +25,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** The Hermes gateway as the runtime uses it: the connection, server requests, and the answers to them. */
 interface GatewayControl {
@@ -153,6 +155,9 @@ class CascadeAppRuntime(
 
     /** "Hear it": Bill reads [taskId]'s result (label and first sentence), or the newest unheard one when null. */
     suspend fun briefing(taskId: String?): Briefing? {
+        // After process death the store is not read back yet: do that first (bounded).
+        core.restore()
+        withTimeoutOrNull(RESTORE_WAIT_MS) { core.actor.state.first { it.restored } }
         val tasks = core.actor.state.value.tasks.tasks
         val task = taskId?.let { id -> tasks.firstOrNull { it.id == id } }
             ?: tasks.filter { it.unread && !it.result.isNullOrBlank() }.maxByOrNull { it.startedAt }
@@ -202,6 +207,8 @@ class CascadeAppRuntime(
     }
 
     companion object {
+        const val RESTORE_WAIT_MS = 3_000L
+
         /** The app effects of one runtime: notifications, learned words, haptics. */
         fun appEffects(
             core: () -> CascadeCore?,

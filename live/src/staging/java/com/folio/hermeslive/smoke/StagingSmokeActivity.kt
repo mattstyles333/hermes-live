@@ -114,6 +114,8 @@ class StagingSmokeActivity : Activity() {
         val stt = SherpaSpeechToText(engines, source)
         val events = ArrayList<SttEvent>()
         val collector = scope.launch { stt.events.collect { synchronized(events) { events += it } } }
+        // 2.5 s of quiet first: the noise floor learns over the first 2 s.
+        source.enqueue(ShortArray(40_000), "quiet", silenceAfterMs = 0)
         source.enqueue(File(corpus, item.getString("file")), silenceAfterMs = 1_500)
         val t1 = System.nanoTime()
         stt.start()

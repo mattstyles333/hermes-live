@@ -18,6 +18,13 @@
             android:name=".probe.ProbeHolderService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+        <receiver
+            android:name=".probe.ProbeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.folio.hermeslive.probe.OFFCALL" />
+            </intent-filter>
+        </receiver>
         <service
             android:name=".probe.ProbeTargetService"
             android:exported="false"

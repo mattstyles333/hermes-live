@@ -29,6 +29,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -123,11 +124,17 @@ class CascadeCallEngine(
             try {
                 val io = audioFactory().create(callSettings.echoCancel) { level -> rt?.core?.actor?.outputLevel(level) }
                 val src = MutableSource(io.source).also { it.muted = request.muted }
-                val stt = withContext(this@CascadeCallEngine.io) {
-                    speech.create(src, io.playback, r.settings, ::hotwords, callSettings.highAccuracySpeech).also { it.start() }
+                val stt = try {
+                    withContext(this@CascadeCallEngine.io) {
+                        speech.create(src, io.playback, r.settings, ::hotwords, callSettings.highAccuracySpeech).also { it.start() }
+                    }
+                } catch (e: Exception) {
+                    io.release()
+                    throw e
                 }
                 if (attempt != epoch || !_state.value.inCall) {
-                    withContext(this@CascadeCallEngine.io) { stt.release() }
+                    // Hung up while the models loaded: the mic is open now, so close it here.
+                    withContext(this@CascadeCallEngine.io + NonCancellable) { runCatching { stt.release() } }
                     io.release()
                     return@launch
                 }
@@ -325,7 +332,7 @@ class CascadeCallEngine(
         // R-CONV-3: start the off-call service while this call is still in the foreground.
         val running = r?.tasksRunning?.value ?: 0
         val held = running > 0 && runCatching { offCall(running) }.getOrDefault(false)
-        startJob?.cancel()
+        // Not startJob: a model load blocks and finishes anyway; the epoch check releases its result.
         tickJob?.cancel()
         r?.endCall()
         val stt = call

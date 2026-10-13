@@ -13,7 +13,6 @@ import com.folio.hermeslive.call.FakeAudio
 import com.folio.hermeslive.call.FakeEffects
 import com.folio.hermeslive.call.FocusMode
 import com.folio.hermeslive.data.LiveSettings
-import com.folio.hermeslive.hooks.CapturingAudioOut
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -40,7 +39,7 @@ class CascadeCallEngineTest {
         val audio = FakeAudio()
         val effects = FakeEffects()
         val source = ToneSource()
-        val out = CapturingAudioOut()
+        val out = SilentOut()
         val offCalls = mutableListOf<Pair<Int, Boolean>>()
         var released = 0
         lateinit var engine: CascadeCallEngine
@@ -201,6 +200,21 @@ class CascadeCallEngineTest {
         assertEquals(1, r.speech.built.size)
         assertTrue(r.engine.state.value.muted)
         assertNotNull(r.engine.state.value.notice)
+    }
+
+    /** Hanging up while the models load: the speech that finishes loading afterwards is released, never plugged in. */
+    @Test fun hangingUpWhileBillIsStartingReleasesWhatFinishesLoading() = rig { r ->
+        r.engine.start(CallRequest(entry = "test"))
+        assertEquals(CallPhase.Connecting, r.engine.state.value.phase)
+        r.engine.end()
+        assertEquals(CallPhase.Ended, r.engine.state.value.phase)
+        runCurrent()
+        val stt = r.speech.built.single()
+        assertEquals("started by the load", 1, stt.started)
+        assertEquals("then released", 1, stt.released)
+        assertEquals(1, r.released)
+        assertNull("never plugged in", r.rt.stt.attached)
+        assertEquals(CallPhase.Ended, r.engine.state.value.phase)
     }
 
     @Test fun hotwordsAreVocabularyPlusTaskLabels() = rig(LiveSettings(vocabulary = listOf("Halden"))) { r ->

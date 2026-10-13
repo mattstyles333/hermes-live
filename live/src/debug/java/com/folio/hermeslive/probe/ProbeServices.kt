@@ -62,3 +62,43 @@ class ProbeTargetService : Service() {
         val outcome = AtomicReference<String?>(null)
     }
 }
+
+/**
+ * Debug only: the probe's second half, with no instrumentation in the process (an instrumented
+ * app can inherit the shell's exemptions). After `am start … --ez probe_hold true` on the STT Lab,
+ * Home, screen off and a wait, `am broadcast -n com.folio.hermeslive/.probe.ProbeReceiver -a
+ * com.folio.hermeslive.probe.OFFCALL` waits [DELAY_MS] more (past any broadcast allowance), then
+ * starts the specialUse service the way `OffCall.afterHangUp` does, and also calls
+ * `OffCall.afterHangUp` itself. Logcat `OFFCALL_PROBE …`.
+ */
+class ProbeReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(context: android.content.Context, intent: Intent) {
+        val app = context.applicationContext
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            ProbeTargetService.outcome.set(null)
+            val start = runCatching {
+                androidx.core.content.ContextCompat.startForegroundService(app, Intent(app, ProbeTargetService::class.java))
+                "started"
+            }.getOrElse { "refused_at_start:" + it.javaClass.simpleName }
+            val gate = com.folio.hermeslive.data.CascadeGate(
+                { com.folio.hermeslive.data.LiveSettings(voiceEngine = com.folio.hermeslive.data.VoiceEngine.Cascade) },
+                { com.folio.hermeslive.data.KeyStatus(saved = true, check = com.folio.hermeslive.data.KeyCheck.Valid) },
+            )
+            val afterHangUp = runCatching { com.folio.hermeslive.service.OffCall.afterHangUp(app, tasksRunning = 1, gate = gate) }
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                android.util.Log.i(
+                    "HermesProbe",
+                    "OFFCALL_PROBE start=$start in_service=${ProbeTargetService.outcome.get() ?: "never_ran"} " +
+                        "after_hang_up=${afterHangUp.getOrNull()} threw=${afterHangUp.exceptionOrNull()?.javaClass?.simpleName}",
+                )
+                app.startService(Intent(app, com.folio.hermeslive.service.OffCallService::class.java).setAction(com.folio.hermeslive.service.OffCallService.ACTION_STOP))
+                app.startService(Intent(app, ProbeHolderService::class.java).setAction(ProbeHolderService.STOP))
+            }, 2_000)
+        }, DELAY_MS)
+    }
+
+    companion object {
+        const val EXTRA_HOLD = "probe_hold"
+        const val DELAY_MS = 12_000L
+    }
+}
