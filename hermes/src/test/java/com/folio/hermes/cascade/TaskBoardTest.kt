@@ -271,7 +271,8 @@ class TaskBoardTest {
         assertTrue(snap.unread)
         rig.board.markRead(task.id)
         assertFalse(rig.board.snapshot(task.id)!!.unread)
-        assertEquals(TaskUiStatus.Done, rig.board.snapshot(task.id)!!.toUi().status)
+        // The result goes out as the turn completes; the task turns Done when its flow ends, a moment later.
+        eventually(what = "done") { rig.board.snapshot(task.id)!!.toUi().status == TaskUiStatus.Done }
     }
 
     @Test fun approvalsReachTheCardWithTheLabel() = test {
