@@ -8,7 +8,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.cancellation.CancellationException
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import java.io.BufferedInputStream
@@ -77,6 +81,13 @@ class ModelManager(
 ) : SttModelStore {
     private val _status = MutableStateFlow(ModelSet.entries.associateWith { initial(it) })
     override val status: StateFlow<Map<ModelSet, ModelStatus>> = _status.asStateFlow()
+    private val _models = MutableStateFlow(SttCatalog.all.associate { it.id to initialModel(it) })
+
+    /**
+     * Per model (id -> status), for a per-model Settings list (S-E's `SpeechModels`): updated by
+     * [fetch] and by set downloads alike.
+     */
+    val models: StateFlow<Map<String, ModelStatus>> = _models.asStateFlow()
     private val jobs = ConcurrentHashMap<ModelSet, Job>()
     private val cancels = ConcurrentHashMap<ModelSet, AtomicBoolean>()
 
@@ -130,6 +141,7 @@ class ModelManager(
             partFile(model).delete()
         }
         update(set, initial(set))
+        SttCatalog.all.forEach { updateModel(it, initialModel(it)) }
     }
 
     /**
@@ -140,7 +152,39 @@ class ModelManager(
         val sha = FileInputStream(archive).use { Sha256.of(it) }
         if (!Sha256.matches(model.sha256, sha)) throw ChecksumException()
         install(model, archive, AtomicBoolean(false))
+        updateModel(model, ModelStatus.Ready(bytesOnDisk(model)))
         ModelSet.entries.forEach { if (isReady(it)) update(it, ready(it)) }
+    }
+
+    /**
+     * Fetches (or resumes) one [model] and installs it; true once it is ready. Cancelling the
+     * calling coroutine stops the download and keeps the partial file, so a later call resumes.
+     */
+    suspend fun fetch(model: SttModel): Boolean = coroutineScope {
+        if (isInstalled(model)) {
+            updateModel(model, ModelStatus.Ready(bytesOnDisk(model)))
+            return@coroutineScope true
+        }
+        val cancel = AtomicBoolean(false)
+        val watcher = launch {
+            try {
+                awaitCancellation()
+            } finally {
+                cancel.set(true)
+            }
+        }
+        try {
+            withContext(Dispatchers.IO) { fetchModel(model, cancel) {} }
+            ModelSet.entries.forEach { if (isReady(it)) update(it, ready(it)) }
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            updateModel(model, ModelStatus.Failed(if (cancel.get()) ModelStatus.Reason.CANCELLED else reasonOf(e)))
+            false
+        } finally {
+            watcher.cancel()
+        }
     }
 
     private fun fetchSet(set: ModelSet, cancel: AtomicBoolean) {
@@ -151,11 +195,26 @@ class ModelManager(
                 before += model.bytes
                 continue
             }
-            val part = partFile(model)
-            part.parentFile?.mkdirs()
             val base = before
-            fetch(model, part, cancel) { done -> update(set, ModelStatus.Downloading(base + done, total)) }
-            update(set, ModelStatus.Installing)
+            fetchModel(model, cancel) { status ->
+                update(set, if (status is ModelStatus.Downloading) ModelStatus.Downloading(base + status.done, total) else status)
+            }
+            before += model.bytes
+        }
+    }
+
+    /** Download (resuming), check, install one model; [onStatus] sees its progress. */
+    private fun fetchModel(model: SttModel, cancel: AtomicBoolean, onStatus: (ModelStatus) -> Unit) {
+        fun status(s: ModelStatus) {
+            updateModel(model, s)
+            onStatus(s)
+        }
+        val part = partFile(model)
+        part.parentFile?.mkdirs()
+        status(ModelStatus.Downloading(if (part.isFile) part.length() else 0, model.bytes))
+        try {
+            fetchArchive(model, part, cancel) { done -> status(ModelStatus.Downloading(done, model.bytes)) }
+            status(ModelStatus.Installing)
             val sha = FileInputStream(part).use { Sha256.of(it) }
             if (!Sha256.matches(model.sha256, sha)) {
                 part.delete()
@@ -163,12 +222,15 @@ class ModelManager(
             }
             install(model, part, cancel)
             part.delete()
-            before += model.bytes
+            updateModel(model, ModelStatus.Ready(bytesOnDisk(model)))
+        } catch (e: Exception) {
+            updateModel(model, ModelStatus.Failed(if (cancel.get()) ModelStatus.Reason.CANCELLED else reasonOf(e)))
+            throw e
         }
     }
 
     /** Fetches [model] into [part], resuming from its current length when the server allows it. */
-    private fun fetch(model: SttModel, part: File, cancel: AtomicBoolean, progress: (Long) -> Unit) {
+    private fun fetchArchive(model: SttModel, part: File, cancel: AtomicBoolean, progress: (Long) -> Unit) {
         var have = if (part.isFile) part.length() else 0L
         if (have >= model.bytes) {
             progress(have)
@@ -251,6 +313,10 @@ class ModelManager(
     }
 
     private fun initial(set: ModelSet): ModelStatus = if (isReady(set)) ready(set) else ModelStatus.Missing
+
+    private fun initialModel(model: SttModel): ModelStatus = if (isInstalled(model)) ModelStatus.Ready(bytesOnDisk(model)) else ModelStatus.Missing
+
+    private fun updateModel(model: SttModel, status: ModelStatus) = _models.update { it + (model.id to status) }
 
     private fun ready(set: ModelSet) = ModelStatus.Ready(modelsOf(set).sumOf(::bytesOnDisk))
 

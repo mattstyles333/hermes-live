@@ -141,6 +141,24 @@ class ModelManagerTest {
         assertTrue(runCatching { other.installFrom(model, bad) }.exceptionOrNull() is ModelManager.ChecksumException)
     }
 
+    @Test fun fetchesOneModelForAPerModelList() = kotlinx.coroutines.runBlocking {
+        server.enqueue(MockResponse.Builder().code(200).body(Buffer().write(archive)).build())
+        val m = manager()
+        assertTrue(m.fetch(model))
+        assertTrue(m.models.value[model.id] is ModelStatus.Ready)
+        assertTrue(m.status.value[ModelSet.STANDARD] is ModelStatus.Ready)
+        // Already there: no request.
+        assertTrue(m.fetch(model))
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test fun aFailedFetchReportsTheModelAndReturnsFalse() = kotlinx.coroutines.runBlocking {
+        server.enqueue(MockResponse.Builder().code(500).build())
+        val m = manager()
+        assertFalse(m.fetch(model))
+        assertEquals(ModelStatus.Failed(ModelStatus.Reason.HTTP), m.models.value[model.id])
+    }
+
     @Test fun progressReportsBytes() {
         val s = ModelStatus.Downloading(25, 100)
         assertEquals(0.25f, s.fraction)
