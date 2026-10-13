@@ -31,6 +31,8 @@ class CascadeReducer(val env: CascadeEnv) {
     // ── events ──────────────────────────────────────────────────────────────────────────────
 
     private fun Tx.on(event: Event) {
+        // Off state: nothing runs until the call starts (R-Q-1).
+        if (!s.started && event !is Event.Start) return
         when (event) {
             is Event.Start -> start(event)
             Event.Stop -> stop()
