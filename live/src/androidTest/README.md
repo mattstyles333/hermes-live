@@ -20,6 +20,8 @@ $ADB shell am instrument -w -e installModels true -e class com.folio.hermeslive.
 $ADB shell am instrument -w -e bench true -e class com.folio.hermeslive.stt.CorpusBenchTest $R
 $ADB shell am instrument -w -e bench true -e class com.folio.hermeslive.stt.SpeechPipelineDeviceTest#echoGateOnTheRealPipeline $R
 $ADB pull $D/stt-bench/ /tmp/stt-bench/
+# Subsets: -e combos zipformer+p110m,latency,latency06b,dictation   Real download + resume (network): -e download true
+$ADB shell am instrument -w -e download true -e class com.folio.hermeslive.stt.ModelDownloadDeviceTest $R
 ```
 
 Keep `leaveApksInstalledAfterRun=true`: uninstalling wipes the installed models (about 1.3 GB).

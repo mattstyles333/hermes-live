@@ -55,8 +55,11 @@ class CorpusRunner(
         stt.start()
     }
 
-    fun run(item: Device.Item, silenceAfterMs: Long = if (pace > 0) 2_000L else 1_200L): Utt {
-        val pcm = CorpusAudioSource.read(item.file)
+    fun run(item: Device.Item, silenceAfterMs: Long = if (pace > 0) 2_000L else 1_200L): Utt =
+        runPcm(CorpusAudioSource.read(item.file), item, silenceAfterMs)
+
+    /** [pcm] (16 kHz) scored against [item]'s text; e.g. several clips joined into one dictation. */
+    fun runPcm(pcm: ShortArray, item: Device.Item, silenceAfterMs: Long = if (pace > 0) 2_000L else 1_200L): Utt {
         val span = speechSpan(pcm)
         val id = item.file.name + "#" + System.nanoTime()
         source.enqueue(pcm, id, silenceAfterMs)
@@ -82,7 +85,9 @@ class CorpusRunner(
             val ended = s.lastOrNull { it.event is SttEvent.SpeechEnded }
             val started = s.count { it.event is SttEvent.SpeechStarted }
             val endedCount = s.count { it.event is SttEvent.SpeechEnded }
-            if (ended != null && started == endedCount && start != null) {
+            // Never before the clip's last speech sample has played (joined clips have gaps).
+            val spoken = start != null && source.samplesOut >= start + (span?.second ?: 0)
+            if (ended != null && started == endedCount && spoken && ended.nanos >= source.nanosAt(start!! + (span?.second ?: 0))) {
                 // Wait out the pause: speech may resume (a second segment) before the commit.
                 val commitAt = ended.nanos + settings.pause * 1_000_000
                 if (System.nanoTime() >= commitAt) {

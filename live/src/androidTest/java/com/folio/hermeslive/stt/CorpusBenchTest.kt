@@ -99,13 +99,47 @@ class CorpusBenchTest {
         }
         out.put("runs", runs)
         assertTrue(calibration != null || only != null)
-        // Real-time turns with the default models: commit at SpeechEnded + pause, as the actor does.
-        if (only == null || "latency" in only) out.put("latency", latency(corpus))
+        // Real-time turns: commit at SpeechEnded + pause, as the actor does.
+        if (only == null || "latency" in only) out.put("latency", latency(corpus, SttEngineConfig()))
+        if (only == null || "latency06b" in only) out.put("latency_06b", latency(corpus, SttEngineConfig(accurate = SttCatalog.parakeet06b)))
+        if (only == null || "dictation" in only) {
+            out.put("dictation", dictation(corpus, SttEngineConfig()))
+            out.put("dictation_06b", dictation(corpus, SttEngineConfig(accurate = SttCatalog.parakeet06b)))
+        }
         Device.results("bench.json").writeText(out.toString(2))
     }
 
-    private fun latency(corpus: List<Device.Item>): JSONObject {
-        val config = SttEngineConfig()
+    /**
+     * Long dictation: [clips] corpus clips joined with 400 ms gaps (shorter than the pause, so one
+     * turn of many VAD segments), committed once at the end. Shows whether the per-segment second
+     * pass keeps up.
+     */
+    private fun dictation(corpus: List<Device.Item>, config: SttEngineConfig, turns: Int = 3, clips: Int = 10): JSONObject {
+        if (!listOfNotNull(config.streaming, config.accurate).all(Device.models::isInstalled)) return JSONObject().put("skipped", true)
+        val engines = Device.engines(config)
+        val runner = CorpusRunner(engines, emptyList(), pace = 1.0)
+        val gap = ShortArray(16_000 * 400 / 1000)
+        val utts = (0 until turns).map { t ->
+            val picked = corpus.filterIndexed { i, _ -> i % turns == t }.take(clips)
+            val pcm = picked.fold(ShortArray(0)) { acc, item -> acc + CorpusAudioSource.read(item.file) + gap }
+            val item = Device.Item(picked.first().file, picked.joinToString(" ") { it.text }, "mixed", "dictation")
+            runner.runPcm(pcm, item)
+        }
+        runner.close()
+        engines.release()
+        return JSONObject()
+            .put("accurate", config.accurate?.id)
+            .put("turns", utts.size)
+            .put("audio_s_per_turn", Scores.dist(utts.mapNotNull { u -> u.timing?.audioMs?.div(1000.0) }))
+            .put("segments_per_turn", Scores.dist(utts.mapNotNull { it.timing?.segments?.toDouble() }))
+            .put("decode_ms_per_turn", Scores.dist(utts.mapNotNull { it.timing?.decodeMs?.toDouble() }))
+            .put("accurate_wait_at_commit_ms", Scores.dist(utts.mapNotNull { it.commitWaitMs }))
+            .put("event_order_ok", utts.count { it.orderOk })
+            .put("accurate_pass", utts.count { it.transcript?.pass == TranscriptPass.Accurate })
+            .put("final_wer", Scores.wer(utts) { it.transcript?.text ?: it.fastText }.json())
+    }
+
+    private fun latency(corpus: List<Device.Item>, config: SttEngineConfig): JSONObject {
         if (!listOfNotNull(config.streaming, config.accurate).all(Device.models::isInstalled)) return JSONObject().put("skipped", true)
         val engines = Device.engines(config)
         val runner = CorpusRunner(engines, emptyList(), pace = 1.0)
@@ -115,6 +149,7 @@ class CorpusBenchTest {
         engines.release()
         val wait = utts.mapNotNull { it.commitWaitMs }
         return JSONObject()
+            .put("accurate", config.accurate?.id)
             .put("files", utts.size)
             .put("pace", 1.0)
             .put("pause_ms", 1000)
