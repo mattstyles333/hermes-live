@@ -129,6 +129,10 @@ dependencies {
     // WebRTC for the GPT-Live peer connection (Google's libwebrtc, prebuilt by Stream). Inline:
     // only :live uses it, and Folio builds :hermes against its own copy of the catalog.
     implementation("io.getstream:stream-webrtc-android:1.3.10")
+    // Debug-only STT Lab (spike S-C0, src/debug): on-device speech-to-text and the tar.bz2 model
+    // archives. Release builds never see either.
+    debugImplementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:v1.13.8")
+    debugImplementation("org.apache.commons:commons-compress:1.28.0")
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
     testImplementation(libs.kotlinx.coroutines.test)
