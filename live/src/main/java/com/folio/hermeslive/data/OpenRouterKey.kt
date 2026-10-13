@@ -151,8 +151,11 @@ fun interface KeyChecker {
             client: OkHttpClient,
             config: OpenRouterConfig = OpenRouterConfig(),
             telemetry: TelemetrySink = TelemetrySink.Default,
-        ): KeyChecker = KeyChecker { key ->
-            when (val r = OpenRouter(config, key = { key }, client = client, telemetry = telemetry).checkKey()) {
+        ): KeyChecker = from { key -> OpenRouter(config, key = key, client = client, telemetry = telemetry) }
+
+        /** A checker on [openRouters] (one client per check, for that candidate key only). */
+        fun from(openRouters: (key: () -> String?) -> OpenRouter): KeyChecker = KeyChecker { key ->
+            when (val r = openRouters { key }.checkKey()) {
                 is OpenRouterResult.Ok -> if (r.value) KeyCheckResult.Valid else KeyCheckResult.Refused
                 is OpenRouterResult.Failed -> KeyCheckResult.Unreachable(r.kind.wire, r.httpStatus)
             }

@@ -20,6 +20,15 @@ import com.folio.hermeslive.call.CallUiState
 object CallNotifications {
     const val CHANNEL_CALL = "call"
     const val CHANNEL_APPROVALS = "approvals"
+
+    /** Off-call: "N tasks running" (quiet). */
+    const val CHANNEL_TASKS = "tasks"
+
+    /** A task finished while the call was off ("Hear it", "Open"). */
+    const val CHANNEL_RESULTS = "results"
+
+    /** "Hear it" playback (media controls, lock screen). */
+    const val CHANNEL_PLAYBACK = "playback"
     const val CALL_ID = 1
 
     fun createChannels(context: Context) {
@@ -34,6 +43,25 @@ object CallNotifications {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_APPROVALS, "Approvals", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "Hermes asks before it runs something"
+            },
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_TASKS, "Tasks after a call", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Hermes is still working after you hang up (the mic is off)"
+                setSound(null, null)
+                enableVibration(false)
+            },
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_RESULTS, "Results", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "A task finished while you were off the call"
+            },
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_PLAYBACK, "Hear it", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Bill reading a result (the mic is off)"
+                setSound(null, null)
+                enableVibration(false)
             },
         )
     }
