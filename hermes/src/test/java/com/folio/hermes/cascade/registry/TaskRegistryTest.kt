@@ -59,7 +59,12 @@ class TaskRegistryTest {
             val t = second.state.tasks["t1"]!!
             assertEquals(TaskState.Done, t.state)
             assertEquals("Four in stock at the Leeds store.", t.result)
-            assertTrue("the recovered result is queued for speech", CascadeEvent.ResultQueued("t1") in second.events)
+            // It waits while the Resume card shows (spec v2 §14 item 7), then is spoken.
+            assertNotNull(second.state.conversation.resume)
+            assertTrue(CascadeEvent.ResultQueued("t1") !in second.events)
+            second.actor.send(Event.ResumeChosen(ResumeChoice.Play))
+            advanceUntilIdle()
+            assertEquals("the recovered result is queued for speech once", 1, second.events.count { it == CascadeEvent.ResultQueued("t1") })
             assertEquals("never submitted again", listOf("check stock of RB2140"), server.prompts)
         }
     }

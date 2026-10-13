@@ -142,6 +142,9 @@ data class ResumeCandidate(
     val defaultChoice: ResumeChoice,
 )
 
+/** A past conversation read back from the store, to reopen it ([Event.OpenConversation]). */
+data class StoredConversation(val id: String, val summary: String, val recent: List<Exchange>)
+
 /** The conversation this call belongs to (R-CONV-1; phase 1, S-B). */
 data class ConversationState(
     val id: String? = null,

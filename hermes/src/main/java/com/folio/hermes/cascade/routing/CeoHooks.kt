@@ -25,6 +25,7 @@ import com.folio.hermes.cascade.TurnEvent
 import com.folio.hermes.cascade.Tx
 import com.folio.hermes.cascade.WriterJob
 import com.folio.hermes.cascade.WriterOwner
+import com.folio.hermes.cascade.writer.BriefTemplate
 import com.folio.hermes.cascade.writer.CeoPrompts
 import com.folio.hermes.cascade.writer.Repair
 import com.folio.hermes.cascade.writer.WriterPrompts
@@ -125,8 +126,9 @@ class CeoHooks(private val memo: MemoRouting, private val summaries: BackgroundS
     /**
      * The user picked [Event.WordChosen.choice] for uncertain word [Event.WordChosen.index] of turn
      * [Event.WordChosen.turnId] on screen. The index is into `TurnUi.words`, which is that turn's
-     * transcript words as shown. The transcript is corrected; each task the turn started hears
-     * the correction as a queued `update_task` (or has its brief amended if it has not started);
+     * transcript words as shown. The transcript is corrected; the turn's task (the one whose brief
+     * has the misheard word, else each task the turn started) hears the correction as a queued
+     * `update_task` (or has its brief amended if it has not started);
      * and the app learns the word ([Effect.LearnWord] → the vocabulary, R-STT-7).
      */
     override fun wordChosen(tx: Tx, event: Event.WordChosen) {
@@ -138,7 +140,11 @@ class CeoHooks(private val memo: MemoRouting, private val summaries: BackgroundS
         keep(tx, event.turnId, t.copy(text = fixed.joinToString(" ") { it.text }, words = fixed))
         tx.effects += Effect.LearnWord(old.text, event.choice)
         val note = "Correction from the user: \"${old.text}\" should be \"${event.choice}\"."
-        tx.s.tasks.tasks.filter { it.turnId == event.turnId && (it.state == TaskState.Running || TaskQueue.isQueued(it)) }.forEach { task ->
+        // The turn's task: one whose brief has the misheard word (a split turn), else every task the turn started.
+        val open = tx.s.tasks.tasks.filter { it.turnId == event.turnId && (it.state == TaskState.Running || TaskQueue.isQueued(it)) }
+        // Only the writer's job lines count: every brief ends with the whole dictation (the transcript block).
+        val named = open.filter { t -> t.brief?.substringBefore(BriefTemplate.REPORT_BACK)?.contains(old.text, ignoreCase = true) == true }
+        named.ifEmpty { open }.forEach { task ->
             when (val r = CeoTasks.update(tx, task.id, note, RunKind.Queue)) {
                 is CeoTasks.Updated.Sent -> Confirmations.expectAck(tx, task.id, r.runId, "update.queued")
                 else -> Unit

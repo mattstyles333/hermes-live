@@ -256,7 +256,8 @@ class Tx(var s: State, val env: CascadeEnv) {
         step.reports.forEach { (event, extra) ->
             report("cascade.task", mapOf("event" to event, "running" to (extra["running"] ?: step.table.runningCount)) + (extra - "running"), warn = event == "failed")
         }
-        if (s.started) {
+        // Spoken now only in a call with no Resume card up; otherwise they wait in `offCall` (R-CONV-2/3).
+        if (s.started && s.conversation.resume == null) {
             step.results.forEach { env.handlers.result.arrived(this, it) }
             step.requests.forEach { env.handlers.hooks.taskRequest(this, it) }
         } else if (step.results.isNotEmpty() || step.requests.isNotEmpty()) {

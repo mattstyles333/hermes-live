@@ -128,8 +128,12 @@ sealed interface Event {
      */
     data class Restore(val restored: State? = null) : Event
 
-    /** Open past conversation [conversationId] from the history list (R-CONV-1): it becomes the current one. */
-    data class OpenConversation(val conversationId: String) : Event
+    /**
+     * Open past conversation [conversationId] from the history list (R-CONV-1): it becomes the
+     * current one (its `recent` and summary come back; tasks are the user's and stay). [loaded] is
+     * what the conversation seam read from the store (the actor fills it in; null: not found).
+     */
+    data class OpenConversation(val conversationId: String, val loaded: StoredConversation? = null) : Event
 }
 
 /** Events handled with no call open: tasks belong to the user and keep running between calls (R-CONV-3). */

@@ -116,7 +116,7 @@ class CascadeReducer(val env: CascadeEnv) {
             is Event.TaskSessionOpened -> tasks(s.tasks.sessionOpened(event.taskId, event.runId, event.storedSessionId))
             is Event.RunNotReceived -> env.registry.notReceived(this, event)
             is Event.Restore -> restore(event.restored, call = false)
-            is Event.OpenConversation -> env.conversation.open(this, event.conversationId)
+            is Event.OpenConversation -> env.conversation.open(this, event.loaded)
         }
     }
 

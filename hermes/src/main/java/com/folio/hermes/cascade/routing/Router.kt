@@ -20,11 +20,11 @@ import com.folio.hermes.openrouter.JevAnswer
  * - `enough = line_only` skips the writer only with a stock line and confidence ≥ 0.7.
  */
 object Router {
-    /** R-RT-3: `done` needs the floor (0.55); `ignore` is accepted from 0.4; anything else keeps listening. */
+    /** R-RT-3: `done` needs `turnDoneFloor` (0.60, §14 item 16); `ignore` is accepted from 0.4; anything else keeps listening. */
     fun verdict(answers: Map<String, JevAnswer>, settings: CascadeSettings): TurnVerdict {
         val turn = answers[CascadeBrain.TURN] ?: return TurnVerdict.KeepListening
         return when {
-            turn.choice == CascadeBrain.DONE && turn.confidence >= settings.confidenceFloor -> TurnVerdict.Done
+            turn.choice == CascadeBrain.DONE && turn.confidence >= settings.turnDoneFloor -> TurnVerdict.Done
             turn.choice == CascadeBrain.IGNORE && turn.confidence >= settings.ignoreFloor -> TurnVerdict.Ignore
             else -> TurnVerdict.KeepListening
         }

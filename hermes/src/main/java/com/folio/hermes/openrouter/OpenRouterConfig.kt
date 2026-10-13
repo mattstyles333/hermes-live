@@ -20,8 +20,11 @@ data class OpenRouterConfig(
     val connectTimeoutMs: Long = 4_000L,
     /** One Jev call, end to end (contract: 2.5 s read timeout). */
     val jevTimeoutMs: Long = 2_500L,
-    /** One non-streamed writer call, end to end. */
-    val writerTimeoutMs: Long = 12_000L,
+    /**
+     * One non-streamed writer call, end to end. Whole answers (agent briefs, offline segmentation)
+     * may run to a few thousand tokens and are off the spoken path (the start line already played).
+     */
+    val writerTimeoutMs: Long = 30_000L,
     /** Longest gap between bytes of a streamed writer or speech body. */
     val streamReadTimeoutMs: Long = 12_000L,
     /** One whole speech clip, end to end. */

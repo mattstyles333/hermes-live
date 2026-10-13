@@ -36,8 +36,11 @@ class CeoRouterTest {
 
     @Test fun turnFloorsWithIgnoreFrom04() {
         val s = CascadeSettings()
-        assertEquals(TurnVerdict.KeepListening, Router.verdict(mapOf("turn" to answer("done", 0.54)), s))
-        assertEquals(TurnVerdict.Done, Router.verdict(mapOf("turn" to answer("done", 0.55)), s))
+        // §14 item 16: `done` needs turnDoneFloor (0.60), not the 0.55 action floor.
+        assertEquals(0.60, s.turnDoneFloor, 0.0)
+        assertEquals(TurnVerdict.KeepListening, Router.verdict(mapOf("turn" to answer("done", 0.59)), s))
+        assertEquals(TurnVerdict.Done, Router.verdict(mapOf("turn" to answer("done", 0.60)), s))
+        assertEquals("the floor is a setting", TurnVerdict.Done, Router.verdict(mapOf("turn" to answer("done", 0.56)), s.copy(turnDoneFloor = 0.55)))
         assertEquals("ignore is accepted at 0.4", TurnVerdict.Ignore, Router.verdict(mapOf("turn" to answer("ignore", 0.4)), s))
         assertEquals(TurnVerdict.KeepListening, Router.verdict(mapOf("turn" to answer("ignore", 0.39)), s))
     }

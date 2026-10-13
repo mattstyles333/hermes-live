@@ -28,8 +28,8 @@ class RouterTest {
     private fun answers(vararg pairs: Pair<String, JevAnswer>) = mapOf(*pairs)
 
     @Test fun lowTurnConfidenceKeepsListening() {
-        assertEquals(TurnVerdict.KeepListening, Router.verdict(answers("turn" to answer("done", 0.54)), s))
-        assertEquals(TurnVerdict.Done, Router.verdict(answers("turn" to answer("done", 0.55)), s))
+        assertEquals(TurnVerdict.KeepListening, Router.verdict(answers("turn" to answer("done", 0.58)), s))
+        assertEquals(TurnVerdict.Done, Router.verdict(answers("turn" to answer("done", 0.60)), s))
         assertEquals(TurnVerdict.Ignore, Router.verdict(answers("turn" to answer("ignore", 0.8)), s))
         assertEquals(TurnVerdict.KeepListening, Router.verdict(answers("turn" to answer("ignore", 0.3)), s))
         assertEquals(TurnVerdict.KeepListening, Router.verdict(emptyMap(), s))

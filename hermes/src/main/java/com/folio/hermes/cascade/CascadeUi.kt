@@ -38,6 +38,11 @@ data class TurnUi(
     val offline: Boolean = false,
     /** Hold-to-talk is pressed: no pause ring (R-STT-8). */
     val holdToTalk: Boolean = false,
+    /**
+     * The committed turn [words] belong to: pass it back in `Event.WordChosen` with the word's
+     * index in [words]. Null while the user is speaking (the words are the live ones).
+     */
+    val turnId: String? = null,
 )
 
 data class JevUi(

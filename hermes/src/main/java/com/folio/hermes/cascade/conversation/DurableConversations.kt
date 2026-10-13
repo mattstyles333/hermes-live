@@ -4,6 +4,8 @@ import com.folio.hermes.cascade.AppLines
 import com.folio.hermes.cascade.CascadeEvent
 import com.folio.hermes.cascade.ConversationState
 import com.folio.hermes.cascade.Effect
+import com.folio.hermes.cascade.Exchange
+import com.folio.hermes.cascade.StoredConversation
 import com.folio.hermes.cascade.HeldTurn
 import com.folio.hermes.cascade.ResumeCandidate
 import com.folio.hermes.cascade.ResumeChoice
@@ -15,6 +17,8 @@ import com.folio.hermes.cascade.TaskState
 import com.folio.hermes.cascade.Tx
 import com.folio.hermes.cascade.ports.Store
 import com.folio.hermes.cascade.store.ConversationDto
+import com.folio.hermes.cascade.store.ExchangeDto
+import com.folio.hermes.cascade.store.Recent
 import com.folio.hermes.cascade.store.Snapshots
 import com.folio.hermes.cascade.store.StoreCodec
 import com.folio.hermes.cascade.store.StoreKeys
@@ -83,6 +87,27 @@ class DurableConversations(private val reconnect: ReconnectRouter? = null) : Con
             t.state == TaskState.Failed || t.send == SendState.NotSent -> tx.env.handlers.result.arrived(tx, TaskResult(t.id, t.label, "", ok = false))
             else -> tx.say("status.working")
         }
+    }
+
+    override fun load(store: Store, conversationId: String): StoredConversation? {
+        val dto = StoreCodec.decode(ConversationDto.serializer(), store.get(StoreKeys.conversation(conversationId))) ?: return null
+        return StoredConversation(dto.id, dto.summary, dto.recent.map { Exchange(it.user, it.bill) })
+    }
+
+    /**
+     * Reopen a past conversation (R-CONV-1): the current one goes to the history (as New does),
+     * the past one comes back as current with its `recent` and summary, and leaves the history
+     * list. Tasks are the user's and stay. Opening the current one just closes the Resume card.
+     */
+    override fun open(tx: Tx, loaded: StoredConversation?) {
+        tx.s = tx.s.copy(conversation = tx.s.conversation.copy(resume = null))
+        if (loaded == null || loaded.id == tx.s.conversation.id) return
+        Snapshots.conversation(tx.s, endedWallMs = tx.s.wallMs)?.let { old ->
+            tx.effects += Effect.Persist(StoreKeys.conversation(old.id), StoreCodec.encode(ConversationDto.serializer(), old))
+        }
+        tx.effects += Effect.Persist(StoreKeys.conversation(loaded.id), null)
+        tx.s = Recent.seed(tx.s, loaded.id, loaded.summary, loaded.recent.map { ExchangeDto(it.user, it.bill) }).copy(ceo = tx.s.ceo.copy(briefing = emptyList()))
+        tx.report("cascade.conversation", mapOf("event" to "reopened", "exchanges" to tx.s.recent.size))
     }
 
     /** Every unheard result not already queued, oldest first. */
