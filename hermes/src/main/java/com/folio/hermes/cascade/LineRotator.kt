@@ -54,6 +54,9 @@ class FileRotationStore(private val file: File) : RotationStore {
  * per play, and the cursor is saved in [store]. At the end of a pass the lines are reshuffled and
  * the first line of the new pass is never the line just played. If the bank's lines for a slot
  * changed, the slot starts a fresh pass. Variety costs no Jev or model call.
+ *
+ * The actor keeps rotations in its state and uses [Rotations.next] directly (pure, seeded); this
+ * class is the same rule over a [RotationStore], for code outside a call.
  */
 class LineRotator(
     private val bank: PhraseBank,
@@ -64,15 +67,23 @@ class LineRotator(
     @Synchronized
     fun next(slotId: String): String? {
         val lines = bank[slotId]?.lines?.takeIf { it.isNotEmpty() } ?: return null
-        var rotation = store.load(slotId)?.takeIf { it.order.sorted() == lines.sorted() }
-            ?: Rotation(shuffled(lines, null), 0, null)
-        if (rotation.cursor >= rotation.order.size) rotation = Rotation(shuffled(lines, rotation.last), 0, rotation.last)
-        val line = rotation.order[rotation.cursor]
-        store.save(slotId, Rotation(rotation.order, rotation.cursor + 1, line))
+        val (line, rotation) = Rotations.next(lines, store.load(slotId), random)
+        store.save(slotId, rotation)
         return line
     }
+}
 
-    private fun shuffled(lines: List<String>, notFirst: String?): List<String> {
+/** The rotation rule, pure apart from [Random] (pass a seeded one for determinism). */
+object Rotations {
+    /** The line to play from [lines] and the slot's next rotation, given its saved [rotation]. */
+    fun next(lines: List<String>, rotation: Rotation?, random: Random): Pair<String, Rotation> {
+        var r = rotation?.takeIf { it.order.sorted() == lines.sorted() } ?: Rotation(shuffled(lines, null, random), 0, null)
+        if (r.cursor >= r.order.size) r = Rotation(shuffled(lines, r.last, random), 0, r.last)
+        val line = r.order[r.cursor]
+        return line to Rotation(r.order, r.cursor + 1, line)
+    }
+
+    private fun shuffled(lines: List<String>, notFirst: String?, random: Random): List<String> {
         val order = lines.shuffled(random).toMutableList()
         if (notFirst != null && order.size > 1 && order[0] == notFirst) {
             val swap = 1 + random.nextInt(order.size - 1)

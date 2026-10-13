@@ -70,9 +70,6 @@ sealed interface Route {
 
     /** Jev gave nothing usable: say "say that again?" and do nothing else. */
     data object AskRepeat : Route { override val wire = "ask_repeat" }
-
-    /** Jev gave no response at all (offline): hold the turn in the outbox (memo mode, R-OFF). */
-    data object Hold : Route { override val wire = "hold" }
 }
 
 /** A finished turn's plan: the [route], the stock [slot] to play first, and whether the [writer] speaks after it. */

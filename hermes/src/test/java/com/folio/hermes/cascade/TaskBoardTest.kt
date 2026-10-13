@@ -5,7 +5,7 @@ import com.folio.hermes.FakeTokens
 import com.folio.hermes.HermesGateway
 import com.folio.hermes.bool
 import com.folio.hermes.string
-import com.folio.hermes.telemetry.TelemetrySink
+import com.folio.hermes.cascade.ports.GatewayHermesPort
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -52,9 +52,7 @@ internal class BoardRig(maxTasks: Int = 4, busy: String? = "interrupt") : AutoCl
     val board = TaskBoard(
         scope = scope,
         maxTasks = { max },
-        open = TaskBoard.sessions(gateway, config),
-        busyMode = { gateway.busyMode() },
-        telemetry = TelemetrySink.None,
+        port = GatewayHermesPort(gateway, config),
     )
 
     init {
