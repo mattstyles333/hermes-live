@@ -170,6 +170,11 @@ class DelegationBridge(
     /** A typed or intent-supplied request (Hermes Live's PROMPT extra): run it as a delegation with no vendor id. */
     fun delegateText(text: String) {
         if (finished || text.isBlank()) return
+        // No vendor delegation exists for a typed request: tell the voice it's in hand.
+        events.instructions(
+            "The user typed this request and it has gone to Hermes: \"${text.trim().take(300)}\". " +
+                "Say briefly that you are checking, then wait for the answer. Do not answer it yourself.",
+        )?.let(send)
         startDelegation(localId = "text-${++localIds}", wireId = null, prompt = DelegationPrompt(text.trim(), "User: ${text.trim()}"))
     }
 
@@ -378,12 +383,24 @@ class DelegationBridge(
         turnJob = null
     }
 
+    /**
+     * Have the voice say [text]. Commentary and thinking need a vendor delegation id; GPT-Live
+     * ignores them without one (typed requests, idle and cap warnings). Those go as session
+     * instructions, the one append that takes `delegation_id: null`.
+     */
     private fun speak(delegationId: String?, text: String) {
-        events.commentary(delegationId, text).forEach { send(it) }
+        if (delegationId != null) {
+            events.commentary(delegationId, text).forEach { send(it) }
+        } else {
+            Commentary.chunk(text).forEach { chunk ->
+                events.instructions("Say this to the user now, in your own words, then stop: $chunk")?.let(send)
+            }
+        }
     }
 
+    /** Quiet progress for a vendor delegation. Without one there is nothing to attach it to. */
     private fun think(delegationId: String?, text: String) {
-        events.thinking(delegationId, text)?.let(send)
+        if (delegationId != null) events.thinking(delegationId, text)?.let(send)
     }
 
     private fun armIdle() {
