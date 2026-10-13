@@ -21,7 +21,7 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         with:
           # The action's default adds the retired 'tools' package, which newer sdkmanagers reject.
           packages: platform-tools platforms;android-37.0
