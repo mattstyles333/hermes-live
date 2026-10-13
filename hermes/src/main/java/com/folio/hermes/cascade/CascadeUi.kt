@@ -121,3 +121,29 @@ class CascadeEventBus {
         flow.tryEmit(event)
     }
 }
+
+/** The call screen's view of a task. */
+fun TaskSnapshot.toUi(): TaskUi = TaskUi(
+    id = id,
+    label = label,
+    status = when (state) {
+        TaskState.Done -> TaskUiStatus.Done
+        TaskState.Failed -> TaskUiStatus.Failed
+        TaskState.Cancelled -> TaskUiStatus.Cancelled
+        TaskState.Running -> when {
+            waitingOnUser -> TaskUiStatus.Waiting
+            starting -> TaskUiStatus.Starting
+            queuedAtServer -> TaskUiStatus.Queued
+            else -> TaskUiStatus.Running
+        }
+    },
+    startedAtMs = startedAtMs,
+    finishedAtMs = finishedAtMs,
+    steps = steps,
+    currentTool = currentTool,
+    recentTools = recentTools,
+    lastEventAtMs = lastEventAtMs,
+    partialText = progress.takeLast(200),
+    resultPreview = result?.take(280),
+    pendingUpdates = pendingUpdates,
+)

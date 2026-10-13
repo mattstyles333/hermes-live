@@ -293,9 +293,18 @@ class Cascade(
         }
         report(
             "cascade.turn",
-            mapOf("outcome" to event::class.simpleName, "jev_calls" to timing.calls, "jev_ms" to timing.jevMs, "to_jev_ms" to timing.speechEndToJevMs),
+            mapOf("outcome" to outcomeWire(event), "jev_calls" to timing.calls, "jev_ms" to timing.jevMs, "to_jev_ms" to timing.speechEndToJevMs),
         )
         gate()
+    }
+
+    /** Explicit names: class names do not survive R8 in release builds. */
+    private fun outcomeWire(event: TurnEvent): String = when (event) {
+        is TurnEvent.Done -> "done"
+        is TurnEvent.Holding -> "keep_listening"
+        is TurnEvent.Ignored -> "ignore"
+        is TurnEvent.NoAnswer -> "no_answer"
+        is TurnEvent.Parked -> "parked"
     }
 
     private fun holdOffline(turnId: String, turn: HeldTurn) {

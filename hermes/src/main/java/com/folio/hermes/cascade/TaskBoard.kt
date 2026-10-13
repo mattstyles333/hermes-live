@@ -77,32 +77,6 @@ data class TaskSnapshot(
         }
 
     fun brief(nowMs: Long): TaskBrief = TaskBrief(id, label, state, lastEvent, ((nowMs - startedAtMs) / 1000).coerceAtLeast(0))
-
-    /** The call screen's view of this task. */
-    fun toUi(): TaskUi = TaskUi(
-        id = id,
-        label = label,
-        status = when (state) {
-            TaskState.Done -> TaskUiStatus.Done
-            TaskState.Failed -> TaskUiStatus.Failed
-            TaskState.Cancelled -> TaskUiStatus.Cancelled
-            TaskState.Running -> when {
-                waitingOnUser -> TaskUiStatus.Waiting
-                starting -> TaskUiStatus.Starting
-                queuedAtServer -> TaskUiStatus.Queued
-                else -> TaskUiStatus.Running
-            }
-        },
-        startedAtMs = startedAtMs,
-        finishedAtMs = finishedAtMs,
-        steps = steps,
-        currentTool = currentTool,
-        recentTools = recentTools,
-        lastEventAtMs = lastEventAtMs,
-        partialText = progress.takeLast(200),
-        resultPreview = result?.take(280),
-        pendingUpdates = pendingUpdates,
-    )
 }
 
 /** A finished turn's answer (or failure) for the speech queue. */
