@@ -93,7 +93,7 @@ android {
         }
         // Release-like (R8, shrink, the release keep rules) but debug-signed, with x86_64, beside
         // the debug app (`.staging`): proves R8 + sherpa's JNI + the cascade on the emulator.
-        // Never shipped; no diagnostics; no test hooks (it takes release's BuildHooks).
+        // Never shipped; no diagnostics; its BuildHooks only add the fake Hermes address.
         create("staging") {
             initWith(getByName("release"))
             applicationIdSuffix = ".staging"
@@ -111,7 +111,7 @@ android {
     sourceSets {
         // src/hooks: the corpus audio source and the capturing output (test input, never in release).
         getByName("debug").kotlin.srcDir("src/hooks/java")
-        getByName("staging").kotlin.srcDirs("src/release/java", "src/hooks/java")
+        getByName("staging").kotlin.srcDir("src/hooks/java")
     }
 
     compileOptions {

@@ -10,6 +10,9 @@ import okhttp3.Dns
 object BuildHooks {
     val dns: Dns = Dns.SYSTEM
 
+    /** The Hermes address as typed: no test address in release. */
+    fun serverUrl(raw: String): String = raw
+
     /** The cascade's audio override: never in release. */
     val cascadeAudio: CascadeAudioFactory? get() = null
 }

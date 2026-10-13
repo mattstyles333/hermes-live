@@ -33,6 +33,9 @@ interface NetworkHints {
     fun online(): Boolean
     fun metered(): Boolean
 
+    /** On Wi-Fi (or Ethernet): what auto-prepare waits for (spec v2 §14 item 10). Not merely "unmetered". */
+    fun wifi(): Boolean = online() && !metered()
+
     companion object {
         fun of(context: Context): NetworkHints = object : NetworkHints {
             private val cm get() = context.getSystemService(ConnectivityManager::class.java)
@@ -42,6 +45,10 @@ interface NetworkHints {
                     caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
             }
             override fun metered(): Boolean = cm?.isActiveNetworkMetered ?: true
+            override fun wifi(): Boolean {
+                val caps = cm?.activeNetwork?.let { cm?.getNetworkCapabilities(it) } ?: return false
+                return online() && (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+            }
         }
     }
 }
@@ -116,10 +123,29 @@ class VoiceShell(
         )
     }
 
-    /** Close the cascade when the gate shuts (engine switched back, key removed). */
+    @Volatile private var wasActive: Boolean? = null
+
+    /**
+     * Close the cascade when the gate shuts (engine switched back, key removed). When it opens
+     * (Bill chosen with a usable key), prepare Bill's voice at once, on Wi-Fi only, unless it is
+     * already prepared (spec v2 §14 item 10: the phrase render plus the model downloads).
+     */
     fun onSettingsChanged() {
-        if (!gate.active) shell.release()
+        val active = gate.active
+        if (!active) shell.release()
         prep.refresh()
+        val opened = active && wasActive != true
+        wasActive = active
+        if (opened) autoPrepare()
+    }
+
+    /** Start "Prepare Bill's voice" if it is needed and the phone is on Wi-Fi. True if it started. */
+    fun autoPrepare(): Boolean {
+        if (!gate.active || !network.wifi()) return false
+        val s = prep.state.value
+        val missing = speechModels.wanted(settings.settings.value.highAccuracySpeech).isNotEmpty()
+        if (s.ready && !missing) return false
+        return prep.start()
     }
 
     companion object {

@@ -15,7 +15,7 @@ import android.service.quicksettings.TileService
 import android.view.KeyEvent
 import androidx.core.content.ContextCompat
 import com.folio.hermes.telemetry.Telemetry
-import com.folio.hermeslive.call.CallEngine
+import com.folio.hermeslive.call.VoiceCall
 import com.folio.hermeslive.call.CallRequest
 import com.folio.hermeslive.call.CallUiState
 import com.folio.hermeslive.call.HeadsetButtons
@@ -35,8 +35,8 @@ import kotlinx.coroutines.launch
  */
 class CallService : Service() {
     /** Seam for tests; the app's engine by default. */
-    internal var engineProvider: () -> CallEngine = { graph.engine }
-    private val engine: CallEngine get() = engineProvider()
+    internal var engineProvider: () -> VoiceCall = { graph.calls }
+    private val engine: VoiceCall get() = engineProvider()
     private var watcher: Job? = null
     private var media: MediaSession? = null
     private var longPressHandled = false
@@ -70,6 +70,8 @@ class CallService : Service() {
                 muted = intent.getBooleanExtra(EXTRA_MUTED, false),
                 newConversation = intent.getBooleanExtra(EXTRA_NEW_CONVERSATION, false),
                 entry = intent.getStringExtra(EXTRA_ENTRY) ?: "app",
+                memo = intent.getBooleanExtra(EXTRA_MEMO, false),
+                forceGptLive = intent.getBooleanExtra(EXTRA_FORCE_GPT_LIVE, false),
             ),
         )
         watch()
@@ -167,6 +169,8 @@ class CallService : Service() {
         const val EXTRA_MUTED = "muted"
         const val EXTRA_NEW_CONVERSATION = "new_conversation"
         const val EXTRA_ENTRY = "entry"
+        const val EXTRA_MEMO = "memo"
+        const val EXTRA_FORCE_GPT_LIVE = "force_gpt_live"
         private val HEADSET_KEYS = setOf(KeyEvent.KEYCODE_HEADSETHOOK, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
 
         /** Start a call. Call only from a visible activity, after RECORD_AUDIO is granted. */
@@ -176,6 +180,8 @@ class CallService : Service() {
                 .putExtra(EXTRA_MUTED, request.muted)
                 .putExtra(EXTRA_NEW_CONVERSATION, request.newConversation)
                 .putExtra(EXTRA_ENTRY, request.entry)
+                .putExtra(EXTRA_MEMO, request.memo)
+                .putExtra(EXTRA_FORCE_GPT_LIVE, request.forceGptLive)
             ContextCompat.startForegroundService(context, intent)
         }
     }

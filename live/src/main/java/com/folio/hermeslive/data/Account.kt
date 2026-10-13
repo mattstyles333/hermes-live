@@ -9,6 +9,7 @@ import com.folio.hermes.HermesTokens
 import com.folio.hermes.live.VoiceLiveApi
 import com.folio.hermes.live.VoiceLiveStatus
 import com.folio.hermes.telemetry.Telemetry
+import com.folio.hermeslive.hooks.BuildHooks
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -96,7 +97,8 @@ class Account(
     }
 
     suspend fun signIn(rawUrl: String, username: String, password: String): SignInResult {
-        val endpoint = when (val parsed = HermesEndpoint.parse(rawUrl)) {
+        // Release: as typed. Debug and staging: the emulator's fake Hermes address too (BuildHooks).
+        val endpoint = when (val parsed = HermesEndpoint.parse(BuildHooks.serverUrl(rawUrl))) {
             is HermesEndpoint.Parsed.Invalid -> {
                 Telemetry.event("auth.signin", mapOf("ok" to false, "reason" to "invalid_address"))
                 return SignInResult.Failed(parsed.message)

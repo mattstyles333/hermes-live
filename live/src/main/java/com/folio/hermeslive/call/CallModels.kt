@@ -40,8 +40,12 @@ data class CallRequest(
     val muted: Boolean = false,
     /** Forget the previous Hermes session and start a new conversation. */
     val newConversation: Boolean = false,
-    /** Where the call came from, for diagnostics: app, launcher, folio, shortcut, assist, headset, tile, share. */
+    /** Where the call came from, for diagnostics: app, launcher, folio, shortcut, assist, headset, tile, share, memo. */
     val entry: String = "app",
+    /** Memo mode asked for (the Memo shortcut, or the tile offline; R-OFF-2). Bill only. */
+    val memo: Boolean = false,
+    /** Use GPT-Live for this call even with Bill chosen (the "Preparing Bill…" fallback). */
+    val forceGptLive: Boolean = false,
 )
 
 /** One caption line: a speaker's turn, merged from transcript deltas. */

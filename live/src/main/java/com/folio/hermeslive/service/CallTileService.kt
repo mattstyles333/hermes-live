@@ -18,7 +18,7 @@ import com.folio.hermeslive.graph
 class CallTileService : TileService() {
     override fun onStartListening() {
         val tile = qsTile ?: return
-        val inCall = graph.engine.state.value.inCall
+        val inCall = graph.calls.state.value.inCall
         tile.state = if (inCall) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.label = "Hermes Live"
         tile.subtitle = when {
@@ -30,8 +30,8 @@ class CallTileService : TileService() {
     }
 
     override fun onClick() {
-        if (graph.engine.state.value.inCall) {
-            graph.engine.end()
+        if (graph.calls.state.value.inCall) {
+            graph.calls.end()
             return
         }
         val shell = VoiceShell.of(this)
