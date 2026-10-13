@@ -120,7 +120,7 @@ class VoicePrep(
         job?.cancel()
     }
 
-    /** Where the last complete render's fingerprint lives (the cascade store, key `shell/voice/prepared`). */
+    /** Where the last complete render's fingerprint lives (the cascade store, key `cascade.shell.voice.prepared`). */
     interface PreparedMarker {
         fun get(): String?
         fun set(fingerprint: String)

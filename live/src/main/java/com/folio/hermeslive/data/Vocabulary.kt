@@ -52,7 +52,7 @@ class VocabularyStore(private val store: () -> Store, private val now: () -> Lon
     }
 
     companion object {
-        const val KEY = "shell/vocabulary/corrections"
+        const val KEY = "cascade.shell.vocabulary.corrections"
         const val MAX_CORRECTIONS = 100
     }
 }

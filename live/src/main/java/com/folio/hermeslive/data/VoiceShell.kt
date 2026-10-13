@@ -123,7 +123,7 @@ class VoiceShell(
     }
 
     companion object {
-        const val PREPARED_KEY = "shell/voice/prepared"
+        const val PREPARED_KEY = "cascade.shell.voice.prepared"
 
         // Holds the application context only.
         @SuppressLint("StaticFieldLeak")
