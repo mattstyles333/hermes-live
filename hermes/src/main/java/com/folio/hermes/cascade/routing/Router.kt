@@ -11,7 +11,8 @@ import com.folio.hermes.cascade.UpdateMode
 import com.folio.hermes.openrouter.JevAnswer
 
 /**
- * Jev answers → what happens. Code, not Jev, decides whether Jev was sure enough:
+ * Jev answers → what happens (C1; the default registry). Spec v2's rules are [CeoRouter]. Code,
+ * not Jev, decides whether Jev was sure enough:
  * - `turn` below the floor (0.55) keeps listening;
  * - `action` below the floor is a clarifying question, never a task;
  * - a task action without a confident task asks which one (stock line, no writer);
@@ -19,11 +20,12 @@ import com.folio.hermes.openrouter.JevAnswer
  * - `enough = line_only` skips the writer only with a stock line and confidence ≥ 0.7.
  */
 object Router {
+    /** R-RT-3: `done` needs the floor (0.55); `ignore` is accepted from 0.4; anything else keeps listening. */
     fun verdict(answers: Map<String, JevAnswer>, settings: CascadeSettings): TurnVerdict {
-        val turn = answers[CascadeBrain.TURN]?.takeIf { it.confidence >= settings.confidenceFloor }
-        return when (turn?.choice) {
-            CascadeBrain.DONE -> TurnVerdict.Done
-            CascadeBrain.IGNORE -> TurnVerdict.Ignore
+        val turn = answers[CascadeBrain.TURN] ?: return TurnVerdict.KeepListening
+        return when {
+            turn.choice == CascadeBrain.DONE && turn.confidence >= settings.confidenceFloor -> TurnVerdict.Done
+            turn.choice == CascadeBrain.IGNORE && turn.confidence >= settings.ignoreFloor -> TurnVerdict.Ignore
             else -> TurnVerdict.KeepListening
         }
     }
