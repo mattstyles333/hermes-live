@@ -23,8 +23,10 @@ class CascadeReducer(val env: CascadeEnv) {
     fun reduce(state: State, event: Event): Pair<State, List<Effect>> {
         val tx = Tx(state, env)
         tx.on(event)
-        if (tx.s.started) tx.advance()
-        tx.pump()
+        if (tx.s.started) {
+            tx.advance()
+            tx.pump()
+        }
         val durable = env.persistence.save(state, tx.s)
         return tx.s to (durable + tx.effects)
     }
@@ -32,8 +34,9 @@ class CascadeReducer(val env: CascadeEnv) {
     // ── events ──────────────────────────────────────────────────────────────────────────────
 
     private fun Tx.on(event: Event) {
-        // Off state: nothing runs until the call starts (R-Q-1).
-        if (!s.started && event !is Event.Start) return
+        // Off state: nothing runs until the call starts (R-Q-1). Tasks belong to the user, not the
+        // call: their events still update the task table (results wait in `offCall` for the next start).
+        if (!s.started && !event.offCall) return
         when (event) {
             is Event.Start -> start(event)
             Event.Stop -> stop()
@@ -57,7 +60,10 @@ class CascadeReducer(val env: CascadeEnv) {
             }
             is Event.AccurateFinal -> env.handlers.hooks.accurate(this, event)
             is Event.UserSpeech -> cutIn(event.continuousMs)
-            is Event.HoldToTalk -> s = s.copy(transcript = s.transcript.copy(holdToTalk = event.pressed))
+            is Event.HoldToTalk -> {
+                s = s.copy(transcript = s.transcript.copy(holdToTalk = event.pressed))
+                env.handlers.hooks.holdToTalk(this, event.pressed)
+            }
             is Event.OutputLevel -> s = s.copy(bill = s.bill.copy(level = event.level.coerceIn(0f, 1f)))
             is Event.Network -> network(event.online)
             is Event.HermesConnection -> s = s.copy(connection = s.connection.copy(hermesUp = event.up))
@@ -102,24 +108,38 @@ class CascadeReducer(val env: CascadeEnv) {
         val stamp = s
         val base = event.restored ?: s
         s = base.copy(nowMs = stamp.nowMs, wallMs = stamp.wallMs, settings = stamp.settings, started = true)
+        // What arrived while no call was open is handled now (C1: buffered until the next start).
+        val waiting = s.offCall
+        s = s.copy(offCall = OffCallState())
+        waiting.results.forEach { env.handlers.result.arrived(this, it) }
+        waiting.requests.forEach { env.handlers.hooks.taskRequest(this, it) }
         env.conversation.briefing(this)
     }
 
-    /** The call ends: held words are forgotten, Bill stops, in-flight work is cancelled, pending records are logged. */
+    /**
+     * The call ends: held words are forgotten, Bill stops (queued replies and notices are dropped,
+     * as on a cut-in; queued results stay for the next call), the call's in-flight work (timers,
+     * Jev, writer, speech) is cancelled, and pending records are logged. Tasks keep running.
+     */
     private fun Tx.stop() {
+        if (!s.started) return
         s = s.copy(started = false)
         turn(TurnRules.reset(s.turn))
         stopTicker()
         effects += Effect.StopPlayback
         s.writers.keys.forEach { effects += Effect.CancelWriter(it) }
-        val current = s.speech.current
+        // A result whose writer was cut off still closes (with its lead-in), so it can play later.
+        s.writers.values.filter { it.owner is WriterOwner.Result }.forEach { env.handlers.result.written(this, it, it.pieces > 0) }
+        val (cut, _) = s.speech.cutIn()
+        val current = cut.current
         s = s.copy(
             writers = emptyMap(),
             writer = s.writer.copy(streaming = false),
             actions = ActionQueue(),
             flush = null,
             playback = null,
-            speech = if (current != null) s.speech.played(current, 0, 0) else s.speech,
+            speech = (if (current != null) cut.played(current, 0, 0) else cut).copy(userSpeaking = false, userHolding = false),
+            userSpeaking = false,
             bill = s.bill.copy(speaking = false, slot = null, text = null),
         )
         flushAwaiting()
@@ -428,8 +448,10 @@ class CascadeReducer(val env: CascadeEnv) {
 
     private fun Tx.network(online: Boolean) {
         if (!online) {
-            if (s.connection.online) emit(CascadeEvent.Offline)
+            val was = s.connection.online
+            if (was) emit(CascadeEvent.Offline)
             s = s.copy(connection = s.connection.copy(online = false))
+            if (was) env.conversation.offline(this)
             return
         }
         val wasOffline = !s.connection.online

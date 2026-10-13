@@ -128,6 +128,9 @@ data class CeoState(
     val briefing: List<String> = emptyList(),
 )
 
+/** Task results and requests that arrived with no call open; handled at the next start (C1 parity; S-E may notify instead, R-CONV-3). */
+data class OffCallState(val results: List<TaskResult> = emptyList(), val requests: List<TaskRequest> = emptyList())
+
 /** What the Resume card offers (R-CONV-2; phase 1, S-B). */
 data class ResumeCandidate(
     val conversationId: String,
@@ -185,6 +188,7 @@ data class State(
     val render: RenderProgress = RenderProgress(),
     val ceo: CeoState = CeoState(),
     val conversation: ConversationState = ConversationState(),
+    val offCall: OffCallState = OffCallState(),
 ) {
     /** True while Bill has something queued or playing (wait for this before closing the call). */
     val speaking: Boolean get() = !speech.isEmpty

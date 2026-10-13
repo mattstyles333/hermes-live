@@ -183,8 +183,12 @@ class Tx(var s: State, val env: CascadeEnv) {
         step.reports.forEach { (event, extra) ->
             report("cascade.task", mapOf("event" to event, "running" to (extra["running"] ?: step.table.runningCount)) + (extra - "running"), warn = event == "failed")
         }
-        step.results.forEach { env.handlers.result.arrived(this, it) }
-        step.requests.forEach { env.handlers.hooks.taskRequest(this, it) }
+        if (s.started) {
+            step.results.forEach { env.handlers.result.arrived(this, it) }
+            step.requests.forEach { env.handlers.hooks.taskRequest(this, it) }
+        } else if (step.results.isNotEmpty() || step.requests.isNotEmpty()) {
+            s = s.copy(offCall = OffCallState(s.offCall.results + step.results, s.offCall.requests + step.requests))
+        }
         return step.value
     }
 }

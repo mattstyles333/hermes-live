@@ -12,6 +12,7 @@ import com.folio.hermes.cascade.ports.Store
  *
  * - [held]: a turn went to the outbox; group it into a dictation session (`State.ceo.memoSessions`,
  *   gaps under `memoGapMs`, capped at `memoCapMs`).
+ * - [offline]: the network dropped during a call (memo mode, R-OFF-1).
  * - [online]: the network came back with held turns; return true to take over sending them
  *   (writer segments, Jev routes, briefs note "dictated offline hh:mm–hh:mm", one summary line).
  *   False keeps C1's outbox flush (each held turn through Jev in order).
@@ -25,6 +26,9 @@ interface ConversationPolicy {
     fun held(tx: Tx, turnId: String, turn: HeldTurn) = Unit
 
     fun online(tx: Tx): Boolean = false
+
+    /** The network dropped during a call: memo mode starts (R-OFF-1: banner, `error.offline` once). Default: nothing (C1). */
+    fun offline(tx: Tx) = Unit
 
     fun resumeCandidate(store: Store, state: State): ResumeCandidate? = null
 

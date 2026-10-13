@@ -137,6 +137,9 @@ interface TurnHooks {
     /** A tap on a task card: Cancel, ReadAll, Tell (Retry is the registry's, Play the conversation's). Default: none yet (phase 1). */
     fun tap(tx: Tx, event: Event.TaskTapped) = Unit
 
+    /** Hold-to-talk pressed or released (R-STT-8: no pause ring, commit on release). Default: only the flag (phase 1). */
+    fun holdToTalk(tx: Tx, pressed: Boolean) = Unit
+
     /** The user picked an alternative for an uncertain word. Default: nothing (phase 1). */
     fun wordChosen(tx: Tx, event: Event.WordChosen) = Unit
 }

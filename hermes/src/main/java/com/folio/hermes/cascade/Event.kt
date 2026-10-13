@@ -109,3 +109,8 @@ sealed interface Event {
     /** Hermes minted a stored session id for [taskId] (persist it; R-DUR-3). */
     data class TaskSessionBound(val taskId: String, val storedSessionId: String) : Event
 }
+
+/** Events handled with no call open: tasks belong to the user and keep running between calls (R-CONV-3). */
+val Event.offCall: Boolean
+    get() = this is Event.Start || this is Event.TaskUpdated || this is Event.TaskRunEnded || this is Event.TaskInterrupted ||
+        this is Event.TaskSessionBound || this is Event.HermesConnection || this is Event.RenderProgressed

@@ -188,4 +188,46 @@ class CascadeActorTest {
         assertEquals("", s.turn.heard)
         assertFalse(s.speaking)
     }
+
+    @Test fun stopThenStartLeavesBillAbleToSpeak() = rigTest { rig ->
+        rig.openRouter.jevScripts += FakeOpenRouter.JevScript(100, reply)
+        rig.openRouter.writes = { _, _ -> listOf("One.", "Two.", "Three.") }
+        rig.say("tell me a story")
+        advanceTimeBy(1_000 + 300 + 100) // the stock line is playing, the writer's sentences are queued
+        runCurrent()
+        assertTrue(rig.actor.ui.value.bill.speaking)
+        rig.actor.stop()
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertFalse(rig.actor.speaking)
+        rig.actor.start()
+        rig.actor.say(AppLines.HI)
+        advanceUntilIdle()
+        val hi = rig.events.last { it.second is CascadeEvent.LinePlayed }.second
+        assertEquals(CascadeEvent.LinePlayed(AppLines.HI), hi)
+        assertFalse(rig.actor.speaking)
+    }
+
+    @Test fun aTaskKeepsRunningAcrossStopAndItsResultWaitsForTheNextCall() = rigTest { rig ->
+        rig.openRouter.jevScripts += FakeOpenRouter.JevScript(
+            100,
+            ok("turn" to answer("done"), "action" to answer("new_task"), "line" to answer("start.lookup"), "enough" to answer("line_then_writer")),
+        )
+        rig.say("check stock of RB2140")
+        advanceUntilIdle()
+        rig.actor.stop()
+        advanceUntilIdle()
+        rig.hermes.complete("t1", "RB2140: 14 in stock")
+        advanceUntilIdle()
+        assertEquals("the run ended while no call was open", TaskUiStatus.Done, rig.actor.ui.value.tasks.single().status)
+        assertTrue("nothing is spoken off-call", rig.events.none { it.second == CascadeEvent.ResultQueued("t1") })
+        assertEquals(1, rig.actor.state.value.offCall.results.size)
+
+        rig.actor.start()
+        advanceUntilIdle()
+        assertEquals(1, rig.events.count { it.second == CascadeEvent.ResultQueued("t1") })
+        assertTrue(rig.events.any { it.second == CascadeEvent.ResultSpoken("t1") })
+        assertTrue(rig.actor.state.value.offCall.results.isEmpty())
+        assertEquals(1, rig.hermes.submits.size)
+    }
 }

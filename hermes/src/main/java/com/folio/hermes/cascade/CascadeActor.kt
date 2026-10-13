@@ -17,7 +17,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -85,6 +84,7 @@ class CascadeActor(
     )
     private val _ui = MutableStateFlow(UiProjection.project(_state.value))
     private var collectors: Job? = null
+    private var hermesCollectors: Job? = null
 
     @Volatile
     var killed: Boolean = false
@@ -113,21 +113,27 @@ class CascadeActor(
 
     // ── inputs ──────────────────────────────────────────────────────────────────────────────
 
-    /** Start the call: restore what the persistence seam saved, then listen to the ports. */
+    /**
+     * Start the call: the loop restores what the persistence seam saved (on the loop, before any
+     * other event), then the ports are listened to. Hermes task sessions are listened to from the
+     * first start until the actor is gone: tasks keep running between calls (R-CONV-3).
+     */
     fun start() {
-        val restored = env.persistence.restore(store, _state.value).let { s ->
-            s.copy(conversation = s.conversation.copy(resume = env.conversation.resumeCandidate(store, s)))
+        post(Event.Start())
+        if (hermesCollectors == null) {
+            hermesCollectors = actorScope.launch {
+                launch { hermes.sessions.collect { (task, stored) -> post(Event.TaskSessionBound(task, stored)) } }
+                launch { hermes.connected.collect { post(Event.HermesConnection(it)) } }
+            }
         }
         collectors?.cancel()
         collectors = actorScope.launch {
-            launch { hermes.sessions.collect { (task, stored) -> post(Event.TaskSessionBound(task, stored)) } }
-            launch { hermes.connected.collect { post(Event.HermesConnection(it)) } }
             net?.let { n -> launch { n.online.collect { post(Event.Network(it)) } } }
-            stt?.let { s -> launch { s.events.collect { post(it.toEvent()) } } }
+            stt?.let { st -> launch { st.events.collect { post(it.toEvent()) } } }
         }
-        post(Event.Start(restored))
     }
 
+    /** End the call: Bill stops, the call's work is cancelled; tasks keep running. */
     fun stop() = post(Event.Stop)
 
     fun speechStarted() = post(Event.SpeechStarted)
@@ -158,8 +164,9 @@ class CascadeActor(
 
     // ── the loop ────────────────────────────────────────────────────────────────────────────
 
-    private fun step(event: Event) {
+    private fun step(input: Event) {
         val before = _state.value.copy(nowMs = clock.nowMs(), wallMs = clock.wallMs(), settings = settings())
+        val event = if (input is Event.Start && input.restored == null && !before.started) Event.Start(restore(before)) else input
         val (after, effects) = reducer.reduce(before, event)
         _state.value = after
         _ui.value = UiProjection.project(after)
@@ -178,6 +185,11 @@ class CascadeActor(
         }
     }
 
+    /** The persistence seam's saved state, with the conversation seam's Resume candidate (R-CONV-2). */
+    private fun restore(fresh: State): State = env.persistence.restore(store, fresh).let { s ->
+        s.copy(conversation = s.conversation.copy(resume = env.conversation.resumeCandidate(store, s)))
+    }
+
     /** Stop dead (the kill test): nothing more runs, nothing is cleaned up. */
     private fun kill() {
         killed = true
@@ -185,10 +197,9 @@ class CascadeActor(
         actorJob.cancel()
     }
 
+    /** The call's own work: timers, Jev, writer, plan, accurate pass and speech. Task runs are not the call's. */
     private fun cancelWork() {
-        workJob.cancelChildren()
-        synchronized(jobs) { jobs.clear() }
-        tasks.cancelAll()
+        synchronized(jobs) { jobs.values.toList().also { jobs.clear() } }.forEach { it.cancel() }
         player.stop()
     }
 
