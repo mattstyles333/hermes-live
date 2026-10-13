@@ -50,11 +50,11 @@ class CallEngine(
     private val effects: CallEffects,
     private val memory: SessionMemoryStore,
     private val clock: () -> Long = System::currentTimeMillis,
-) : CallAudio.Listener {
+) : CallAudio.Listener, VoiceCall {
     private val _state = MutableStateFlow(CallUiState())
 
     /** Everything the UI, notification, tile and provider show. */
-    val state: StateFlow<CallUiState> = _state.asStateFlow()
+    override val state: StateFlow<CallUiState> = _state.asStateFlow()
 
     private var epoch = 0
     private var link: HermesLink? = null
@@ -96,7 +96,7 @@ class CallEngine(
     // ── commands ────────────────────────────────────────────────────────────────────────────
 
     /** Start a call. While one is running, a [CallRequest.prompt] is submitted to it instead. */
-    fun start(request: CallRequest = CallRequest()) {
+    override fun start(request: CallRequest) {
         val current = _state.value
         if (current.inCall) {
             request.prompt?.let(::submitText)
@@ -139,7 +139,7 @@ class CallEngine(
     }
 
     /** End the call (End button, notification, tile, headset). A second press skips the goodbye. */
-    fun end() {
+    override fun end() {
         val phase = _state.value.phase
         if (!_state.value.inCall) return
         userEnding = true
@@ -152,7 +152,7 @@ class CallEngine(
         b.close(StopReason.UserRequest)
     }
 
-    fun toggleMute() = setMuted(!_state.value.muted)
+    override fun toggleMute() = setMuted(!_state.value.muted)
 
     fun setMuted(muted: Boolean, quiet: Boolean = false) {
         if (!_state.value.inCall || _state.value.muted == muted) return
@@ -169,14 +169,14 @@ class CallEngine(
     }
 
     /** The user picked a route in the call screen. */
-    fun selectRoute(option: RouteOption) {
+    override fun selectRoute(option: RouteOption) {
         if (!_state.value.inCall) return
         route = RouteChoice(devices.firstOrNull { it.id == option.id } ?: option, manual = true)
         applyRoute()
     }
 
     /** A typed or shared request during the call. */
-    fun submitText(text: String) {
+    override fun submitText(text: String) {
         val clean = text.trim()
         if (clean.isEmpty()) return
         val b = bridge
@@ -190,7 +190,7 @@ class CallEngine(
     }
 
     /** The user tapped an approval answer. The only way (besides opted-in speech) an approval is answered. */
-    fun answerApproval(id: String, choice: ApprovalChoice) {
+    override fun answerApproval(id: String, choice: ApprovalChoice) {
         val card = _state.value.approvals.firstOrNull { it.id == id } ?: return
         if (choice !in card.choices && choice != ApprovalChoice.Deny) return
         _state.update { s -> s.copy(approvals = s.approvals.filterNot { it.id == id }) }
@@ -208,7 +208,7 @@ class CallEngine(
     }
 
     /** The user answered the clarify card ([answers] by question id; null skips one). */
-    fun answerClarify(id: String, answers: Map<String, String?>) {
+    override fun answerClarify(id: String, answers: Map<String, String?>) {
         val card = _state.value.clarify?.takeIf { it.id == id } ?: return
         _state.update { it.copy(clarify = null) }
         val l = link ?: return
@@ -225,7 +225,7 @@ class CallEngine(
     }
 
     /** Clear the summary or error after the user saw it. */
-    fun dismissSummary() {
+    override fun dismissSummary() {
         if (_state.value.inCall) return
         _state.value = CallUiState()
     }

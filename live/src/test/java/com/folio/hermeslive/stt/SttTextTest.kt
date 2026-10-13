@@ -53,6 +53,43 @@ class SttTextTest {
         assertEquals(0.95, t.words[0].confidence!!, 1e-9)
     }
 
+    /** R-STT-4 (spec v2 §14): a disagreement flags only key tokens. Names here are made up. */
+    @Test fun disagreementFlagsOnlyKeyTokens() {
+        val fast = listOf(
+            FastWord("send", 0.9), FastWord("a", 0.6), FastWord("knot", 0.5), FastWord("to", 0.9), FastWord("zorba", 0.4),
+            FastWord("about", 0.9), FastWord("nineteen", 0.5), FastWord("box", 0.6),
+        )
+        val t = TranscriptMerge.merge(fast, "Send the note to Zorbel about 90 boxes.", uncertainBelow = 0.45, agreedBelow = 0.0)
+        val flagged = t.words.filter { it.uncertain }.map { it.text }
+        assertEquals(listOf("Zorbel", "90", "boxes."), flagged)
+        assertEquals(listOf("zorba"), t.words.first { it.text == "Zorbel" }.alternatives)
+        assertTrue("an ordinary word the passes disagree on keeps no doubt", t.words.first { it.text == "note" }.alternatives.isEmpty())
+    }
+
+    @Test fun vocabularyWordsAreKeyEvenInLowerCase() {
+        val fast = listOf(FastWord("chase", 0.9), FastWord("the", 0.9), FastWord("kestle", 0.5), FastWord("order", 0.9))
+        val plain = TranscriptMerge.merge(fast, "chase the kestrel order", 0.45, 0.0)
+        assertTrue(plain.words.none { it.uncertain })
+        val vocab = TranscriptMerge.merge(fast, "chase the kestrel order", 0.45, 0.0, vocabulary = listOf("Kestrel junior"))
+        assertEquals(listOf("kestrel"), vocab.words.filter { it.uncertain }.map { it.text })
+    }
+
+    @Test fun keyTokens() {
+        fun key(text: String, i: Int, vocab: Set<String> = emptySet()) = KeyTokens.isKey(text.split(" "), i, vocab)
+        assertFalse("sentence start", key("Please send it", 0))
+        assertTrue("a name mid-sentence", key("ask Halden now", 1))
+        assertTrue("after a full stop it is a sentence start", !key("Done. Then go", 1))
+        assertFalse("I is not a name", key("then I said", 1))
+        assertTrue("acronym", key("the VAT return", 1))
+        assertTrue("mixed case", key("ring McAllister today", 1))
+        assertTrue("digits and money", key("about £4,212 total", 1))
+        assertTrue("number word", key("about twelve left", 1))
+        assertTrue("date", key("by Friday please", 1))
+        assertTrue("quantity", key("two boxes please", 1))
+        assertTrue("vocabulary", key("the kestrel range", 1, setOf("kestrel")))
+        assertFalse("plain word", key("the order is", 1))
+    }
+
     @Test fun agreedWordsUseTheirOwnThreshold() {
         val fast = listOf(FastWord("ninety", 0.3), FastWord("days", 0.9))
         val strict = TranscriptMerge.merge(fast, "90 days", uncertainBelow = 0.5)

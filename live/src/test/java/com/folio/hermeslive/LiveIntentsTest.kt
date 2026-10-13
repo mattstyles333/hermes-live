@@ -27,6 +27,22 @@ class LiveIntentsTest {
         assertFalse(launch.wake)
     }
 
+    /** Spec v2 §14 item 9: memo, the tile offline, and a result notification's Open. */
+    @Test fun memoTileAndOpenTask() {
+        val memo = LiveIntents.parse(Intent(com.folio.hermeslive.service.MemoEntry.ACTION_MEMO))
+        assertEquals(CallRequest(entry = "memo", memo = true), memo.request)
+        val tileOffline = LiveIntents.parse(Intent(LiveIntents.ACTION_TILE).putExtra(com.folio.hermeslive.service.MemoEntry.EXTRA_MEMO, true))
+        assertEquals(CallRequest(entry = "tile", memo = true), tileOffline.request)
+        assertTrue(tileOffline.wake)
+        assertFalse(LiveIntents.parse(Intent(LiveIntents.ACTION_TILE)).request!!.memo)
+        val open = LiveIntents.parse(
+            Intent(com.folio.hermeslive.service.ResultNotifications.ACTION_OPEN_TASK).putExtra(com.folio.hermeslive.service.ResultNotifications.EXTRA_TASK_ID, "task-7"),
+        )
+        assertNull("Open starts no call", open.request)
+        assertEquals("task-7", open.openTaskId)
+        assertNull(LiveIntents.parse(Intent(com.folio.hermeslive.service.ResultNotifications.ACTION_OPEN_TASK)).openTaskId)
+    }
+
     @Test fun folioCallWithPromptAndMuted() {
         val intent = Intent(LiveIntents.ACTION_CALL)
             .putExtra(LiveIntents.EXTRA_PROMPT, "  What's next?  ")

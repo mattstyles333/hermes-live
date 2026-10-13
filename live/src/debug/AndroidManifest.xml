@@ -13,6 +13,26 @@
         tools:node="remove" />
 
     <application>
+        <!-- Off-call start probe (spec v2 §14 item 14): device test only, never started by the app. -->
+        <service
+            android:name=".probe.ProbeHolderService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+        <receiver
+            android:name=".probe.ProbeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.folio.hermeslive.probe.OFFCALL" />
+            </intent-filter>
+        </receiver>
+        <service
+            android:name=".probe.ProbeTargetService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Debug probe: whether the off-call service may start after hang-up." />
+        </service>
         <activity
             android:name=".lab.SttLabActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"

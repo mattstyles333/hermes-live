@@ -62,6 +62,13 @@ sealed interface SttEvent {
     /** VAD: the user stopped speaking. */
     data object SpeechEnded : SttEvent
 
+    /**
+     * VAD: the user stopped speaking, really at [atMs] on `Clock.System.nowMs()`'s base
+     * (`System.nanoTime() / 1_000_000`): the VAD's hangover is not counted into the pause.
+     * Engines that know the true end send this instead of [SpeechEnded] (additive).
+     */
+    data class SpeechEndedAt(val atMs: Long) : SttEvent
+
     data class Partial(val text: String) : SttEvent
 
     /** A finished utterance from the fast pass, with per-word confidence when the engine has it. */
@@ -88,6 +95,12 @@ interface SpeechToText {
      * at most `accuratePassWaitMs`.
      */
     suspend fun accurate(turnId: String): Transcript?
+
+    /**
+     * Forget the audio held for the accurate pass (a turn that was ignored, or never answered):
+     * otherwise it joins the next turn's [accurate] text (S-C spec problem 5). Additive; default none.
+     */
+    fun drop(turnId: String) = Unit
 }
 
 /** Plays whole PCM clips. `:live` implements it with an `AudioTrack` on `USAGE_VOICE_COMMUNICATION` (R-SPK-5). */

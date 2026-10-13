@@ -1,0 +1,53 @@
+{
+  "name": "test",
+  "busy_mode": "interrupt",
+  "interrupt_style": "redirect",
+  "stream": {"chunk_words": 3, "chunk_delay_ms": 10},
+  "rules": [
+    {
+      "name": "tools",
+      "match": ["check stock"],
+      "steps": [
+        {"tool": "s4l_ops_get_sku", "context": "Looking up the SKU", "ms": 80, "summary": "found"},
+        {"interim": "Checking the shelves."},
+        {"tool": "s4l_ops_get_latest_stock_comparison", "context": "Checking stock", "ms": 80, "summary": "2 locations"}
+      ],
+      "reply": "Sample Frame TEST-0001 has 14 in stock."
+    },
+    {
+      "name": "slow",
+      "match": ["slow job"],
+      "steps": [{"tool": "web_search", "context": "Searching", "ms": 2500, "summary": "done"}],
+      "reply": "Slow job finished for: {prompt}"
+    },
+    {
+      "name": "hang",
+      "match": ["hang forever"],
+      "steps": [{"hang": true}]
+    },
+    {
+      "name": "approval",
+      "match": ["send the email"],
+      "steps": [
+        {"approval": {"command": "send_email to=customer@example.com", "description": "Send the drafted reply."},
+         "deny_reply": "Kept it as a draft."},
+        {"tool": "gmail_send_message", "ms": 50, "summary": "sent"}
+      ],
+      "reply": "Sent ({choice})."
+    },
+    {
+      "name": "clarify",
+      "match": ["chase the supplier"],
+      "steps": [
+        {"clarify": {"questions": [{"qid": "channel", "question": "Email or phone note?", "choices": ["email", "phone note"]}]}}
+      ],
+      "reply": "Chased by {answer.channel}."
+    },
+    {
+      "name": "fail",
+      "match": ["fail on purpose"],
+      "steps": [{"tool": "terminal", "ms": 50}, {"fail": "The tool crashed (fake failure)."}]
+    }
+  ],
+  "fallback": {"name": "fallback", "steps": [{"tool": "memory", "ms": 30}], "reply": "Done: {prompt}"}
+}

@@ -47,22 +47,23 @@ class CascadeReducer(val env: CascadeEnv) {
                 s = s.copy(pauseProgress = 0f)
                 gate()
             }
-            Event.SpeechEnded -> {
-                s = s.copy(userSpeaking = false)
-                turn(TurnRules.speechEnded(s.turn, s.nowMs, s.settings, withoutJev = !env.handlers.hooks.useJev(s)))
-                if (s.turn.deciding) startTicker()
-                gate()
-            }
+            Event.SpeechEnded -> speechEnded(s.nowMs)
+            is Event.SpeechEndedAt -> speechEnded(event.atMs)
             is Event.Partial -> turn(TurnRules.partial(s.turn, event.text))
             is Event.Final -> {
                 turn(TurnRules.final(s.turn, event.text))
                 if (event.words.isNotEmpty()) s = s.copy(transcript = s.transcript.copy(words = s.transcript.words + event.words))
             }
-            is Event.AccurateFinal -> env.handlers.hooks.accurate(this, event)
+            is Event.AccurateFinal -> {
+                env.handlers.hooks.accurate(this, event)
+                // Fast text when the pass gave nothing: the turn goes on either way.
+                openGate(event.turnId, ACCURATE_GATE)
+            }
             is Event.UserSpeech -> cutIn(event.continuousMs)
             is Event.HoldToTalk -> {
                 s = s.copy(transcript = s.transcript.copy(holdToTalk = event.pressed))
                 env.handlers.hooks.holdToTalk(this, event.pressed)
+                if (!event.pressed) released()
             }
             is Event.OutputLevel -> s = s.copy(bill = s.bill.copy(level = event.level.coerceIn(0f, 1f)))
             is Event.Network -> network(event.online)
@@ -125,6 +126,37 @@ class CascadeReducer(val env: CascadeEnv) {
         // unless the Resume card is up: then after Play or Continue (R-CONV-2), never over it.
         if (s.conversation.resume == null) releaseOffCall(speakResults = true)
         env.conversation.briefing(this)
+    }
+
+    /**
+     * The user stopped speaking, really at [endAt] (R-RT-1; the pause counts from there). After a
+     * hold-to-talk release the turn commits at once instead (R-STT-8).
+     */
+    private fun Tx.speechEnded(endAt: Long) {
+        s = s.copy(userSpeaking = false)
+        val withoutJev = !env.handlers.hooks.useJev(s)
+        if (s.transcript.released) {
+            s = s.copy(transcript = s.transcript.copy(released = false))
+            turn(TurnRules.released(s.turn, s.nowMs, s.settings, ask, withoutJev))
+        } else {
+            turn(TurnRules.speechEnded(s.turn, s.nowMs, s.settings, withoutJev = withoutJev, endAt = endAt))
+            if (s.turn.deciding) startTicker()
+        }
+        gate()
+    }
+
+    /**
+     * Hold-to-talk released (R-STT-8): mid-speech, the `SpeechEnded` that follows commits at once;
+     * with the words already in (no speech open), they commit now.
+     */
+    private fun Tx.released() {
+        if (s.userSpeaking) {
+            s = s.copy(transcript = s.transcript.copy(released = true))
+        } else if (s.turn.heard.isNotEmpty()) {
+            stopTicker()
+            turn(TurnRules.released(s.turn, s.nowMs, s.settings, ask, !env.handlers.hooks.useJev(s)))
+            gate()
+        }
     }
 
     /**
@@ -276,20 +308,41 @@ class CascadeReducer(val env: CascadeEnv) {
                     route = decision.route.wire,
                 )
                 flushAwaiting()
-                enqueue(hooks.committed(this, ActionState(event.turnId, text, decision, event.speechEndAt, record), event))
+                val action = hooks.committed(this, ActionState(event.turnId, text, decision, event.speechEndAt, record), event)
+                enqueue(accuratePass(event.turnId, action))
             }
             is TurnEvent.Holding -> {
                 val slot = hooks.backchannel(s, event.answers, env.bank)
                 val line = slot?.let { say(it, SpeechKind.Reply) }
                 log(base.copy(outcome = "keep_listening", state = event.request.state, questions = event.request.questions.keys.toList(), slot = slot, line = line))
             }
-            is TurnEvent.Ignored ->
+            is TurnEvent.Ignored -> {
+                if (s.settings.accuratePass) effects += Effect.DropSpeech(event.turnId)
                 log(base.copy(outcome = "ignore", state = event.request.state, questions = event.request.questions.keys.toList()))
-            is TurnEvent.NoAnswer -> hooks.noAnswer(this, event, base)
+            }
+            is TurnEvent.NoAnswer -> {
+                if (s.settings.accuratePass) effects += Effect.DropSpeech(event.turnId)
+                hooks.noAnswer(this, event, base)
+            }
             is TurnEvent.Parked -> Unit
         }
         report("cascade.turn", mapOf("outcome" to outcomeWire(event), "jev_calls" to timing.calls, "jev_ms" to timing.jevMs, "to_jev_ms" to timing.speechEndToJevMs))
         gate()
+    }
+
+    /**
+     * R-STT-2: with [CascadeSettings.accuratePass] on, committed turn [turnId] waits for its
+     * accurate pass (the actor bounds the wait). A turn absorbed into another action (a key-doubt
+     * answer) drops its audio instead: that action already has its transcript.
+     */
+    private fun Tx.accuratePass(turnId: String, action: ActionState): ActionState {
+        if (!s.settings.accuratePass) return action
+        if (action.turnId != turnId) {
+            effects += Effect.DropSpeech(turnId)
+            return action
+        }
+        effects += Effect.AccuratePass(turnId)
+        return action.copy(gates = action.gates + ACCURATE_GATE)
     }
 
     /** Explicit names: class names do not survive R8 in release builds. */
@@ -320,7 +373,8 @@ class CascadeReducer(val env: CascadeEnv) {
     private fun Tx.startTicker() {
         stopTicker()
         val seq = nextSeq()
-        s = s.copy(tickSeq = seq, tickBegan = s.nowMs, pauseProgress = 0f)
+        // From the real end of speech (`SpeechEndedAt`), like the pause itself.
+        s = s.copy(tickSeq = seq, tickBegan = s.turn.pause?.endAt ?: s.nowMs, pauseProgress = 0f)
         effects += Effect.StartTimer(Timer(TICK, seq), TICK_MS)
     }
 
@@ -587,6 +641,9 @@ class CascadeReducer(val env: CascadeEnv) {
         /** The outbox stage that says a turn's tasks exist (the new-task handlers mark it). */
         const val NEW_TASK_STAGE = "task"
         const val TICK = "pause.tick"
+
+        /** The gate a committed turn waits behind until its accurate pass is in (R-STT-2). */
+        const val ACCURATE_GATE = "accurate"
         const val TICK_MS = 50L
         private const val KEEP_TURNS = 64
     }

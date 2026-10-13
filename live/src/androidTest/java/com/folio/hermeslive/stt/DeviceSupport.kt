@@ -71,7 +71,7 @@ class EventLog(stt: SherpaSpeechToText, scope: CoroutineScope = CoroutineScope(D
         while (System.nanoTime() < deadline) {
             val s = snapshot()
             val started = s.count { it.event is SttEvent.SpeechStarted }
-            val ended = s.count { it.event is SttEvent.SpeechEnded }
+            val ended = s.count { it.event.isSpeechEnd }
             if (started == ended) return true
             Thread.sleep(5)
         }

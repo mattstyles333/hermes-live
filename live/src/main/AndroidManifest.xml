@@ -120,7 +120,7 @@
         <!-- Settings > Voice > Decision log > Share: the one export file, read-only, by URI grant. -->
         <provider
             android:name=".data.DecisionLogProvider"
-            android:authorities="com.folio.hermeslive.share"
+            android:authorities="${applicationId}.share"
             android:exported="false"
             android:grantUriPermissions="true" />
 

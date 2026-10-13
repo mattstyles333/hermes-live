@@ -29,11 +29,11 @@ class Utt(
     val fastText: String get() = events.mapNotNull { (it.event as? SttEvent.Final)?.text }.joinToString(" ")
     val orderOk: Boolean get() {
         val names = events.map { it.event }
-        val lastEnd = names.indexOfLast { it is SttEvent.SpeechEnded }
+        val lastEnd = names.indexOfLast { it.isSpeechEnd }
         // Nothing textual after the last SpeechEnded, and each Final directly precedes a SpeechEnded.
         if (lastEnd < 0) return names.isEmpty()
         if (names.drop(lastEnd + 1).any { it is SttEvent.Partial || it is SttEvent.Final }) return false
-        return names.withIndex().filter { it.value is SttEvent.Final }.all { (i, _) -> names.getOrNull(i + 1) is SttEvent.SpeechEnded }
+        return names.withIndex().filter { it.value is SttEvent.Final }.all { (i, _) -> names.getOrNull(i + 1)?.isSpeechEnd == true }
     }
 }
 
@@ -82,9 +82,9 @@ class CorpusRunner(
         while (System.nanoTime() < deadline) {
             start = start ?: source.clipStarts[id]
             val s = log.snapshot()
-            val ended = s.lastOrNull { it.event is SttEvent.SpeechEnded }
+            val ended = s.lastOrNull { it.event.isSpeechEnd }
             val started = s.count { it.event is SttEvent.SpeechStarted }
-            val endedCount = s.count { it.event is SttEvent.SpeechEnded }
+            val endedCount = s.count { it.event.isSpeechEnd }
             // Never before the clip's last speech sample has played (joined clips have gaps).
             val spoken = start != null && source.samplesOut >= start + (span?.second ?: 0)
             if (ended != null && started == endedCount && spoken && ended.nanos >= source.nanosAt(start!! + (span?.second ?: 0))) {

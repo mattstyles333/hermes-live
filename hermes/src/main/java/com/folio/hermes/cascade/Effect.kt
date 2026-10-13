@@ -94,6 +94,9 @@ sealed interface Effect {
     /** Run the accurate pass for committed turn [turnId] (R-STT-2). Result: [Event.AccurateFinal]. */
     data class AccuratePass(val turnId: String) : Effect
 
+    /** Forget the audio held for turn [turnId]'s accurate pass (it was ignored or never answered; `SpeechToText.drop`). */
+    data class DropSpeech(val turnId: String) : Effect
+
     // ── outputs ─────────────────────────────────────────────────────────────────────────────
     /** Save a phrase slot's rotation (the cursor survives restarts; R-SPK-1). */
     data class SaveRotation(val slotId: String, val rotation: Rotation) : Effect

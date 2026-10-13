@@ -18,6 +18,7 @@ class SttPipelineTest {
         confidence: (Int) -> Double? = { 0.9 },
         config: PipelineConfig = PipelineConfig(),
         offlineText: (FloatArray) -> String? = { "accurate words" },
+        now: () -> Long = { System.nanoTime() / 1_000_000 },
     ) {
         val events = ArrayList<SttEvent>()
         val cutIns = ArrayList<CutInReport>()
@@ -29,10 +30,10 @@ class SttPipelineTest {
         val second = SecondPass(offline, { "" }, { 0.5 }, executor = DirectExecutor())
         val gate = BargeIn(BargeInConfig(bargeInMs = 250))
         val engines = SttEngines(vad, streaming, offline, streamingHotwords = { it.joinToString("\n") })
-        val pipeline = SttPipeline(engines, second, gate, NoiseFloor(), playback, { config }, { hotwords }, { events += it }, onCutIn = { cutIns += it })
+        val pipeline = SttPipeline(engines, second, gate, NoiseFloor(), playback, { config }, { hotwords }, { events += it }, onCutIn = { cutIns += it }, nowMs = now)
 
         fun feed(frames: List<FloatArray>) = frames.forEach(pipeline::frame)
-        fun names() = events.map { it::class.simpleName }
+        fun names() = events.map { if (it.isSpeechEnd) "SpeechEnded" else it::class.simpleName }
     }
 
     @Test fun finalComesBeforeSpeechEndedAndNoTextAfter() {
@@ -49,6 +50,24 @@ class SttPipelineTest {
         assertEquals("W1 w2 w3", f.text)
         assertTrue(r.streaming.sessions.single().finished)
         assertTrue(r.streaming.sessions.single().released)
+    }
+
+    /** Spec v2 §14 (S-C problem 2): the end is stamped at the last loud frame, not when the VAD noticed. */
+    @Test fun speechEndIsStampedAtTheLastLoudFrame() {
+        val r = Rig(now = { 10_000L })
+        r.feed(List(10) { silence() } + frames(12) + List(6) { silence() })
+        val end = r.events.last() as SttEvent.SpeechEndedAt
+        // The fake VAD ends after 3 quiet frames of 32 ms.
+        assertEquals(10_000L - 3 * SttPipeline.FRAME_MS, end.atMs)
+    }
+
+    @Test fun aHoldReleaseIsStampedAtTheRelease() {
+        val r = Rig(now = { 7_000L })
+        r.pipeline.holdToTalk(true)
+        r.feed(frames(8) + List(10) { silence() })
+        r.pipeline.holdToTalk(false)
+        r.feed(listOf(silence()))
+        assertEquals(7_000L, (r.events.last() as SttEvent.SpeechEndedAt).atMs)
     }
 
     @Test fun preRollKeepsTheOnsetTheVadNeededToFire() {
@@ -133,7 +152,7 @@ class SttPipelineTest {
         val r = Rig()
         r.pipeline.holdToTalk(true)
         r.feed(frames(8) + List(20) { silence() } + frames(8))
-        assertFalse(r.events.any { it is SttEvent.SpeechEnded })
+        assertFalse(r.events.any { it.isSpeechEnd })
         r.pipeline.holdToTalk(false)
         r.feed(listOf(silence()))
         val names = r.names()
@@ -194,7 +213,7 @@ class SttPipelineTest {
     @Test fun blankSegmentIsNotHeld() {
         val r = Rig()
         r.feed(frames(3) + List(6) { silence() })
-        assertTrue(r.events.any { it is SttEvent.SpeechEnded })
+        assertTrue(r.events.any { it.isSpeechEnd })
         assertFalse(r.events.any { it is SttEvent.Final })
         assertEquals(0, r.second.heldCount)
     }
@@ -212,7 +231,7 @@ class SttPipelineTest {
         val r = Rig(config = PipelineConfig(maxSegmentMs = 640))
         r.feed(frames(30))
         assertTrue(r.events.any { it is SttEvent.Final })
-        assertFalse(r.events.any { it is SttEvent.SpeechEnded })
+        assertFalse(r.events.any { it.isSpeechEnd })
         assertTrue(r.streaming.sessions.size >= 2)
         assertTrue(r.pipeline.inSegment)
     }

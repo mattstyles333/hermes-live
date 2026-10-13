@@ -53,6 +53,13 @@ class VoiceSettingsTest {
         assertEquals(CascadeSettings().jevTimeoutMs, s.jevTimeoutMs)
     }
 
+    /** Spec v2 §14 item 11: High accuracy waits longer for the 0.6B second pass. */
+    @Test fun highAccuracyWaitsLongerForTheAccuratePass() {
+        assertEquals(1_500L, LiveSettings().cascadeSettings().accuratePassWaitMs)
+        assertEquals(2_500L, LiveSettings(highAccuracySpeech = true).cascadeSettings().accuratePassWaitMs)
+        assertEquals(0.45, LiveSettings().cascadeSettings().uncertainBelow, 1e-9)
+    }
+
     @Test fun boundsAreClamped() {
         assertEquals(400, LiveSettings(pauseMs = 10).normalized().pauseMs)
         assertEquals(3_000, LiveSettings(pauseMs = 99_999).normalized().pauseMs)

@@ -23,7 +23,7 @@ data class PipelineConfig(
     val preRollMs: Long = 480L,
     /** After a cut-in, audio before the confirming window that joins the segment. */
     val cutInPreRollMs: Long = 100L,
-    /** A segment longer than this is split with a mid-speech `Final` (no `SpeechEnded`). */
+    /** A segment longer than this is split with a mid-speech `Final` (no end of speech). */
     val maxSegmentMs: Long = 30_000L,
     /** A new segment needs the recent level this far above the noise floor. */
     val onsetMarginDb: Double = 6.0,
@@ -35,7 +35,8 @@ data class PipelineConfig(
  * - **Segments.** The VAD opens a segment (with pre-roll from a 2 s ring) and closes it after
  *   `minSilence`. While open, the streaming model decodes it and [SttEvent.Partial]s are sent
  *   when the words change. At the end: tail padding, then [SttEvent.Final] (words with
- *   `ysProbs` confidence, uncertain below the threshold) **before** [SttEvent.SpeechEnded], so
+ *   `ysProbs` confidence, uncertain below the threshold) **before** [SttEvent.SpeechEndedAt]
+ *   (stamped at the last loud frame, not when the VAD noticed), so
  *   the text never changes after the pause starts. The segment's PCM goes to the [SecondPass].
  * - **Echo safety (R-SPK-4/6).** While Bill plays, nothing is sent until the [BargeIn] gate
  *   confirms a cut-in; then [SttEvent.UserSpeech] once, and the segment starts at the cut-in
@@ -44,7 +45,7 @@ data class PipelineConfig(
  *   when the recent level is [PipelineConfig.onsetMarginDb] above it.
  * - **Hold-to-talk (R-STT-8).** Pressed: [SttEvent.HoldToTalk] (true), a segment starts at once
  *   if none is open, and the VAD does not end it. Released: `Final`, `HoldToTalk(false)`, then
- *   `SpeechEnded`. Pressing while Bill plays is a cut-in (`UserSpeech(bargeInMs)` first).
+ *   `SpeechEndedAt` (stamped at the release). Pressing while Bill plays is a cut-in (`UserSpeech(bargeInMs)` first).
  */
 class SttPipeline(
     private val engines: SttEngines,
@@ -57,12 +58,17 @@ class SttPipeline(
     private val emit: (SttEvent) -> Unit,
     private val onLevel: (Double) -> Unit = {},
     private val onCutIn: (CutInReport) -> Unit = {},
+    /** `Clock.System.nowMs()`'s base, for [SttEvent.SpeechEndedAt]. */
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private class Segment(val session: StreamingSession, val holding: Boolean) {
         val pcm = ArrayList<FloatArray>()
         var samples = 0
         var lastPartial = ""
         var held = holding
+
+        /** [samplesSeen] at the end of the segment's last loud frame (the true end of speech). */
+        var lastLoud = 0L
     }
 
     private val ring = ArrayDeque<FloatArray>()
@@ -121,6 +127,7 @@ class SttPipeline(
         }
         open.pcm += samples
         open.samples += samples.size
+        if (level > floor.db + cfg.onsetMarginDb) open.lastLoud = samplesSeen
         open.session.accept(samples)
         partial(open)
         when {
@@ -149,7 +156,7 @@ class SttPipeline(
 
     private fun start(frames: Int, holding: Boolean) {
         val session = engines.streaming.open(engines.streamingHotwords(hotwords()))
-        val s = Segment(session, holding)
+        val s = Segment(session, holding).also { it.lastLoud = samplesSeen }
         val pre = ring.toList().takeLast(frames.coerceAtLeast(1))
         for (chunk in pre) {
             s.pcm += chunk
@@ -172,7 +179,10 @@ class SttPipeline(
     private fun end(s: Segment, released: Boolean) {
         val fast = finish(s)
         if (released) emit(SttEvent.HoldToTalk(false))
-        emit(SttEvent.SpeechEnded)
+        // The VAD ends a segment `minSilence` + its window after the last word (about 0.4 s):
+        // stamp the real end so the pause is not that much longer (spec v2 §14, S-C problem 2).
+        val silentMs = if (released) 0L else ((samplesSeen - s.lastLoud) * 1000 / AudioRate.HZ).coerceIn(0L, MAX_HANGOVER_MS)
+        emit(SttEvent.SpeechEndedAt(nowMs() - silentMs))
         segment = null
         secondPass.submit(concat(s), fast)
     }
@@ -181,7 +191,7 @@ class SttPipeline(
     private fun split(s: Segment) {
         val fast = finish(s)
         secondPass.submit(concat(s), fast)
-        val next = Segment(engines.streaming.open(engines.streamingHotwords(hotwords())), s.held)
+        val next = Segment(engines.streaming.open(engines.streamingHotwords(hotwords())), s.held).also { it.lastLoud = samplesSeen }
         segment = next
     }
 
@@ -220,5 +230,11 @@ class SttPipeline(
         const val FRAME_MS = 32L
         const val RING_FRAMES = 63
         const val ONSET_FRAMES = 8
+
+        /** The most a `SpeechEndedAt` stamp goes back (the VAD hangover is about 0.3-0.6 s). */
+        const val MAX_HANGOVER_MS = 1_000L
     }
 }
+
+/** A VAD end of speech, with or without the real-end stamp. */
+val SttEvent.isSpeechEnd: Boolean get() = this == SttEvent.SpeechEnded || this is SttEvent.SpeechEndedAt

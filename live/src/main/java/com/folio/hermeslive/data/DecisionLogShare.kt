@@ -20,7 +20,8 @@ import java.io.FileNotFoundException
  * [DecisionLogProvider] to the app they pick (a one-off URI grant). Clear deletes it too.
  */
 object DecisionLogShare {
-    const val AUTHORITY = "com.folio.hermeslive.share"
+    /** `com.folio.hermeslive.share` (`.staging.share` in the staging build, which sits beside the app). */
+    val AUTHORITY = "${com.folio.hermeslive.BuildConfig.APPLICATION_ID}.share"
     const val FILE_NAME = "hermes-live-decision-log.json"
     const val MIME = "application/json"
     val URI: Uri = Uri.parse("content://$AUTHORITY/$FILE_NAME")

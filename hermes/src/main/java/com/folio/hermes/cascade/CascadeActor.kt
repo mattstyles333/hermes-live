@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Lets a test stop the actor between any two effects (R-DUR-5). Return false to kill the actor before [effect] runs. */
 fun interface EffectGate {
@@ -270,9 +271,12 @@ class CascadeActor(
             is Effect.InterruptTask -> tasks.interrupt(effect.taskId)
             is Effect.CancelTaskRuns -> tasks.cancelRuns(effect.taskId)
             is Effect.ReadBusyMode -> tasks.busyMode(effect.seq)
+            // R-STT-2: wait at most `accuratePassWaitMs`; null (fast text, `pass: fast`) after that.
             is Effect.AccuratePass -> launch("accurate:${effect.turnId}") {
-                post(Event.AccurateFinal(effect.turnId, stt?.accurate(effect.turnId)))
+                val transcript = stt?.let { s -> withTimeoutOrNull(settings().accuratePassWaitMs) { s.accurate(effect.turnId) } }
+                post(Event.AccurateFinal(effect.turnId, transcript))
             }
+            is Effect.DropSpeech -> runCatching { stt?.drop(effect.turnId) }
             is Effect.SaveRotation -> runCatching { rotations.save(effect.slotId, effect.rotation) }
             is Effect.LogDecision -> runCatching { decisions?.record(effect.record) }
             is Effect.Report -> runCatching { telemetry.event(effect.name, effect.attrs, warn = effect.warn) }
@@ -296,6 +300,7 @@ class CascadeActor(
     private fun SttEvent.toEvent(): Event = when (this) {
         SttEvent.SpeechStarted -> Event.SpeechStarted
         SttEvent.SpeechEnded -> Event.SpeechEnded
+        is SttEvent.SpeechEndedAt -> Event.SpeechEndedAt(atMs)
         is SttEvent.Partial -> Event.Partial(text)
         is SttEvent.Final -> Event.Final(text, words)
         is SttEvent.UserSpeech -> Event.UserSpeech(continuousMs)

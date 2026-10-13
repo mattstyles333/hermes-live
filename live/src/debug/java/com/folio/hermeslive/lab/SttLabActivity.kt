@@ -26,6 +26,10 @@ class SttLabActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The off-call start probe (debug): stand in for a call's microphone service, started while visible.
+        if (intent?.getBooleanExtra(com.folio.hermeslive.probe.ProbeReceiver.EXTRA_HOLD, false) == true) {
+            androidx.core.content.ContextCompat.startForegroundService(this, android.content.Intent(this, com.folio.hermeslive.probe.ProbeHolderService::class.java))
+        }
         lab = LabController(applicationContext)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // Volume keys set the call volume, which the echo test plays at.
