@@ -112,13 +112,15 @@ internal fun cascadeIntents(
         // The pipeline opens and closes the held segment and sends the actor its events (R-STT-8).
         override fun holdToTalk(pressed: Boolean) = engine.holdToTalk(pressed)
 
-        // No call: a Play or a Read needs Bill's voice, so only the card actions that send work.
+        // No call: the actor is restored but not started, and drops card taps. The viewer is
+        // read-only (the cards and their results); approvals still go out (the slot answers them).
         override fun task(taskId: String, tap: TaskTap) {
-            if (viewer && (tap == TaskTap.ReadAll || tap == TaskTap.Play)) return
-            events.task(taskId, tap)
+            if (!viewer) events.task(taskId, tap)
         }
 
-        override fun resume(choice: ResumeChoice) = runtime.core.actor.send(Event.ResumeChosen(choice))
+        override fun resume(choice: ResumeChoice) {
+            if (!viewer) runtime.core.actor.send(Event.ResumeChosen(choice))
+        }
     }
 }
 

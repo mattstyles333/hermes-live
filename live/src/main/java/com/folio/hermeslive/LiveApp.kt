@@ -10,9 +10,9 @@ import com.folio.hermeslive.call.CallEngine
 import com.folio.hermeslive.call.CallSwitch
 import com.folio.hermeslive.cascade.CallSpeechFactory
 import com.folio.hermeslive.cascade.CascadeApp
-import com.folio.hermeslive.cascade.CascadeAppRuntime
 import com.folio.hermeslive.cascade.CascadeCallEngine
 import com.folio.hermeslive.cascade.SttSpeechModels
+import com.folio.hermeslive.cascade.appRuntime
 import com.folio.hermeslive.data.CascadeFactory
 import com.folio.hermeslive.data.CascadeHost
 import com.folio.hermeslive.data.SpeechModels
@@ -110,7 +110,7 @@ class LiveGraph(private val app: Context) {
         )
     }
 
-    val offCallHooks: OffCallHooks by lazy { cascadeApp.offCallHooks { VoiceShell.of(app).shell.runtime() } }
+    val offCallHooks: OffCallHooks by lazy { cascadeApp.offCallHooks({ VoiceShell.of(app).shell.appRuntime() }, { ready.await() }) }
 
     private val cascadeEffects by lazy { AndroidCallEffects(app) }
 
@@ -128,7 +128,7 @@ class LiveGraph(private val app: Context) {
                 CascadeCallEngine(
                     scope = mainScope,
                     settings = { settings.settings.value },
-                    runtime = { VoiceShell.of(app).shell.runtime() as? CascadeAppRuntime },
+                    runtime = { VoiceShell.of(app).shell.appRuntime() },
                     speech = CallSpeechFactory.sherpa(app.assets, modelManager),
                     audioFactory = { BuildHooks.cascadeAudio ?: CascadeAudioFactory.Device },
                     audio = AndroidCallAudio(app),

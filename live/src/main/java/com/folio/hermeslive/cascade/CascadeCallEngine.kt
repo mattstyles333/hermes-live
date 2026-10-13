@@ -2,6 +2,7 @@ package com.folio.hermeslive.cascade
 
 import com.folio.hermes.ApprovalChoice
 import com.folio.hermes.cascade.CascadeUiState
+import com.folio.hermes.cascade.Event
 import com.folio.hermes.cascade.TaskUiStatus
 import com.folio.hermes.cascade.TurnPhase
 import com.folio.hermes.telemetry.Telemetry
@@ -95,7 +96,7 @@ class CascadeCallEngine(
     override fun start(request: CallRequest) {
         if (_state.value.inCall) {
             if (request.muted && !_state.value.muted) toggleMute()
-            // A typed or shared request during a Bill call is not a spoken turn: say so (open item).
+            // During a call a typed request could interleave with speech: Bill takes it by voice.
             if (request.prompt != null) _state.update { it.copy(notice = "Bill takes requests by voice. Say it, and he'll pass it on.") }
             return
         }
@@ -142,6 +143,8 @@ class CascadeCallEngine(
                 source = src
                 call = stt
                 r.startCall(stt, io.out)
+                // Folio's PROMPT or shared text: the call's first turn, queued before any mic event.
+                request.prompt?.trim()?.takeIf { it.isNotEmpty() }?.let { typedTurn(r, it) }
                 liveAtMs = clock()
                 _state.update { it.copy(phase = CallPhase.Live, startedAtMs = liveAtMs, notice = null) }
                 Telemetry.event("call.connected", mapOf("engine" to "cascade", "connect_ms" to clock() - requestedAt, "route" to route.route?.kind))
@@ -209,7 +212,7 @@ class CascadeCallEngine(
     }
 
     override fun answerApproval(id: String, choice: ApprovalChoice) {
-        val r = rt ?: return
+        val r = runtimeNow() ?: return
         scope.launch {
             if (!r.answerApproval(id, choice)) _state.update { it.copy(notice = "Could not send your answer to Hermes.") }
             evaluate()
@@ -217,7 +220,7 @@ class CascadeCallEngine(
     }
 
     override fun answerClarify(id: String, answers: Map<String, String?>) {
-        val r = rt ?: return
+        val r = runtimeNow() ?: return
         scope.launch {
             if (!r.answerClarify(id, answers)) _state.update { it.copy(notice = "Could not send your answer to Hermes.") }
             evaluate()
@@ -271,6 +274,18 @@ class CascadeCallEngine(
     }
 
     // ── internals ──────────────────────────────────────────────────────────────────────────
+
+    /** A typed request as one finished turn: Jev routes it like speech (the actor only knows turns). */
+    private fun typedTurn(r: CascadeAppRuntime, text: String) {
+        val actor = r.core.actor
+        actor.send(Event.SpeechStarted)
+        actor.send(Event.Final(text.take(MAX_TYPED_CHARS)))
+        actor.send(Event.SpeechEnded)
+        Telemetry.event("cascade.typed_turn", mapOf("chars" to text.length))
+    }
+
+    /** The runtime of this call, or the process's (approvals from the no-call viewer). */
+    private fun runtimeNow(): CascadeAppRuntime? = rt ?: runtime()?.also { rt = it }
 
     private fun hotwords(): List<String> {
         val s = settings()
@@ -363,5 +378,6 @@ class CascadeCallEngine(
 
     companion object {
         const val TICK_MS = 150L
+        const val MAX_TYPED_CHARS = 4_000
     }
 }

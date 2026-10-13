@@ -25,6 +25,8 @@ import com.folio.hermeslive.service.TaskResultNotice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -104,11 +106,33 @@ class CascadeApp(
      * was restarted (the gate must still be open), reads the stored tasks back and keeps the
      * gateway connected; "Hear it" reads a result in Bill's voice.
      */
-    fun offCallHooks(runtime: () -> CascadeRuntime?): OffCallHooks = object : OffCallHooks {
+    fun offCallHooks(runtime: () -> CascadeAppRuntime?, ready: suspend () -> Unit): OffCallHooks = object : OffCallHooks {
         override val tasksRunning: StateFlow<Int> = this@CascadeApp.tasksRunning
 
-        override fun holdGateway(): AutoCloseable = (runtime() as? CascadeAppRuntime)?.holdGateway() ?: AutoCloseable { }
+        /** After process death the account is read back first (no network, bounded), else the runtime can't be built. */
+        override fun holdGateway(): AutoCloseable {
+            runBlocking(Dispatchers.IO) { withTimeoutOrNull(READY_WAIT_MS) { ready() } }
+            return runtime()?.holdGateway() ?: AutoCloseable { }
+        }
 
-        override suspend fun briefing(taskId: String?): Briefing? = (runtime() as? CascadeAppRuntime)?.briefing(taskId)
+        override suspend fun briefing(taskId: String?): Briefing? {
+            withTimeoutOrNull(READY_WAIT_MS) { ready() }
+            return runtime()?.briefing(taskId)
+        }
     }
+
+    companion object {
+        const val READY_WAIT_MS = 2_000L
+    }
+}
+
+/**
+ * The shell's runtime as Bill's, or null. A [CascadeRuntime.Empty] (built while signed out, or
+ * before the account was read back) is released at once, so the next call builds a real one.
+ */
+fun com.folio.hermeslive.data.CascadeShell.appRuntime(): CascadeAppRuntime? {
+    val r = runtime() ?: return null
+    if (r is CascadeAppRuntime) return r
+    release()
+    return null
 }

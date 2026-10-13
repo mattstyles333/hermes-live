@@ -30,6 +30,7 @@ import com.folio.hermeslive.call.CallUiState
 import com.folio.hermeslive.cascade.CascadeAppRuntime
 import com.folio.hermeslive.cascade.CascadeCallEngine
 import com.folio.hermeslive.cascade.CascadeSignOut
+import com.folio.hermeslive.cascade.appRuntime
 import com.folio.hermeslive.data.VoiceShell
 import com.folio.hermeslive.service.MemoEntry
 import com.folio.hermeslive.service.ResultNotifications
@@ -124,7 +125,7 @@ class LiveActivity : ComponentActivity() {
         lifecycleScope.launch {
             graph.ready.await()
             val shell = VoiceShell.of(this@LiveActivity)
-            val rt = withContext(Dispatchers.Default) { shell.shell.runtime() as? CascadeAppRuntime } ?: return@launch
+            val rt = withContext(Dispatchers.Default) { shell.shell.appRuntime() } ?: return@launch
             rt.core.restore()
             viewingTask = taskId
         }

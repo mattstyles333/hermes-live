@@ -217,6 +217,26 @@ class CascadeCallEngineTest {
         assertEquals(CallPhase.Ended, r.engine.state.value.phase)
     }
 
+    /** Folio's PROMPT (or shared text) is the Bill call's first turn, before the mic. */
+    @Test fun aPromptAtStartIsTheFirstTurn() = rig { r ->
+        r.engine.start(CallRequest(prompt = "  Check the Kestrel stock  ", entry = "folio"))
+        runCurrent()
+        assertEquals("Check the Kestrel stock", r.rt.core.actor.state.value.turn.heard)
+        assertTrue("the pause runs: Jev decides as for speech", r.rt.core.actor.state.value.turn.deciding)
+    }
+
+    /** The no-call viewer (a "Needs you" notification's Open): a tap answers through the process's runtime. */
+    @Test fun anEngineThatNeverStartedStillAnswersApprovals() = rig { r ->
+        val request = ApprovalRequest("srq-9", "s1", "q9", "send", "Send the email", listOf(ApprovalChoice.Once), null, JsonObject(emptyMap()))
+        runCurrent()
+        r.rt.gateway.events.emit(GatewayEvent.ApprovalRequested(request))
+        runCurrent()
+        r.engine.answerApproval("srq-9", ApprovalChoice.Deny)
+        runCurrent()
+        assertEquals(listOf("srq-9" to ApprovalChoice.Deny), r.rt.gateway.approved)
+        assertEquals("no call was started", 0, r.audio.began)
+    }
+
     @Test fun hotwordsAreVocabularyPlusTaskLabels() = rig(LiveSettings(vocabulary = listOf("Halden"))) { r ->
         r.live()
         assertEquals(listOf("Halden"), r.speech.hotwords.single()())
