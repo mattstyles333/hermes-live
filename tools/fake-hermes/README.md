@@ -81,7 +81,7 @@ Set `FAKE_HERMES_ECHO=1` to see the server's log in the test output.
 | `POST /auth/password-login` | `{provider:"basic", username, password, next}` returns 200 `{ok:true, next:"/"}` and sets the cookies `hermes_session_at` (Max-Age 43200), `hermes_session_rt` (2592000) and `hermes_session_provider=basic`, each `HttpOnly; SameSite=Lax; Path=/`. Failures: 401 `{"detail":"Invalid credentials"}`; 404 `{"detail":"Unknown provider"}`; 422 when there is no `provider`. |
 | `POST /auth/native/refresh` | `{refresh_token, provider}` returns `{access_token, refresh_token, token_type:"Bearer", expires_at, provider, user_id}`. Refresh tokens rotate, single use. Failures: 400 `refresh_token required`; 401 `{"error":"session_expired","detail":"Refresh token expired or invalid; start a new sign-in."}`. |
 | `POST /api/auth/ws-ticket` | Bearer, or else the access cookie. Returns `{ticket, ttl_seconds:30}`; each ticket is single use. Failure: 401 `{error:"unauthenticated", reason:"no_cookie", …}` or `{error:"session_expired", reason:"invalid_or_expired_session", …}`. |
-| `GET /api/audio/voice-live/status` | `{ok:true, mode:"disabled", available:false, reason, model:null, voice:null}`. The cascade does not use it. |
+| `GET /api/audio/voice-live/status` | `{ok:true, mode:"gpt-live", available:false, reason:"no OpenAI API key …", model, voice}`, the real shape of a server with no OpenAI key. The cascade does not use it. |
 | `POST /api/audio/voice-live/session` | 503: there is no voice-live here. |
 | `GET /api/ws?ticket=` | WebSocket upgrade. The ticket may also come as the subprotocol `hermes-gateway-ticket.<t>`. A bad, used or expired ticket gets HTTP 403. |
 

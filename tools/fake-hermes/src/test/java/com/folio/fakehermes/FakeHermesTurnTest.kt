@@ -10,6 +10,7 @@ import com.folio.hermes.PromptSurface
 import com.folio.hermes.SubmitStatus
 import com.folio.hermes.TurnStatus
 import com.folio.hermes.TurnUpdate
+import com.folio.hermes.live.VoiceLiveApi
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -18,6 +19,7 @@ import kotlinx.serialization.json.put
 import okhttp3.Request
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -35,12 +37,10 @@ class FakeHermesTurnTest {
         assertTrue(tokens.refreshToken.isNotEmpty())
         val ready = h.gateway.awaitReady()
         assertTrue(ready.replayEpoch.isNotEmpty())
-        val status = h.fake.client.newCall(
-            Request.Builder().url("${h.fake.baseUrl}/api/audio/voice-live/status")
-                .header("Authorization", "Bearer ${tokens.accessToken}").build(),
-        ).execute().use { it.code to it.body.string() }
-        assertEquals(200, status.first)
-        assertTrue(status.second, status.second.contains("\"available\": false"))
+        val status = VoiceLiveApi(h.config, h.auth, h.fake.client).status()!!
+        assertTrue(status.ok)
+        assertFalse(status.available)
+        assertEquals("gpt-live", status.mode)
         val noAuth = h.fake.client.newCall(Request.Builder().url("${h.fake.baseUrl}/api/audio/voice-live/status").build())
             .execute().use { it.code }
         assertEquals(401, noAuth)

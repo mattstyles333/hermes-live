@@ -193,9 +193,10 @@ class FakeHermesHandler(BaseHTTPRequestHandler):
     def _voice_status(self):
         if not self._authed():
             return
-        self.send_json(200, {"ok": True, "mode": "disabled", "available": False,
-                             "reason": "fake Hermes: voice-live is not provided (the cascade does not need it)",
-                             "model": None, "voice": None})
+        # The real shape (model and voice are always strings); the fake never offers voice-live.
+        self.send_json(200, {"ok": True, "mode": "gpt-live", "available": False,
+                             "reason": "no OpenAI API key (set OPENAI_API_KEY or voice.gpt_live.api_key)",
+                             "model": "gpt-live-1", "voice": "fake"})
 
     def _upgrade(self, query):
         hub = self.hub
