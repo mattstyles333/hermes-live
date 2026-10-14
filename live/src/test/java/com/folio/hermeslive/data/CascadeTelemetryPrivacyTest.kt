@@ -118,8 +118,8 @@ class CascadeTelemetryPrivacyTest {
         t.keys.save(FAKE_KEY, KeyCheck.Valid)
         t.shell.vocabulary.learn("dorthy", "Dorothy $word")
         assertTrue(t.shell.prep.start())
-        val deadline = System.currentTimeMillis() + 10_000
-        while (t.shell.prep.state.value.phase == PrepPhase.Running && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        // `cascade.prepare` is the run's last step, after the phase is set: wait for it, not on a clock.
+        assertTrue("the prepare run finished", sink.awaitEvent("cascade.prepare"))
         assertEquals(PrepPhase.Done, t.shell.prep.state.value.phase)
         assertTrue(sink.events.any { it.first == "cascade.prepare" })
         assertTrue(sink.events.any { it.first == "cascade.render" })

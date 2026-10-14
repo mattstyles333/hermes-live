@@ -11,13 +11,14 @@ import com.folio.hermes.openrouter.OpenRouter
 import com.folio.hermes.openrouter.OpenRouterConfig
 import com.folio.hermes.telemetry.TelemetrySink
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -39,7 +40,7 @@ class VoicePrepTest {
 
     private fun fingerprint() = VoicePrep.fingerprint(settings.billVoice, settings.ttsModel, bank.version)
 
-    private fun prep(scope: TestScope, models: SpeechModels, renders: () -> RenderJob = ::render) =
+    private fun prep(scope: CoroutineScope, models: SpeechModels, renders: () -> RenderJob = ::render) =
         VoicePrep(scope, gate, models, { settings.highAccuracySpeech }, { bank }, renders, marker, ::fingerprint, TelemetrySink.None)
 
     private fun render(): RenderJob {
@@ -57,25 +58,24 @@ class VoicePrepTest {
         ),
     )
 
-    private fun TestScope.waitFor(p: VoicePrep) {
-        val deadline = System.currentTimeMillis() + 10_000
-        while (p.state.value.phase == PrepPhase.Running && System.currentTimeMillis() < deadline) {
-            advanceUntilIdle()
-            Thread.sleep(5)
-        }
-    }
+    /*
+     * VoicePrep runs on runTest's backgroundScope (the test dispatcher; cancelled at the end, so its
+     * endless models collector does not hold the test open). The render's HTTP calls finish on
+     * OkHttp's threads; runTest runs every queued task and, when idle, waits for the next dispatch
+     * from those threads, so awaiting the state is event-driven. No withTimeout here: on virtual
+     * time it would fire at once; runTest's own timeout bounds the wait.
+     */
+    private suspend fun VoicePrep.settled(): PrepState = state.first { it.phase != PrepPhase.Running }
 
-    @Test fun rendersTheBankAndFetchesTheWantedModels() {
-        val scope = TestScope(StandardTestDispatcher())
+    @Test fun rendersTheBankAndFetchesTheWantedModels() = runTest {
         val models = models()
-        val p = prep(scope, models)
-        scope.runCurrent()
+        val p = prep(backgroundScope, models)
+        runCurrent()
         assertFalse(p.state.value.ready)
         assertEquals("bytes still to fetch, high accuracy excluded", 73_000_000L + 98_000_000L, p.state.value.bytesToFetch)
         assertTrue(p.start())
         assertFalse("one run at a time", p.start())
-        scope.waitFor(p)
-        val s = p.state.value
+        val s = p.settled()
         assertEquals(PrepPhase.Done, s.phase)
         assertEquals(3, s.phrases.total)
         assertEquals(3, s.phrases.done)
@@ -91,24 +91,22 @@ class VoicePrepTest {
 
         // Again: everything is cached, nothing is fetched.
         assertTrue(p.start())
-        scope.waitFor(p)
+        p.settled()
         assertEquals(3, server.requests.size)
         assertEquals(3, p.state.value.phrases.cached)
     }
 
-    @Test fun aNewVoiceNeedsPreparingAgain() {
-        val scope = TestScope(StandardTestDispatcher())
-        val p = prep(scope, SpeechModels.None)
+    @Test fun aNewVoiceNeedsPreparingAgain() = runTest {
+        val p = prep(backgroundScope, SpeechModels.None)
         p.start()
-        scope.waitFor(p)
+        p.settled()
         assertTrue(p.state.value.ready)
         settings = settings.copy(billVoice = "george")
         p.refresh()
         assertFalse(p.state.value.ready)
     }
 
-    @Test fun cancelStopsAndStartResumes() {
-        val scope = TestScope(StandardTestDispatcher())
+    @Test fun cancelStopsAndStartResumes() = runTest {
         val gateOpen = CompletableDeferred<Unit>()
         val slow = object : SpeechModels {
             private val s = MutableStateFlow(listOf(SpeechModelStatus("zipformer", "Streaming", ModelRole.Streaming, ModelState.Missing)))
@@ -122,29 +120,26 @@ class VoicePrepTest {
             }
             override fun delete(id: String) = Unit
         }
-        val p = prep(scope, slow)
+        val p = prep(backgroundScope, slow)
         assertTrue(p.start())
-        scope.runCurrent()
+        runCurrent()
         assertEquals(PrepPhase.Running, p.state.value.phase)
         p.cancel()
-        scope.waitFor(p)
-        assertEquals(PrepPhase.Cancelled, p.state.value.phase)
+        assertEquals(PrepPhase.Cancelled, p.settled().phase)
         assertTrue("resume", p.start())
-        scope.waitFor(p)
-        assertEquals(PrepPhase.Done, p.state.value.phase)
+        assertEquals(PrepPhase.Done, p.settled().phase)
         assertEquals(2, slow.calls)
     }
 
-    @Test fun offStateBuildsNoRender() {
-        val scope = TestScope(StandardTestDispatcher())
+    @Test fun offStateBuildsNoRender() = runTest {
         var built = 0
         settings = settings.copy(voiceEngine = VoiceEngine.GptLive)
-        val p = prep(scope, models()) { built++; render() }
+        val p = prep(backgroundScope, models()) { built++; render() }
         assertFalse(p.start())
         key = KeyStatus()
         settings = settings.copy(voiceEngine = VoiceEngine.Cascade)
         assertFalse(p.start())
-        scope.advanceUntilIdle()
+        advanceUntilIdle()
         assertEquals(0, built)
         assertTrue(server.requests.isEmpty())
     }

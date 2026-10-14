@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.folio.hermes.openrouter.OpenRouterConfig
 import com.folio.hermes.telemetry.TelemetrySink
 import javax.crypto.KeyGenerator
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -37,9 +38,18 @@ class FakeOpenRouterHttp(var status: Int = 200) : Interceptor {
 
 class RecordingSink : TelemetrySink {
     val events = mutableListOf<Triple<String, Map<String, Any?>, Boolean>>()
+    private val count = kotlinx.coroutines.flow.MutableStateFlow(0)
     @Synchronized override fun event(name: String, attrs: Map<String, Any?>, warn: Boolean) {
         events += Triple(name, attrs, warn)
+        count.value = events.size
     }
+
+    /** Waits (re-checking at each event, no polling) until an event named [name] is recorded; false after [timeoutMs]. */
+    fun awaitEvent(name: String, timeoutMs: Long = 10_000): Boolean = kotlinx.coroutines.runBlocking {
+        kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { count.first { has(name) } } != null
+    }
+
+    @Synchronized private fun has(name: String) = events.any { it.first == name }
     @Synchronized fun text(): String = events.joinToString("\n") { (n, a, w) -> "$n $a $w" }
 }
 

@@ -126,6 +126,9 @@ class DirectExecutor : AbstractExecutorService() {
 /** A source that plays [frames] then ends (-1). Counts opens. */
 class FramesSource(private val frames: List<FloatArray>) : AudioSource {
     var opens = 0
+
+    /** Counted down when the capture thread closes the source: its last step before it stops. */
+    val closed = java.util.concurrent.CountDownLatch(1)
     private var i = 0
     override var onRouteChanged: (() -> Unit)? = null
     override fun open() {
@@ -137,5 +140,5 @@ class FramesSource(private val frames: List<FloatArray>) : AudioSource {
         for (k in buffer.indices) buffer[k] = (f[k] * 32768f).toInt().toShort()
         return buffer.size
     }
-    override fun close() = Unit
+    override fun close() = closed.countDown()
 }

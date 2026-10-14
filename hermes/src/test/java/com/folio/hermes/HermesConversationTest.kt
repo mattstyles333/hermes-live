@@ -2,15 +2,20 @@ package com.folio.hermes
 
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -272,8 +277,13 @@ class HermesConversationTest {
         // The server finishes the abandoned turn on its own.
         val sid = conversation.ensureSession()
         serverRunning.remove(sid)
+        // The gateway clears the running flag before it emits the event, so the event is the sync point.
+        val completed = async(start = CoroutineStart.UNDISPATCHED) {
+            gateway.events.filterIsInstance<GatewayEvent.MessageComplete>().first { it.sessionId == sid }
+        }
         fake.sockets.peek()!!.event("message.complete", sid, """{"text":"partial done"}""")
-        withTimeout(2_000) { while (conversation.isBusy) kotlinx.coroutines.delay(5) }
+        completed.await()
+        assertFalse(conversation.isBusy)
         val started = System.nanoTime()
         val updates = conversation.turn("next", interruptFirst = true).toList()
         assertEquals(TurnUpdate.Completed("fresh", TurnStatus.Complete, null), updates.last())

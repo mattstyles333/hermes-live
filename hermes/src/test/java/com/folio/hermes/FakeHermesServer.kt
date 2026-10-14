@@ -6,6 +6,12 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -34,6 +40,11 @@ class FakeHermesServer : Closeable {
 
     /** method -> handler(socket, id, params). Unhandled methods get no reply. */
     val responders = ConcurrentHashMap<String, (ServerSide, JsonElement, JsonObject) -> Unit>()
+
+    private val _activity = MutableStateFlow(0L)
+
+    /** Bumped after every client frame is recorded and handled (responders included): wait on it, never poll. */
+    val activity: StateFlow<Long> = _activity.asStateFlow()
 
     init {
         server.dispatcher = object : Dispatcher() {
@@ -89,16 +100,19 @@ class FakeHermesServer : Closeable {
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             val obj = HermesJson.parseToJsonElement(text).jsonObject
-            side.frames.add(obj)
+            side.record(obj)
             val method = obj.string("method")
             val id = obj["id"]
             when {
                 method == "gateway.ping" -> if (answerPings && id != null) side.reply(id, """{"ok":true}""")
+                // A test's fence: the reply proves every frame the client sent before it has arrived (one socket, in order).
+                method == FENCE && id != null -> side.reply(id, "{}")
                 method == "client.capabilities" && id != null ->
                     if (capabilitiesUnsupported) side.error(id, -32601, "unknown method: client.capabilities")
                     else side.reply(id, """{"server_requests":["approval","clarify","sudo"],"declines_not_shown":true}""")
                 method != null && id != null -> responders[method]?.invoke(side, id, obj.obj("params") ?: JsonObject(emptyMap()))
             }
+            _activity.update { it + 1 }
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -108,10 +122,21 @@ class FakeHermesServer : Closeable {
 
     override fun close() = server.close()
 
+    companion object {
+        /** A method the fake always answers with `{}` (see [HermesGateway.call]); tests use it as a client→server fence. */
+        const val FENCE = "test.fence"
+    }
+
     class ServerSide {
         lateinit var ws: WebSocket
         val frames = CopyOnWriteArrayList<JsonObject>()
-        private val consumed = ConcurrentHashMap.newKeySet<Int>()
+        private val consumed = HashSet<Int>()
+        private val arrived = MutableStateFlow(0)
+
+        internal fun record(frame: JsonObject) {
+            frames.add(frame)
+            arrived.update { it + 1 }
+        }
 
         fun send(text: String) = check(ws.send(text))
         fun reply(id: JsonElement, result: String) = send("""{"jsonrpc":"2.0","result":$result,"id":$id}""")
@@ -124,17 +149,18 @@ class FakeHermesServer : Closeable {
             send("""{"jsonrpc":"2.0","method":"event","params":{"type":"$type","session_id":$sid$p}}""")
         }
 
-        /** The next unconsumed frame matching [predicate] (polls; frames arrive on OkHttp's thread). */
-        suspend fun next(timeoutMs: Long = 5_000, predicate: (JsonObject) -> Boolean): JsonObject {
-            val deadline = System.currentTimeMillis() + timeoutMs
-            while (System.currentTimeMillis() < deadline) {
-                frames.withIndex().firstOrNull { (i, f) -> i !in consumed && predicate(f) }?.let { (i, f) ->
-                    consumed.add(i)
-                    return f
-                }
-                kotlinx.coroutines.delay(5)
+        @Synchronized
+        private fun claim(predicate: (JsonObject) -> Boolean): JsonObject? =
+            frames.withIndex().firstOrNull { (i, f) -> i !in consumed && predicate(f) }?.let { (i, f) ->
+                consumed.add(i)
+                f
             }
-            error("no matching frame; got ${frames.map { it.string("method") ?: it["id"] }}")
+
+        /** The next unconsumed frame matching [predicate]; re-checked each time a frame arrives (on OkHttp's thread). */
+        suspend fun next(timeoutMs: Long = 5_000, predicate: (JsonObject) -> Boolean): JsonObject {
+            var hit: JsonObject? = null
+            withTimeoutOrNull(timeoutMs) { arrived.first { claim(predicate)?.also { hit = it } != null } }
+            return hit ?: throw AssertionError("no matching frame; got ${frames.map { it.string("method") ?: it["id"] }}")
         }
 
         suspend fun nextCall(method: String, timeoutMs: Long = 5_000) = next(timeoutMs) { it.string("method") == method }
@@ -244,4 +270,12 @@ class FakeTokens(var token: String = "at-1", var next: String = "at-2", var sign
         token = next
         return token
     }
+}
+
+/**
+ * A round trip through [FakeHermesServer.FENCE]: when it returns, every frame this client sent
+ * before it has reached the fake, and every frame the fake sent before its reply has been read.
+ */
+suspend fun HermesGateway.fence() {
+    call(FakeHermesServer.FENCE, JsonObject(emptyMap()))
 }

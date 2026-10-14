@@ -10,7 +10,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -30,10 +32,14 @@ class VoiceSettingsControllerTest {
 
     @After fun tearDown() = scope.cancel()
 
-    private fun VoiceSettingsController.settle() {
-        val deadline = System.currentTimeMillis() + 5_000
-        while (ui.value.keyBusy && System.currentTimeMillis() < deadline) Thread.sleep(5)
-        Thread.sleep(20)
+    /**
+     * Waits for the key check to finish with the outcome [done] describes. The controller sets
+     * `keyBusy = false` and the final message in one update, after it saved the key, cleared the
+     * clipboard and told the shell, so the message is the sync point (no sleep, no poll).
+     */
+    private fun VoiceSettingsController.settle(done: (VoiceUi) -> Boolean) {
+        val ui = runBlocking { withTimeoutOrNull(5_000) { ui.first { !it.keyBusy && done(it) } } }
+        assertNotNull("the key check finished (last: ${this.ui.value.keyMessage})", ui)
     }
 
     @Test fun aValidKeyIsCheckedThenSavedAndTheClipboardCleared() {
@@ -41,7 +47,7 @@ class VoiceSettingsControllerTest {
         val c = VoiceSettingsController(t.shell, scope)
         var cleared = false
         c.pasteKey(" $FAKE_KEY ") { cleared = true }
-        c.settle()
+        c.settle { it.keyMessage == "Saved and checked." }
         assertEquals(KeyStatus(true, KeyCheck.Valid, "fake"), t.keys.status.value)
         assertEquals(FAKE_KEY, t.keys.key())
         assertTrue(cleared)
@@ -55,7 +61,7 @@ class VoiceSettingsControllerTest {
         val c = VoiceSettingsController(t.shell, scope)
         var cleared = false
         c.pasteKey(FAKE_KEY) { cleared = true }
-        c.settle()
+        c.settle { it.keyMessage?.contains("refused") == true }
         assertFalse(t.keys.status.value.saved)
         assertFalse(cleared)
         assertTrue(c.ui.value.keyMessage!!.contains("refused"))
@@ -66,12 +72,12 @@ class VoiceSettingsControllerTest {
         t.server.keyStatus = 503
         val c = VoiceSettingsController(t.shell, scope)
         c.pasteKey(FAKE_KEY)
-        c.settle()
+        c.settle { it.keyMessage?.startsWith("Saved. OpenRouter couldn't be reached") == true }
         assertEquals(KeyCheck.Unchecked, t.keys.status.value.check)
         assertTrue(t.keys.hasKey())
         t.server.keyStatus = 200
         c.recheckKey()
-        c.settle()
+        c.settle { it.keyMessage == "OpenRouter accepts the key." }
         assertEquals(KeyCheck.Valid, t.keys.status.value.check)
         c.removeKey()
         assertFalse(t.keys.status.value.saved)
@@ -109,7 +115,8 @@ class VoiceSettingsControllerTest {
         assertEquals("application/json", provider.getType(uri))
 
         c.clearDecisionLog()
-        Thread.sleep(50)
+        // Set after the log and the exported file are gone.
+        assertNotNull(runBlocking { withTimeoutOrNull(5_000) { c.ui.first { it.message == "Decision log cleared." } } })
         assertFalse(exported.exists())
         assertTrue(t.shell.decisionLog.records().isEmpty())
     }
