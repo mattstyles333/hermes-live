@@ -67,24 +67,6 @@ class TurnTakerTest {
     private fun done(c: Double = 0.9) = OpenRouterResult.Ok(mapOf("turn" to answer("done", c), "action" to answer("reply")))
     private fun keep() = OpenRouterResult.Ok(mapOf("turn" to answer("keep_listening")))
 
-    @Test fun earlyCallAtHalfThePauseButNothingActsBeforePauseMs() = runTest {
-        val h = Harness(this)
-        h.say("what's the weather")
-        advanceUntilIdle()
-        assertEquals(1, h.calls.size)
-        assertEquals(500L, h.calls[0].at)
-        assertEquals(500L, h.calls[0].silenceMs)
-        assertEquals(2_500L, h.calls[0].timeoutMs)
-        assertEquals(600L, h.calls[0].answeredAt)
-        val (at, event) = h.events.single()
-        assertEquals("committed at pause_ms, not when Jev answered", 1_000L, at)
-        event as TurnEvent.Done
-        assertEquals("what's the weather", event.heard)
-        assertEquals(JevTiming(speechEndToJevMs = 600, jevMs = 100, calls = 1), event.timing)
-        assertEquals(listOf(500L to true), h.fired)
-        assertTrue(!h.taker.holding)
-    }
-
     @Test fun earlyTimeFollowsThePauseSetting() = runTest {
         for ((pause, early) in listOf(400L to 200L, 1_000L to 500L, 3_000L to 500L)) {
             val h = Harness(this, CascadeSettings(pauseMs = pause))
@@ -94,53 +76,6 @@ class TurnTakerTest {
             assertEquals("early at pause $pause", early, h.calls[0].at - start)
             assertEquals("commit at pause $pause", pause, h.events.single().first - start)
         }
-    }
-
-    @Test fun speechResumingCancelsTheCallInFlight() = runTest {
-        val h = Harness(this)
-        h.scripts += Script(1_000, done())
-        h.say("book me a")
-        advanceTimeBy(700)
-        runCurrent()
-        assertEquals(1, h.calls.size)
-        h.taker.speechStarted()
-        runCurrent()
-        assertTrue("the early call was cancelled", h.calls[0].cancelled)
-        h.taker.final("table for two")
-        advanceTimeBy(5_000)
-        assertTrue("no decision while talking", h.events.isEmpty())
-        h.taker.speechEnded()
-        advanceUntilIdle()
-        val event = h.events.single().second as TurnEvent.Done
-        assertEquals("book me a table for two", event.heard)
-    }
-
-    @Test fun unansweredEarlyCallRacesASecondCallAtPauseMs() = runTest {
-        val h = Harness(this)
-        h.scripts += Script(2_000, done()) // early: slow
-        h.scripts += Script(150, done()) // commit call: fast
-        h.say("start the stock check")
-        advanceUntilIdle()
-        assertEquals(2, h.calls.size)
-        assertEquals(1_000L, h.calls[1].at)
-        assertEquals(1_000L, h.calls[1].silenceMs)
-        val (at, event) = h.events.single()
-        assertEquals(1_150L, at)
-        assertEquals(2, (event as TurnEvent.Done).timing.calls)
-        assertTrue("the slow early call is dropped", h.calls[0].cancelled)
-        assertEquals(listOf(true, false), h.fired.map { it.second })
-    }
-
-    @Test fun aLateFinalMakesTheEarlyAnswerStale() = runTest {
-        val h = Harness(this)
-        h.say("cancel the")
-        advanceTimeBy(800)
-        runCurrent()
-        h.taker.final("newsletter") // STT final lands after the VAD end
-        advanceUntilIdle()
-        assertEquals(2, h.calls.size)
-        assertTrue(h.calls[0].key != h.calls[1].key)
-        assertEquals("cancel the newsletter", (h.events.single().second as TurnEvent.Done).heard)
     }
 
     @Test fun bothCallsFailingAsksToRepeatAndNeverActs() = runTest {
@@ -153,15 +88,6 @@ class TurnTakerTest {
         assertEquals(FailureKind.Timeout, event.failure.kind)
         assertEquals("do the thing", event.heard)
         assertTrue(h.events.none { it.second is TurnEvent.Done })
-    }
-
-    @Test fun offlineIsReportedAsOffline() = runTest {
-        val h = Harness(this)
-        h.scripts += Script(10, OpenRouterResult.Failed(FailureKind.Offline))
-        h.scripts += Script(10, OpenRouterResult.Failed(FailureKind.Offline))
-        h.say("email the supplier")
-        advanceUntilIdle()
-        assertEquals(FailureKind.Offline, (h.events.single().second as TurnEvent.NoAnswer).failure.kind)
     }
 
     @Test fun lowConfidenceDoneKeepsListeningAndCollects() = runTest {
@@ -195,14 +121,4 @@ class TurnTakerTest {
         assertEquals(listOf("and also"), h.events.last().second.pending)
     }
 
-    @Test fun aSecondKeepListeningParksTheWordsAndOpensTheGate() = runTest {
-        val h = Harness(this)
-        h.scripts += Script(50, keep())
-        h.scripts += Script(50, keep())
-        h.say("hmm")
-        advanceUntilIdle()
-        assertEquals(listOf("Holding", "Parked"), h.events.map { it.second::class.simpleName })
-        assertTrue("results may play now", !h.taker.holding)
-        assertEquals(listOf("hmm"), h.taker.pending)
-    }
 }

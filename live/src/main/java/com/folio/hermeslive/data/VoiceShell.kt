@@ -112,7 +112,7 @@ class VoiceShell(
                 val s = cascadeSettings()
                 val openRouter = openRouters(keys::key)
                 val voice = BillVoice(openRouter.speech, storage.ttsCache(s.ttsCacheBytes), { s.voice }, { s.ttsModel })
-                RenderJob(PhraseRenderer(voice, s.renderConcurrency, telemetry), fingerprint())
+                RenderJob(PhraseRenderer(voice, s.renderConcurrency, telemetry), fingerprint(), warm = { openRouter.warm() })
             },
             prepared = object : VoicePrep.PreparedMarker {
                 override fun get(): String? = if (dirs.store.exists()) storage.store.get(PREPARED_KEY) else null

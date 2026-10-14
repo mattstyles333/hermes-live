@@ -6,12 +6,16 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * Test driver: C1's `TaskBoard` API over the production [TaskTable] rules and the production
  * [TaskRunner] executor on a real [HermesPort], so `TaskBoardTest` keeps proving the wire
- * behaviour (status never submits, `queued: true`, busy-mode fallback, the cap under a race).
+ * behaviour (status never submits, `queued: true`, busy-mode fallback, the cap).
  */
 class TaskBoard(
     scope: CoroutineScope,
@@ -28,6 +32,11 @@ class TaskBoard(
     private val runner = TaskRunner(scope, port, ::post)
     private val resultChannel = Channel<TaskResult>(Channel.UNLIMITED)
     private val requestChannel = Channel<TaskRequest>(Channel.UNLIMITED)
+
+    private val _version = MutableStateFlow(0L)
+
+    /** Bumped after every table change: tests wait on it instead of polling. */
+    val version: StateFlow<Long> = _version.asStateFlow()
 
     val results: Flow<TaskResult> = resultChannel.receiveAsFlow()
     val requests: Flow<TaskRequest> = requestChannel.receiveAsFlow()
@@ -63,7 +72,22 @@ class TaskBoard(
     fun snapshot(id: String): TaskSnapshot? = synchronized(lock) { table.snapshot(id) }
     fun snapshots(): List<TaskSnapshot> = synchronized(lock) { table.snapshots() }
     fun briefs(): List<TaskBrief> = synchronized(lock) { table.briefs(now()) }
-    fun markRead(id: String) = synchronized(lock) { table = table.markRead(id) }
+    fun markRead(id: String) {
+        synchronized(lock) { table = table.markRead(id) }
+        _version.update { it + 1 }
+    }
+
+    /**
+     * Test fence: a [TaskResult] and a [CascadeEvent.TaskStarted] with task id [id] go out on
+     * [results] and [bus], behind everything already sent there. Once a collector has seen both,
+     * it has seen every result and event the board made before this call.
+     */
+    fun fence(id: String) {
+        synchronized(lock) {
+            bus.emit(CascadeEvent.TaskStarted(id))
+            resultChannel.trySend(TaskResult(id, "", "", true))
+        }
+    }
 
     /** One table step; its outputs go out under the lock, so they leave in the order the table made them (as the actor's one loop does). */
     private fun <R> apply(op: (TaskTable) -> TaskStep<R>): R {
@@ -75,6 +99,7 @@ class TaskBoard(
                 step.requests.forEach { requestChannel.trySend(it) }
             }
         }
+        _version.update { it + 1 }
         step.effects.forEach(::run)
         return step.value
     }

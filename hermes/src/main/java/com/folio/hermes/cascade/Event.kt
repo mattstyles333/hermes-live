@@ -141,6 +141,14 @@ sealed interface Event {
      * what the conversation seam read from the store (the actor fills it in; null: not found).
      */
     data class OpenConversation(val conversationId: String, val loaded: StoredConversation? = null) : Event
+
+    /**
+     * Speed (hub change note, test-shape slice 2026-10-14): make the next line of each of [slots]
+     * known now (a slot with no pass under way gets its shuffled pass now) and fetch the lines
+     * that are not cached ahead ([Effect.Prerender]), so the first stock line of a call is a cache
+     * hit even before "Prepare Bill's voice" has finished. Sent by `CascadeCore.start`.
+     */
+    data class PrimeLines(val slots: List<String>) : Event
 }
 
 /** Events handled with no call open: tasks belong to the user and keep running between calls (R-CONV-3). */

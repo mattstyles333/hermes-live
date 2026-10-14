@@ -39,6 +39,11 @@ class CascadeReducer(val env: CascadeEnv) {
         if (!s.started && !event.offCall) return
         when (event) {
             is Event.Start -> start(event)
+            is Event.PrimeLines -> {
+                val lines = event.slots.mapNotNull { primeLine(it) }.distinct()
+                // Offline nothing can be fetched; the lines stay primed for when it can.
+                if (lines.isNotEmpty() && s.connection.online) effects += Effect.Prerender(lines)
+            }
             Event.Stop -> stop()
             Event.SpeechStarted -> {
                 s = s.copy(userSpeaking = true)
@@ -66,7 +71,11 @@ class CascadeReducer(val env: CascadeEnv) {
                 if (!event.pressed) released()
             }
             is Event.OutputLevel -> s = s.copy(bill = s.bill.copy(level = event.level.coerceIn(0f, 1f)))
-            is Event.Network -> network(event.online)
+            is Event.Network -> {
+                // The port's word: a real network change also restarts the retry backoff.
+                s = s.copy(connection = s.connection.copy(portOnline = event.online), outboxRetryDelayMs = 0L)
+                network(event.online)
+            }
             is Event.HermesConnection -> s = s.copy(connection = s.connection.copy(hermesUp = event.up))
             is Event.Say -> say(event.slotId, event.kind)
             is Event.RenderProgressed -> s = s.copy(render = event.progress)
@@ -357,6 +366,11 @@ class CascadeReducer(val env: CascadeEnv) {
     private fun Tx.timer(timer: Timer) {
         when (timer.name) {
             TurnRules.EARLY, TurnRules.COMMIT, TurnRules.RECHECK -> turn(TurnRules.timer(s.turn, timer, s.nowMs, ask))
+            OUTBOX_RETRY -> if (s.outboxRetrySeq == timer.seq) {
+                s = s.copy(outboxRetrySeq = null)
+                // As if the network came back: flush what is held (a new offline failure holds and arms again).
+                if (!s.connection.online && s.connection.portOnline && s.outbox.size > 0) network(true)
+            }
             TICK -> if (s.tickSeq == timer.seq) {
                 val p = ((s.nowMs - s.tickBegan).toFloat() / s.settings.pause).coerceIn(0f, 1f)
                 s = s.copy(pauseProgress = p)
@@ -484,6 +498,7 @@ class CascadeReducer(val env: CascadeEnv) {
                             s = s.copy(connection = s.connection.copy(online = false))
                             emit(CascadeEvent.Offline)
                             play(AppLines.OFFLINE)
+                            armOutboxRetry()
                         }
                         env.conversation.held(this, a.turnId, HeldTurn(a.text, a.speechEndAt, s.wallMs))
                     } else {
@@ -568,6 +583,11 @@ class CascadeReducer(val env: CascadeEnv) {
         emit(CascadeEvent.UserCutIn)
         report("cascade.cut_in", mapOf("slot" to playing.slot, "result" to (cut.interruptedResultTask != null)))
         s = s.copy(bill = s.bill.copy(speaking = false, slot = null))
+        // The user is speaking now (the pipeline confirmed it; its `SpeechStarted` follows and its
+        // `SpeechEnded` ends it). Gate at once: the stopped clip's `PlaybackFinished` may arrive
+        // before `SpeechStarted`, and must not start the next queued piece over the user.
+        s = s.copy(userSpeaking = true)
+        gate()
     }
 
     // ── network and the outbox ──────────────────────────────────────────────────────────────
@@ -622,6 +642,11 @@ class CascadeReducer(val env: CascadeEnv) {
                 if (result.kind != FailureKind.Offline) {
                     report("cascade.outbox", mapOf("event" to "resend_failed", "kind" to result.kind.wire, "size" to s.outbox.size), warn = true)
                     if (s.started) say(AppLines.GAVE_UP, SpeechKind.Reply)
+                } else if (s.connection.online) {
+                    // Offline while the network port says online: no reconnect will come, so retry on a timer.
+                    s = s.copy(connection = s.connection.copy(online = false))
+                    emit(CascadeEvent.Offline)
+                    armOutboxRetry()
                 }
                 endFlush()
             }
@@ -641,6 +666,9 @@ class CascadeReducer(val env: CascadeEnv) {
         /** The outbox stage that says a turn's tasks exist (the new-task handlers mark it). */
         const val NEW_TASK_STAGE = "task"
         const val TICK = "pause.tick"
+
+        /** The outbox retry while turns are held with the network port online ([Tx.armOutboxRetry]). */
+        const val OUTBOX_RETRY = "outbox.retry"
 
         /** The gate a committed turn waits behind until its accurate pass is in (R-STT-2). */
         const val ACCURATE_GATE = "accurate"

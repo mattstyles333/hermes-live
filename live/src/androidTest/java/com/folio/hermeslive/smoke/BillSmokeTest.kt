@@ -23,6 +23,7 @@ import com.folio.hermeslive.data.VoiceShell
 import com.folio.hermeslive.graph
 import com.folio.hermeslive.hooks.BuildHooks
 import com.folio.hermeslive.hooks.CapturingAudioOut
+import com.folio.hermeslive.hooks.NetTimings
 import com.folio.hermeslive.service.CallService
 import com.folio.hermeslive.stt.CorpusAudioSource
 import java.io.ByteArrayOutputStream
@@ -82,6 +83,7 @@ class BillSmokeTest {
         val key = if (dry) DRY_KEY else args.getString("openrouterKey")
         assumeTrue("openrouterKey not given", !key.isNullOrBlank())
         if (dry) BuildHooks.hosts = mapOf("openrouter.ai" to "127.0.0.1")
+        val net = NetTimings().also { BuildHooks.netEvents = it }
         val say = args.getString("say") ?: "Check how many Kestrel aviators we have in stock."
         val g = context.graph
         val shell = VoiceShell.of(context)
@@ -188,6 +190,12 @@ class BillSmokeTest {
                 .put("task_started_to_first_tool_ms", at { it is CascadeEvent.ToolStarted && it.id == taskId }?.let { it - started })
                 .put("task_finished_to_result_audio_ms", played.firstOrNull { it.startedAtMs >= finished }?.startedAtMs?.minus(finished))
                 .put("task_finished_to_result_spoken_ms", at { it is CascadeEvent.ResultSpoken && it.id == taskId }!! - finished)
+            // Where OpenRouter's time went (host and path only): Jev calls around the turn, and the first speech fetch after it.
+            val jev = net.calls(OPENROUTER, "/systemone")
+            result.put("jev_calls", org.json.JSONArray(jev.map { row(it, speechEnd) }))
+            net.calls(OPENROUTER, "/audio/speech").firstOrNull { it.startMs >= speechEnd }?.let { result.put("first_tts_after_speech_end", row(it, speechEnd)) }
+            result.put("tts_fetches_during_call", net.calls(OPENROUTER, "/audio/speech").count { it.startMs >= t0 })
+            net.calls(OPENROUTER, "/key").lastOrNull()?.let { result.put("warm", row(it, speechEnd)) }
             main { g.calls.end() }
             waitFor("call ended", 10_000) { !g.calls.state.value.inCall }
             scenario.close()
@@ -220,7 +228,13 @@ class BillSmokeTest {
         shell.dirs.rotations.delete()
     }
 
+    private fun row(r: NetTimings.Row, speechEnd: Long) = JSONObject()
+        .put("at_ms_from_speech_end", r.startMs - speechEnd).put("total_ms", r.totalMs).put("ttfb_ms", r.ttfbMs)
+        .put("dns_ms", r.dnsMs).put("connect_ms", r.connectMs).put("tls_ms", r.tlsMs).put("protocol", r.protocol).put("reused", r.reused)
+
     private companion object {
+        const val OPENROUTER = "openrouter.ai"
+
         /** Shaped like a key, valid nowhere; used only with `openrouter.ai` unreachable. */
         const val DRY_KEY = "sk-or-v1-dryrun000000000000000000000000000000000000000000000000000000"
     }

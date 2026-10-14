@@ -85,7 +85,7 @@ class GatewaySessionRecoveryTest {
     @Test fun anEndedTurnGivesItsReplyAndThePrompts() = test {
         val stored = port.create("t1", "job")!!
         val flow = scope.async { port.submit("t1", "check RB2140", "", queued = false, interruptFirst = false).toList() }
-        eventually(what = "running") { sessions.session(stored).running }
+        eventually(fake.activity, what = "running") { sessions.session(stored).running }
         sessions.complete(stored, "Fourteen in stock.")
         flow.await()
         val probe = recovery.probe("t1", stored)
@@ -107,13 +107,13 @@ class GatewaySessionRecoveryTest {
     @Test fun aRunningTurnIsFollowedToItsEndAndAQueuedPromptCounts() = test {
         val stored = port.create("t1", "job")!!
         scope.async { port.submit("t1", "check RB2140", "", queued = false, interruptFirst = false).toList() }
-        eventually(what = "running") { sessions.session(stored).running }
+        eventually(fake.activity, what = "running") { sessions.session(stored).running }
         sessions.session(stored).queued = "and the Leeds store"
         val probe = recovery.probe("t1", stored) as SessionProbe.Running
         assertTrue("check RB2140" in probe.prompts!!)
         assertTrue("held, not yet a message", "and the Leeds store" in probe.prompts!!)
         val followed = async { probe.updates.toList() }
-        eventually(what = "follow subscribed") { sessions.resumes.size >= 2 }
+        eventually(fake.activity, what = "follow subscribed") { sessions.resumes.size >= 2 }
         sessions.complete(stored, "Fourteen in stock.")
         assertEquals(TurnUpdate.Completed("Fourteen in stock.", TurnStatus.Complete, null), followed.await().last())
     }
@@ -121,7 +121,7 @@ class GatewaySessionRecoveryTest {
     @Test fun aTurnThatEndsBetweenProbeAndFollowIsReadFromTheTranscript() = test {
         val stored = port.create("t1", "job")!!
         scope.async { port.submit("t1", "check RB2140", "", queued = false, interruptFirst = false).toList() }
-        eventually(what = "running") { sessions.session(stored).running }
+        eventually(fake.activity, what = "running") { sessions.session(stored).running }
         val probe = recovery.probe("t1", stored) as SessionProbe.Running
         // It ends before anyone follows: no event is waited for, the transcript has the reply.
         sessions.session(stored).apply {

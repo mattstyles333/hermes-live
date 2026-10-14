@@ -66,6 +66,8 @@ class CascadeActor(
     private val onAppEffect: (Effect) -> Unit = {},
     private val gate: EffectGate = EffectGate.Open,
     seed: Long = Random.nextLong(),
+    /** Tests: each event as reduced, with the state before it (additive; default nothing). */
+    private val trace: (Event, State) -> Unit = { _, _ -> },
 ) {
     private val reducer = CascadeReducer(env)
     private val actorJob = SupervisorJob(scope.coroutineContext[Job])
@@ -197,6 +199,7 @@ class CascadeActor(
             input is Event.OpenConversation && input.loaded == null -> input.copy(loaded = env.conversation.load(store, input.conversationId))
             else -> input
         }
+        trace(event, before)
         val (after, effects) = reducer.reduce(before, event)
         _state.value = after
         _ui.value = UiProjection.project(after)
@@ -263,6 +266,7 @@ class CascadeActor(
             is Effect.CancelWriter -> cancel("writer:${effect.seq}")
             is Effect.Write -> launch("plan:${effect.seq}") { post(Event.WriterWrote(effect.seq, openRouter.write(effect.system, effect.prompt))) }
             is Effect.FetchClip -> player.fetch(effect)
+            is Effect.Prerender -> player.prerender(effect.lines)
             is Effect.DropClips -> player.drop(effect)
             is Effect.Play -> player.play(effect.piece)
             Effect.StopPlayback -> player.stopPlayback()

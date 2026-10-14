@@ -44,6 +44,8 @@ class CascadeApp(
     private val hermes: () -> Pair<HermesConfig, AccessTokenProvider>?,
     private val onEndCall: () -> Unit,
     private val onHaptic: () -> Unit,
+    /** The signed-in user name, for [CascadeSignOut.ownedBy] (with the server). */
+    private val user: () -> String? = { null },
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val running = MutableStateFlow(0)
@@ -62,6 +64,8 @@ class CascadeApp(
     private fun build(env: CascadeEnvironment): CascadeRuntime {
         val (config, tokens) = hermes() ?: return CascadeRuntime.Empty
         val shell = VoiceShell.of(context)
+        // Another account's held memos and session ids must never reach this server.
+        CascadeSignOut.ownedBy(shell, config.endpoint.toString(), user())
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val settings = { env.settings().copy(accuratePass = true) }
         val gateway = HermesGateway(config, tokens, client, scope)

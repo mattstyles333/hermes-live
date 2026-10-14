@@ -47,7 +47,7 @@ fun clipOf(ms: Long): AudioClip {
 class FakeOpenRouter(private val clock: Clock) : OpenRouterPort {
     class JevScript(val delayMs: Long, val result: OpenRouterResult<Map<String, JevAnswer>>)
 
-    class JevCall(val at: Long, val state: JsonObject, val questions: Set<String>) {
+    class JevCall(val at: Long, val state: JsonObject, val questions: Set<String>, val timeoutMs: Long) {
         var cancelled = false
         var answeredAt: Long? = null
     }
@@ -74,7 +74,7 @@ class FakeOpenRouter(private val clock: Clock) : OpenRouterPort {
     val clips = mutableListOf<String>()
 
     override suspend fun jev(state: JsonObject, questions: Map<String, JevQuestion>, timeoutMs: Long): OpenRouterResult<Map<String, JevAnswer>> {
-        val call = JevCall(clock.nowMs(), state, questions.keys)
+        val call = JevCall(clock.nowMs(), state, questions.keys, timeoutMs)
         jevCalls += call
         val script = jevScripts.removeFirstOrNull() ?: jevDefault
         try {

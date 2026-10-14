@@ -11,7 +11,7 @@ import com.folio.hermeslive.data.KeyCheck
 import com.folio.hermeslive.data.KeyStatus
 import com.folio.hermeslive.data.LiveSettings
 import com.folio.hermeslive.data.VoiceEngine
-import com.folio.hermeslive.lab.SttLabActivity
+import com.folio.hermeslive.probe.ProbeActivity
 import com.folio.hermeslive.probe.ProbeHolderService
 import com.folio.hermeslive.probe.ProbeTargetService
 import org.json.JSONObject
@@ -44,7 +44,7 @@ class OffCallBackgroundStartTest {
         shell("pm grant $pkg ${Manifest.permission.RECORD_AUDIO}")
         shell("pm grant $pkg ${Manifest.permission.POST_NOTIFICATIONS}")
         shell("input keyevent KEYCODE_WAKEUP")
-        val scenario = ActivityScenario.launch(SttLabActivity::class.java)
+        val scenario = ActivityScenario.launch(ProbeActivity::class.java)
         scenario.onActivity { ContextCompat.startForegroundService(it, Intent(it, ProbeHolderService::class.java)) }
         Thread.sleep(1_000)
         scenario.close()

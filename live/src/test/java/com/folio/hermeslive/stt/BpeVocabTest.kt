@@ -1,4 +1,4 @@
-package com.folio.hermeslive.lab
+package com.folio.hermeslive.stt
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows

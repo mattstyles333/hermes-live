@@ -38,6 +38,8 @@ class OpenRouter(
     internal val http: OkHttpClient = client.newBuilder()
         .connectTimeout(config.connectTimeoutMs, TimeUnit.MILLISECONDS)
         .readTimeout(config.streamReadTimeoutMs, TimeUnit.MILLISECONDS)
+        // HTTP/2 pings keep a warm connection alive through a call and drop a dead one early.
+        .pingInterval(config.pingIntervalMs, TimeUnit.MILLISECONDS)
         .build()
 
     val jev: SystemOneClient = SystemOneClient(this)
@@ -58,6 +60,17 @@ class OpenRouter(
                 else -> OpenRouterResult.Failed(FailureKind.Http, response.code)
             }
         }
+    }
+
+    /**
+     * Open (or keep open) the connection to OpenRouter ahead of a call, so the first Jev call does
+     * not pay DNS, TCP and TLS (measured on the emulator: about 550 ms). One small `GET /key`;
+     * its answer is ignored. No key: no request, false.
+     */
+    suspend fun warm(): Boolean {
+        val k = currentKey() ?: return false
+        val request = builder("/key", k).get().build()
+        return call("warm", request, config.connectTimeoutMs + config.jevTimeoutMs, readsErrors = true) { OpenRouterResult.Ok(true) } is OpenRouterResult.Ok
     }
 
     internal fun currentKey(): String? = key()?.trim()?.takeIf { it.isNotEmpty() }

@@ -18,6 +18,8 @@ data class OpenRouterConfig(
     val ttsModel: String = "elevenlabs/eleven-v4-turbo",
     val voice: String = "bill",
     val connectTimeoutMs: Long = 4_000L,
+    /** HTTP/2 ping interval on OpenRouter connections (keeps a warmed connection alive during a call). */
+    val pingIntervalMs: Long = 15_000L,
     /** One Jev call, end to end (contract: 2.5 s read timeout). */
     val jevTimeoutMs: Long = 2_500L,
     /**

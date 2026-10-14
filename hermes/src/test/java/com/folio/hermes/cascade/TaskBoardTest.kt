@@ -4,21 +4,26 @@ import com.folio.hermes.FakeHermesServer
 import com.folio.hermes.FakeTokens
 import com.folio.hermes.HermesGateway
 import com.folio.hermes.bool
+import com.folio.hermes.fence
 import com.folio.hermes.string
 import com.folio.hermes.cascade.ports.GatewayHermesPort
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -58,6 +63,10 @@ internal class BoardRig(maxTasks: Int = 4, busy: String? = "interrupt") : AutoCl
         port = GatewayHermesPort(gateway, config),
     )
 
+    private val rigVersion = MutableStateFlow(0L)
+    private val fencesSeen: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val fenceCount = AtomicInteger()
+
     init {
         fake.responders["session.create"] = { s, id, _ ->
             socket = s
@@ -74,10 +83,45 @@ internal class BoardRig(maxTasks: Int = 4, busy: String? = "interrupt") : AutoCl
             val mode = this.busy
             if (mode == null) s.error(id, -32601, "unknown method") else s.reply(id, """{"key":"busy","value":"$mode"}""")
         }
-        scope.launch { board.results.collect { results += it } }
-        scope.launch { board.requests.collect { requests += it } }
+        scope.launch {
+            board.results.collect {
+                if (it.taskId.startsWith(FENCE)) fencesSeen += "results:${it.taskId}" else results += it
+                changed()
+            }
+        }
+        scope.launch {
+            board.requests.collect {
+                requests += it
+                changed()
+            }
+        }
         // Subscribed before the rig is used: the bus has no replay, so a late collector misses the first events.
-        scope.launch(start = CoroutineStart.UNDISPATCHED) { board.bus.events.collect { events += it } }
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            board.bus.events.collect {
+                if (it is CascadeEvent.TaskStarted && it.id.startsWith(FENCE)) fencesSeen += "events:${it.id}" else events += it
+                changed()
+            }
+        }
+    }
+
+    private fun changed() = rigVersion.update { it + 1 }
+
+    /** Emits on every change a test can wait for: the board's table, what the rig collected, frames the fake handled. */
+    val changes: Flow<Long> = merge(board.version, rigVersion, fake.activity)
+
+    suspend fun eventually(what: String, check: () -> Boolean) = eventually(changes, what = what, check = check)
+
+    /**
+     * Deterministic "nothing more happened" point, instead of a sleep. A gateway round trip
+     * ([fence]): every frame the client sent before it has reached the fake, and every frame the
+     * fake sent before its reply has been read. Then a marker through the board's results and bus:
+     * once the rig has collected both, it has every result and event the board made before them.
+     */
+    suspend fun fence() {
+        gateway.fence()
+        val id = "$FENCE${fenceCount.incrementAndGet()}"
+        board.fence(id)
+        eventually("fence $id") { "results:$id" in fencesSeen && "events:$id" in fencesSeen }
     }
 
     fun frames(method: String): List<JsonObject> = sockets().flatMap { it.frames }.filter { it.string("method") == method }
@@ -98,14 +142,22 @@ internal class BoardRig(maxTasks: Int = 4, busy: String? = "interrupt") : AutoCl
         scope.cancel()
         fake.close()
     }
+
+    private companion object {
+        const val FENCE = "fence-"
+    }
 }
 
-internal suspend fun eventually(timeoutMs: Long = 15_000, what: String = "condition", check: () -> Boolean) {
-    val deadline = System.currentTimeMillis() + timeoutMs
-    while (!check()) {
-        if (System.currentTimeMillis() > deadline) throw AssertionError("timed out waiting for $what")
-        delay(10)
-    }
+/**
+ * Waits until [check] holds, re-checking it each time [changes] emits (no polling). [changes]
+ * must emit after every state change [check] reads; a [kotlinx.coroutines.flow.StateFlow]
+ * counter bumped after the change does, and its current value makes the first check immediate.
+ */
+internal suspend fun eventually(changes: Flow<*>, timeoutMs: Long = 15_000, what: String = "condition", check: () -> Boolean) {
+    withTimeoutOrNull(timeoutMs) {
+        changes.first { check() }
+        true
+    } ?: throw AssertionError("timed out waiting for $what")
 }
 
 class TaskBoardTest {
@@ -126,7 +178,7 @@ class TaskBoardTest {
     private suspend fun startRunning(label: String = "stock check"): TaskSnapshot {
         val r = rig.board.start("Check RB2140 stock.", label, "User: check stock")
         val task = (r as StartResult.Started).task
-        eventually(what = "task running") { rig.board.snapshot(task.id)!!.events.any { it is TaskEvent.Started } }
+        rig.eventually("task running") { rig.board.snapshot(task.id)!!.events.any { it is TaskEvent.Started } }
         return task
     }
 
@@ -140,7 +192,7 @@ class TaskBoardTest {
         assertEquals("Voice: stock check", create.string("title"))
         assertEquals(TaskState.Running, rig.board.snapshot(task.id)!!.state)
         // The bus reaches rig.events through an async collector.
-        eventually(what = "started event") { rig.events.contains(CascadeEvent.TaskStarted(task.id)) }
+        rig.eventually("started event") { rig.events.contains(CascadeEvent.TaskStarted(task.id)) }
     }
 
     @Test fun statusNeverSubmits() = test {
@@ -148,13 +200,13 @@ class TaskBoardTest {
         val sid = "rt1"
         rig.socket!!.event("tool.start", sid, """{"tool_id":"c1","name":"web_search"}""")
         rig.socket!!.event("message.delta", sid, """{"text":"Looking at the warehouse"}""")
-        eventually(what = "tool logged") { rig.board.snapshot(task.id)!!.currentTool == "web search" }
+        rig.eventually("tool logged") { rig.board.snapshot(task.id)!!.currentTool == "web search" }
         repeat(20) {
             rig.board.snapshot(task.id)
             rig.board.snapshots()
             rig.board.briefs()
         }
-        delay(300)
+        rig.fence()
         assertEquals(1, rig.frames("prompt.submit").size)
         assertEquals(0, rig.frames("session.interrupt").size)
         val snap = rig.board.snapshot(task.id)!!
@@ -167,7 +219,7 @@ class TaskBoardTest {
         val task = startRunning()
         rig.onSubmit = { s, id, _ -> s.reply(id, """{"status":"queued"}""") }
         assertEquals(UpdateResult.Sent("queue"), rig.board.update(task.id, "also check RB3025", UpdateMode.Queue, ""))
-        eventually(what = "second submit") { rig.frames("prompt.submit").size == 2 }
+        rig.eventually("second submit") { rig.frames("prompt.submit").size == 2 }
         val params = rig.frames("prompt.submit")[1]["params"] as JsonObject
         assertEquals(true, params.bool("queued"))
         assertEquals(0, rig.frames("session.interrupt").size)
@@ -195,14 +247,14 @@ class TaskBoardTest {
             s.event("message.complete", sid, """{"text":"first answer"}""")
         }
         rig.board.update(task.id, "and the blue ones", UpdateMode.Queue, "")
-        eventually(what = "first result") { rig.results.size == 1 }
+        rig.eventually("first result") { rig.results.size == 1 }
         rig.socket!!.event("message.start", "rt1")
         rig.socket!!.event("message.complete", "rt1", """{"text":"second answer"}""")
-        eventually(what = "two results") { rig.results.size == 2 }
+        rig.eventually("two results") { rig.results.size == 2 }
         assertEquals(listOf("first answer", "second answer"), rig.results.map { it.text })
-        eventually(what = "done") { rig.board.snapshot(task.id)!!.state == TaskState.Done }
-        eventually(what = "finished event") { rig.events.count { it == CascadeEvent.TaskFinished(task.id, true) } == 1 }
-        delay(100)
+        rig.eventually("done") { rig.board.snapshot(task.id)!!.state == TaskState.Done }
+        rig.eventually("finished event") { rig.events.count { it == CascadeEvent.TaskFinished(task.id, true) } == 1 }
+        rig.fence()
         assertEquals(1, rig.events.count { it == CascadeEvent.TaskFinished(task.id, true) })
         assertEquals(0, rig.board.snapshot(task.id)!!.pendingUpdates)
     }
@@ -215,8 +267,8 @@ class TaskBoardTest {
             s.event("message.complete", sid, """{"text":"redirected answer"}""")
         }
         assertEquals(UpdateResult.Sent("redirect"), rig.board.update(task.id, "actually only the blue ones", UpdateMode.Redirect, ""))
-        eventually(what = "result") { rig.results.isNotEmpty() }
-        delay(200)
+        rig.eventually("result") { rig.results.isNotEmpty() }
+        rig.fence()
         assertEquals(listOf("redirected answer"), rig.results.map { it.text })
         assertNull("redirect follows the server's busy mode", (rig.frames("prompt.submit")[1]["params"] as JsonObject)["queued"])
         assertEquals(0, rig.frames("session.interrupt").size)
@@ -233,11 +285,11 @@ class TaskBoardTest {
             s.event("message.complete", sid, """{"text":"new answer"}""")
         }
         assertEquals(UpdateResult.Sent("interrupt_first"), rig.board.update(task.id, "stop, do this instead", UpdateMode.Redirect, ""))
-        eventually(what = "result") { rig.results.isNotEmpty() }
-        delay(200)
+        rig.eventually("result") { rig.results.isNotEmpty() }
+        rig.eventually("done") { rig.board.snapshot(task.id)!!.state == TaskState.Done }
+        rig.fence()
         assertEquals(1, rig.frames("session.interrupt").size)
         assertEquals("the interrupted turn is not a result", listOf("new answer"), rig.results.map { it.text })
-        eventually(what = "done") { rig.board.snapshot(task.id)!!.state == TaskState.Done }
     }
 
     @Test fun unknownBusyModeFallsBackToInterruptFirst() = test {
@@ -249,48 +301,44 @@ class TaskBoardTest {
     @Test fun cancelInterruptsAndTheInterruptedEndIsNotAResult() = test {
         val task = startRunning()
         assertEquals(CancelResult.Cancelled, rig.board.cancel(task.id))
-        eventually(what = "interrupt sent") { rig.frames("session.interrupt").size == 1 }
-        delay(300)
+        rig.eventually("interrupt sent") { rig.frames("session.interrupt").size == 1 }
+        rig.eventually("cancelled event") { rig.events.contains(CascadeEvent.TaskCancelled(task.id)) }
+        rig.fence()
         assertTrue(rig.results.isEmpty())
         assertEquals(TaskState.Cancelled, rig.board.snapshot(task.id)!!.state)
         assertEquals(TaskUiStatus.Cancelled, rig.board.snapshot(task.id)!!.toUi().status)
-        eventually(what = "cancelled event") { rig.events.contains(CascadeEvent.TaskCancelled(task.id)) }
         assertEquals(CancelResult.AlreadyFinished, rig.board.cancel(task.id))
         assertEquals(CancelResult.NotFound, rig.board.cancel("t99"))
     }
 
-    @Test fun theCapHoldsWhenTwoStartsRace() = test {
+    /*
+     * Was `theCapHoldsWhenTwoStartsRace` (two threads racing `start`): that raced the driver's own
+     * lock, not the production rules, and was the §14 item 20 flake. The cap itself is TaskTable's
+     * rule; here, one thread: the start at the cap is refused and sends nothing.
+     */
+    @Test fun aStartAtTheCapIsRefusedAndSendsNothing() = test {
         rig.max = 2
         startRunning("first")
-        val latch = CountDownLatch(1)
-        val outcomes = CopyOnWriteArrayList<StartResult>()
-        val threads = List(2) { i ->
-            Thread {
-                latch.await()
-                outcomes += rig.board.start("job $i", "job $i", "")
-            }.apply { start() }
-        }
-        latch.countDown()
-        threads.forEach { it.join() }
-        assertEquals(1, outcomes.count { it is StartResult.Started })
-        assertEquals(StartResult.AtCap(2), outcomes.single { it is StartResult.AtCap })
+        assertTrue(rig.board.start("job 1", "job 1", "") is StartResult.Started)
         assertTrue(rig.board.isFull)
-        eventually(what = "two sessions") { rig.created.get() == 2 }
-        delay(200)
+        assertEquals(StartResult.AtCap(2), rig.board.start("job 2", "job 2", ""))
+        rig.eventually("two sessions") { rig.created.get() == 2 }
+        rig.fence()
         assertEquals(2, rig.created.get())
+        assertEquals(2, rig.board.snapshots().size)
     }
 
     @Test fun aResultIsKeptUnreadUntilRead() = test {
         val task = startRunning()
         rig.complete("rt1", "RB2140: 14 in stock")
-        eventually(what = "result") { rig.results.size == 1 }
+        rig.eventually("result") { rig.results.size == 1 }
         val snap = rig.board.snapshot(task.id)!!
         assertEquals("RB2140: 14 in stock", snap.result)
         assertTrue(snap.unread)
         rig.board.markRead(task.id)
         assertFalse(rig.board.snapshot(task.id)!!.unread)
         // The result goes out as the turn completes; the task turns Done when its flow ends, a moment later.
-        eventually(what = "done") { rig.board.snapshot(task.id)!!.toUi().status == TaskUiStatus.Done }
+        rig.eventually("done") { rig.board.snapshot(task.id)!!.toUi().status == TaskUiStatus.Done }
     }
 
     @Test fun approvalsReachTheCardWithTheLabel() = test {
@@ -298,7 +346,7 @@ class TaskBoardTest {
         rig.socket!!.send(
             """{"jsonrpc":"2.0","id":"srq-1","method":"approval","params":{"session_id":"rt1","request_id":"r1","command":"send email","description":"Send","choices":["once","deny"]}}""",
         )
-        eventually(what = "request") { rig.requests.isNotEmpty() }
+        rig.eventually("request") { rig.requests.isNotEmpty() }
         assertEquals("price email", rig.requests.single().label)
         assertEquals(TaskUiStatus.Waiting, rig.board.snapshot(task.id)!!.toUi().status)
     }

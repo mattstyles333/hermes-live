@@ -63,6 +63,19 @@ class Tx(var s: State, val env: CascadeEnv) {
         return line
     }
 
+    /** The line [slotId] plays next, without playing it: a slot with no pass under way gets its pass now (saved). */
+    fun primeLine(slotId: String): String? {
+        val lines = env.bank[slotId]?.lines?.takeIf { it.isNotEmpty() } ?: return null
+        val current = s.rotation.rotations[slotId]
+        val random = Random(s.rotation.seed)
+        val primed = Rotations.prime(lines, current, random)
+        if (primed != current) {
+            s = s.copy(rotation = RotationState(s.rotation.rotations + (slotId to primed), random.nextLong()))
+            effects += Effect.SaveRotation(slotId, primed)
+        }
+        return primed.order[primed.cursor]
+    }
+
     /** Play a slot on its own utterance (app events, approvals, fallbacks). Returns the line. */
     fun say(slotId: String, kind: SpeechKind = SpeechKind.Notice): String? {
         val line = nextLine(slotId) ?: return null
@@ -228,7 +241,20 @@ class Tx(var s: State, val env: CascadeEnv) {
     fun endFlush() {
         val f = s.flush ?: return
         s = s.copy(flush = null)
+        if (s.outbox.size == 0) s = s.copy(outboxRetryDelayMs = 0L)
         if (f.sent > 0) report("cascade.outbox", mapOf("event" to "sent", "count" to f.sent, "size" to s.outbox.size))
+    }
+
+    /**
+     * A request failed as offline but the network port says online: no network change will come
+     * to flush the outbox, so retry it after `offlineRetryMs` (the reducer's [CascadeReducer.OUTBOX_RETRY]).
+     */
+    fun armOutboxRetry() {
+        if (!s.connection.portOnline || s.outboxRetrySeq != null) return
+        val seq = nextSeq()
+        val wait = if (s.outboxRetryDelayMs <= 0L) s.settings.offlineRetryMs else minOf(s.outboxRetryDelayMs * 2, s.settings.offlineRetryMaxMs)
+        s = s.copy(outboxRetrySeq = seq, outboxRetryDelayMs = wait)
+        effects += Effect.StartTimer(Timer(CascadeReducer.OUTBOX_RETRY, seq), wait)
     }
 
     /** Hold a turn for the network (C1 `holdOffline`): the first hold while online says `error.offline`. */
@@ -240,6 +266,7 @@ class Tx(var s: State, val env: CascadeEnv) {
             s = s.copy(connection = s.connection.copy(online = false))
             emit(CascadeEvent.Offline)
             say(AppLines.OFFLINE, SpeechKind.Reply)
+            armOutboxRetry()
         }
         report("cascade.outbox", mapOf("event" to "held", "size" to s.outbox.size))
         env.conversation.held(this, turnId, turn)

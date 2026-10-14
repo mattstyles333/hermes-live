@@ -1,17 +1,23 @@
 package com.folio.hermes.cascade
 
+import com.folio.hermes.openrouter.FAKE_KEY
+import com.folio.hermes.openrouter.OpenRouter
+import com.folio.hermes.openrouter.OpenRouterConfig
 import com.folio.hermes.openrouter.OpenRouterResult
 import com.folio.hermes.openrouter.SpeechFormat
-import com.folio.hermes.openrouter.openRouter
+import com.folio.hermes.telemetry.TelemetrySink
 import java.nio.file.Files
+import java.util.concurrent.CyclicBarrier
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
-import mockwebserver3.Dispatcher
-import mockwebserver3.MockResponse
-import mockwebserver3.MockWebServer
-import mockwebserver3.RecordedRequest
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
-import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,43 +26,51 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** A fake `/audio/speech`: 24 kHz PCM, 10 bytes per character; counts requests and peak concurrency. */
-internal class FakeTts {
-    val server = MockWebServer()
+/**
+ * A fake `/audio/speech` in-process (an OkHttp interceptor: no socket, no sleep): 24 kHz PCM, 10
+ * bytes per character; counts requests and peak concurrency. With [holdFirst] = n, the first n
+ * requests wait for each other (a barrier) before answering, so a renderer allowed n at a time is
+ * seen with exactly n in flight, and an (n+1)th arriving meanwhile raises [peak].
+ */
+internal class FakeTts : Interceptor {
     val requests = AtomicInteger()
     val inFlight = AtomicInteger()
     val peak = AtomicInteger()
     @Volatile var failText: String? = null
-    @Volatile var delayMs = 0L
+    @Volatile var holdFirst = 0
+    private val barrier by lazy { CyclicBarrier(holdFirst) }
 
-    init {
-        server.dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse {
-                requests.incrementAndGet()
-                val now = inFlight.incrementAndGet()
-                peak.accumulateAndGet(now) { a, b -> maxOf(a, b) }
-                try {
-                    if (delayMs > 0) Thread.sleep(delayMs)
-                    val input = Regex("\"input\":\"([^\"]*)\"").find(request.body!!.utf8())?.groupValues?.get(1).orEmpty()
-                    if (input == failText) return MockResponse.Builder().code(500).body("{}").build()
-                    return MockResponse.Builder().addHeader("Content-Type", "audio/pcm;rate=24000;channels=1")
-                        .body(Buffer().write(ByteArray(input.length * 10))).build()
-                } finally {
-                    inFlight.decrementAndGet()
-                }
-            }
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val n = requests.incrementAndGet()
+        val now = inFlight.incrementAndGet()
+        peak.accumulateAndGet(now) { a, b -> maxOf(a, b) }
+        try {
+            // Bounded only as a safety net: the barrier trips as soon as holdFirst requests are in.
+            if (n <= holdFirst) barrier.await(10, TimeUnit.SECONDS)
+            val body = Buffer().also { request.body!!.writeTo(it) }.readUtf8()
+            val input = Regex("\"input\":\"([^\"]*)\"").find(body)?.groupValues?.get(1).orEmpty()
+            val builder = Response.Builder().request(request).protocol(Protocol.HTTP_2).message("")
+            if (input == failText) return builder.code(500).body("{}".toResponseBody("application/json".toMediaType())).build()
+            return builder.code(200).body(ByteArray(input.length * 10).toResponseBody("audio/pcm;rate=24000;channels=1".toMediaType())).build()
+        } finally {
+            inFlight.decrementAndGet()
         }
-        server.start()
     }
 
+    private val client = OkHttpClient.Builder().addInterceptor(this).build()
+
+    fun openRouter(): OpenRouter = OpenRouter(
+        OpenRouterConfig(baseUrl = "https://openrouter.test/api/v1", retryBackoffMs = 0, speechTimeoutMs = 15_000),
+        key = { FAKE_KEY }, client = client, telemetry = TelemetrySink.None,
+    )
+
     fun voice(cache: TtsCache = TtsCache(MemoryClipStore()), voice: String = "bill", model: String = "elevenlabs/eleven-v4-turbo"): BillVoice =
-        BillVoice(server.openRouter().speech, cache, { voice }, { model })
+        BillVoice(openRouter().speech, cache, { voice }, { model })
 }
 
 class AudioCacheTest {
     private val tts = FakeTts()
-
-    @After fun tearDown() = tts.server.close()
 
     private fun clip(bytes: Int) = AudioClip(ByteArray(bytes) { it.toByte() }, SpeechFormat.Pcm())
 
@@ -108,11 +122,11 @@ class AudioCacheTest {
     @Test fun rendererFetchesOnlyChangedLinesFourAtATime() = runBlocking {
         val bank = PhraseBank.load()
         val cache = TtsCache(MemoryClipStore())
-        tts.delayMs = 20
+        tts.holdFirst = 4
         val first = PhraseRenderer(tts.voice(cache), telemetry = com.folio.hermes.telemetry.TelemetrySink.None).render(bank)
         assertEquals(RenderProgress(total = 285, done = 285, cached = 0, failed = 0, finished = true), first)
         assertEquals(285, tts.requests.get())
-        assertTrue("at most 4 at a time, saw ${tts.peak.get()}", tts.peak.get() <= 4)
+        assertEquals("4 at a time, never more", 4, tts.peak.get())
 
         // The next version changes one line and adds one slot: only those two lines are fetched.
         val slots = bank.slots.map { if (it.id == "ack.do") it.copy(lines = it.lines.dropLast(1) + "Righto.") else it } +
@@ -124,7 +138,6 @@ class AudioCacheTest {
         assertEquals(286, second.total)
 
         // A new voice re-renders everything (new keys).
-        tts.delayMs = 0
         PhraseRenderer(tts.voice(cache, voice = "other"), telemetry = com.folio.hermes.telemetry.TelemetrySink.None).render(v4)
         assertEquals(287 + 286, tts.requests.get())
     }

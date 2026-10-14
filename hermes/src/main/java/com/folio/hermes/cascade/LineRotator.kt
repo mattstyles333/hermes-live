@@ -83,6 +83,16 @@ object Rotations {
         return line to Rotation(r.order, r.cursor + 1, line)
     }
 
+    /**
+     * [rotation] with a pass under way: unchanged if it has a line left for [lines], else the pass
+     * [next] would shuffle (so `next` then plays its first line). The next line is then known
+     * ahead, whatever other slots play first (`Event.PrimeLines`).
+     */
+    fun prime(lines: List<String>, rotation: Rotation?, random: Random): Rotation {
+        val r = rotation?.takeIf { it.order.sorted() == lines.sorted() } ?: return Rotation(shuffled(lines, null, random), 0, null)
+        return if (r.cursor >= r.order.size) Rotation(shuffled(lines, r.last, random), 0, r.last) else r
+    }
+
     private fun shuffled(lines: List<String>, notFirst: String?, random: Random): List<String> {
         val order = lines.shuffled(random).toMutableList()
         if (notFirst != null && order.size > 1 && order[0] == notFirst) {

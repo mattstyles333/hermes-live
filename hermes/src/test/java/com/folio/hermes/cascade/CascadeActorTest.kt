@@ -12,6 +12,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -34,6 +35,9 @@ class CascadeActorTest {
         val audio = FakeAudioOut(clock)
         val events = mutableListOf<Pair<Long, CascadeEvent>>()
         val ended = mutableListOf<Boolean>()
+
+        /** Retention is checked against the virtual wall clock. */
+        val decisions = DecisionLog(MemoryDecisionStore(), now = clock::wallMs)
         val actor = CascadeActor(
             scope = runScope,
             env = CascadeEnv(bank),
@@ -42,6 +46,7 @@ class CascadeActorTest {
             hermes = hermes,
             audio = audio,
             clock = clock,
+            decisions = decisions,
             telemetry = TelemetrySink.None,
             onEndCall = { ended += it },
             seed = 7,
@@ -62,6 +67,9 @@ class CascadeActorTest {
 
         fun at(event: CascadeEvent): Long = events.first { it.second == event }.first
 
+        /** The decision logged for a committed turn. */
+        fun done(): DecisionRecord = decisions.records().single { it.outcome == "done" }
+
         override fun close() = job.cancel()
     }
 
@@ -73,9 +81,19 @@ class CascadeActorTest {
         advanceUntilIdle()
         val call = rig.openRouter.jevCalls.single()
         assertEquals(500L, call.at)
+        assertEquals(500L, call.state["silence_ms"]!!.jsonPrimitive.long)
+        assertEquals(2_500L, call.timeoutMs)
         assertEquals(600L, call.answeredAt)
         assertEquals("committed at pause_ms, not when Jev answered", 1_000L, rig.at(CascadeEvent.TurnCommitted("u1")))
         assertEquals(500L, rig.at(CascadeEvent.JevFired(true)))
+        assertEquals(listOf(true), rig.events.mapNotNull { (it.second as? CascadeEvent.JevFired)?.early })
+        assertEquals(1_000L, rig.at(CascadeEvent.JevAnswered(100)))
+        val done = rig.done()
+        assertEquals(1, done.jevCalls)
+        assertEquals(600L, done.speechEndToJevMs)
+        assertEquals(100L, done.jevMs)
+        assertEquals("what's the weather", rig.actor.state.value.recent.single().user)
+        assertFalse(rig.actor.state.value.speech.userHolding)
         // The stock line is cached in a real call; here it costs the fake's TTS latency, then plays.
         assertTrue(rig.events.any { it.second == CascadeEvent.LinePlayed("ack.understood") })
         assertEquals(listOf("Sure thing."), rig.actor.state.value.writer.sentences)
@@ -90,7 +108,9 @@ class CascadeActorTest {
         advanceUntilIdle()
         assertEquals(2, rig.openRouter.jevCalls.size)
         assertEquals(1_000L, rig.openRouter.jevCalls[1].at)
+        assertEquals(1_000L, rig.openRouter.jevCalls[1].state["silence_ms"]!!.jsonPrimitive.long)
         assertEquals(1_150L, rig.at(CascadeEvent.TurnCommitted("u1")))
+        assertEquals(2, rig.done().jevCalls)
         assertTrue("the slow early call is dropped", rig.openRouter.jevCalls[0].cancelled)
         assertEquals(listOf(true, false), rig.events.mapNotNull { (it.second as? CascadeEvent.JevFired)?.early })
     }
