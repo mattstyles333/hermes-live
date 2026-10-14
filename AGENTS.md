@@ -8,9 +8,17 @@ Voice is OpenAI GPT-Live (`gpt-live-1`) over WebRTC. Hermes's server holds the O
 
 ```bash
 export JAVA_HOME=... ANDROID_HOME=...
-./gradlew :live:testDebugUnitTest :live:lintDebug :live:assembleDebug
+./gradlew testDebugUnitTest lintDebug assembleDebug   # Tier 0 + lint + assemble, one invocation
 ./gradlew :live:assembleRelease   # needs the Folio release key: keystore.properties or FOLIO_* env
 ```
+
+- **Test tiers** (hub `hermes-cascade-test-shape-2026-10-13.md`):
+  - **Tier 0, every commit:** `./gradlew testDebugUnitTest` (target < 90 s; no device, network or key; virtual time; no sleeps). Test JVMs run in parallel (`maxParallelForks` = half the cores, at most 8, 1 GB each), and the configuration cache is on.
+  - **Tier 1, every merge into the integration branch:** Tier 0 + `lintDebug` + `assembleDebug` + `:live:assembleRelease` (throwaway key) + `:tools:fake-hermes` tests + the Folio check (`:app:testDebugUnitTest :app:lintDebug` with the submodule at the head).
+  - **Tier 2, once before a release:** `OPENROUTER_API_KEY=… tools/release-check.sh` (the live Jev eval, the staging install with an STT round-trip, then the Bill smoke call; pass/fail and seconds per lane; the mid-task screenshot in `~/reports/assets/hermes-cascade-smoke/`).
+  - **Tier 3, only when STT models or settings change:** the STT bench (`src/androidTest`, `bench=true`).
+- **Screenshot renders** are not in `test`: `./gradlew :live:renderScreenshots` (PNGs in `live/build/screenshots/`; `CASCADE_SCREENSHOTS_DIR=$PWD/live/docs/screenshots` refreshes the committed cascade copies). `SmokeRenderTest` keeps one draw of each call screen in Tier 0.
+- **Recorded Jev:** `RECORD_JEV=1 OPENROUTER_API_KEY=… ./gradlew :hermes:testDebugUnitTest --tests '*LiveJevEvalTest*'` re-records `hermes/src/test/resources/…/routing/jev-recorded-<date>.json` (request fingerprints and answers, no key) when the Jev wording changes; `RecordedJevTest` replays it in Tier 0. `UPDATE_JEV_EFFECTIVE=1` refreshes the pinned effective decisions offline after an intended rule change.
 
 - **SDK levels:** minSdk 31, targetSdk 35, compileSdk 37. versionName is independent of Folio's.
 - **Release build:** R8 minify and resource shrink are on. The release APK is arm64-v8a only (the S23). Debug also carries x86_64 for the emulator.
@@ -197,10 +205,14 @@ Crash and error reporting as OTLP/HTTP JSON logs (`POST <endpoint>/v1/logs`), sh
 - `LiveIntentsTest` (incl. memo, tile memo, Open).
 - `CallScreenTest` (Robolectric Compose).
 - Bill (S-F2a): `cascade/CascadeCallEngineTest` (start, mute, hang-up order and hang-up while starting, approvals incl. from the viewer, a prompt as the first turn, hold-to-talk, failures, hotwords, the off-call hold), `cascade/AppRuntimeShellTest`, `call/EngineSwitchTest`, `data/GptLiveBuildsNoCascadeTest` (R-Q-1 on the real graph), `data/AutoPrepareTest`, `hooks/TestServerTest`, `cascade/AppEffectsTest`; S-C's `stt/` and `audio/` tests.
-- Golden calls (`:tools:fake-hermes` `GoldenCallTest`, test-shape plan item 1): a whole Bill call through `CascadeCore` + `CascadePorts.gateway` (a real `HermesGateway`) against the Python fake, with scripted Jev, writer and voice: the task card goes Starting → Running → Done, `TaskAccepted` is emitted, the fake gets the prompt once, the result is spoken.
+- Golden calls (`:tools:fake-hermes` `GoldenCallTest`, test-shape plan item 1; they replace the emulator scenario matrix): eight whole Bill calls through `CascadeCore` + `CascadePorts.gateway` (a real `HermesGateway`) against the Python fake, with scripted Jev, writer and voice: one task (Starting → Running → Done, `TaskAccepted`); one request split into three; a correction to a running task (a queued update, the word learned); status (never submits); cancel; an offline memo held, then sent once on reconnect; killed as the submit would leave, then recovered once after a restart; resume with Play after the app closed with a task running. Each asserts what the user heard (phrase-bank slots, then Hermes's words), what Hermes got (each prompt once) and the final screen. Only the wire and the fake's tools take real time.
+- `cascade/CascadePropertyTest`: 500 seeded random calls (speech, cut-ins, pauses, any Jev route or a timeout or an offline failure, network flaps, tasks finishing, kills before an arbitrary effect and restarts) through `CascadeCore` on the durable seams and a fake Hermes that outlives processes, on a virtual clock. Invariants: no double submit; no lost committed turn (sent, or durably held for the next call); nothing starts while the user speaks and a cut-in stops Bill; a superseded result changes nothing; the screen is the projection of the state. A failure prints the seed and a shrunk sequence; `CASCADE_PROPERTY_SEED` replays one, `CASCADE_PROPERTY_TRACE=1` prints its events. `PropertyFindingsTest` pins what it found (the outbox retry with the port online; a cut-in marks the user speaking).
+- `routing/RecordedJevTest`: the recorded live Jev answers through the real floors and rules: every case present with an unchanged request fingerprint (else "re-record"), harmful ≤ 3%, effective decisions as recorded. `PrimeLinesTest`: call start warms OpenRouter and fetches the likely stock lines ahead.
+- `cascade/CascadeSignOutTest`: sign-out wipes every `cascade.*` key, logs, quarantine and the decision log, keeps the key, models, TTS cache and rotations; another account signing in wipes the store first.
+- `ui/SmokeRenderTest`: the GPT-Live and Bill call screens draw (the one render in Tier 0).
 - Idle screen voice line (`ui/HomeVoiceLineTest`): with Bill chosen it shows his readiness (ready, preparing with progress, models to fetch, no key, key refused), never GPT-Live's server status; GPT-Live unchanged.
 - Emulator (`src/androidTest`, see its README): S-C's STT and audio tests; `service/OffCallBackgroundStartTest` (`-e offcall true`); `smoke/BillSmokeTest`, run by `tools/cascade-smoke.sh` with `OPENROUTER_API_KEY` from the environment.
 
-`ScreenshotRender` writes S23-sized PNGs of made-up states to `live/build/screenshots/` (ignored with the build). Run it locally to refresh them. The cascade call screen renders live in `live/docs/screenshots/` and are committed (`.gitignore` excepts that folder).
+`ScreenshotRender` writes S23-sized PNGs of made-up states to `live/build/screenshots/` (ignored with the build) and `CascadeScreenshotRender` the cascade call screen: `./gradlew :live:renderScreenshots`, outside `test`. The cascade renders in `live/docs/screenshots/` are committed (`.gitignore` excepts that folder).
 
 What only the phone can prove (real WebRTC, AEC, routes, focus behaviour of Spotify, CallStyle chip, media buttons) is in the phone checklist in `README.md`.

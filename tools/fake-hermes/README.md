@@ -71,7 +71,9 @@ They need `python3` on the PATH. The suites:
   - an open approval delivered again after a drop;
   - refused tickets and upgrades.
 - `DefaultScenarioTest`: the shipped rules.
-- `GoldenCallTest`: a whole Bill call through `CascadeCore` and `CascadePorts.gateway` (the app's wiring) with a scripted Jev, writer and voice. The card goes Starting → Running → Done, one prompt, the result spoken.
+- `GoldenCallTest`: eight whole Bill calls through `CascadeCore` and `CascadePorts.gateway` (the app's wiring) with a scripted Jev, writer and voice: one task, a split into three, a correction, status, cancel, an offline memo then reconnect, a kill mid-submit then a restart, and resume with Play. Each checks what was heard, that every prompt arrived once, and the final screen.
+
+Each test process starts its own fake on port 0 (a free port), so the suites run in parallel JVMs.
 
 Set `FAKE_HERMES_ECHO=1` to see the server's log in the test output.
 

@@ -30,7 +30,7 @@ import org.robolectric.annotation.GraphicsMode
  * clock, no frame loop), so the PNGs are the same on every run.
  *
  * Written to `build/screenshots/cascade`. To refresh the committed (half-size) copies:
- * `CASCADE_SCREENSHOTS_DIR=$PWD/live/docs/screenshots ./gradlew :live:testDebugUnitTest --tests '*CascadeScreenshotRender*' --rerun`
+ * `CASCADE_SCREENSHOTS_DIR=$PWD/live/docs/screenshots ./gradlew :live:renderScreenshots` (the renders are not in `test`).
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
