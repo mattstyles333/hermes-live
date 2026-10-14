@@ -12,10 +12,14 @@ import com.folio.hermes.cascade.Event
 import com.folio.hermes.cascade.PhraseBank
 import com.folio.hermes.cascade.ResumeChoice
 import com.folio.hermes.cascade.TaskUiStatus
+import com.folio.hermes.cascade.Transcript
+import com.folio.hermes.cascade.TranscriptPass
 import com.folio.hermes.cascade.Word
 import com.folio.hermes.cascade.ports.AudioOut
 import com.folio.hermes.cascade.ports.MemoryStore
 import com.folio.hermes.cascade.ports.Network
+import com.folio.hermes.cascade.ports.SpeechToText
+import com.folio.hermes.cascade.ports.SttEvent
 import com.folio.hermes.cascade.ports.OpenRouterPort
 import com.folio.hermes.cascade.ports.Store
 import com.folio.hermes.cascade.routing.MemoSegmentHandler
@@ -30,6 +34,7 @@ import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +42,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
@@ -66,7 +72,7 @@ import org.junit.Test
  * fake (a real socket) and the fake's scripted tools take real time, so these cannot run on a
  * virtual clock. The pause is 400 ms (the setting's minimum) to keep each call short.
  *
- * 1. one task; 2. one request split into three; 3. a correction to a running task; 4. status;
+ * 1. one task (1b: its stock line does not wait for the accurate pass); 2. one request split into three; 3. a correction to a running task; 4. status;
  * 5. cancel; 6. an offline memo, then reconnect; 7. killed mid-submit, then a restart; 8. resume
  * with Play after the app was closed with a task running.
  */
@@ -87,6 +93,9 @@ class GoldenCallTest {
     ) : OpenRouterPort {
         val clipText: MutableMap<AudioClip, String> = Collections.synchronizedMap(IdentityHashMap())
 
+        /** Every brief request's prompt, in order. */
+        val briefPrompts = CopyOnWriteArrayList<String>()
+
         override suspend fun jev(state: JsonObject, questions: Map<String, JevQuestion>, timeoutMs: Long): OpenRouterResult<Map<String, JevAnswer>> {
             val latest = state["latest"]?.jsonPrimitive?.contentOrNull.orEmpty()
             val route = routes.entries.firstOrNull { latest.contains(it.key, ignoreCase = true) }?.value ?: mapOf("action" to "reply")
@@ -103,6 +112,7 @@ class GoldenCallTest {
             Summaries.SYSTEM -> OpenRouterResult.Ok("They run the shop's jobs by voice.")
             MemoSegmentHandler.SYSTEM -> OpenRouterResult.Ok("""{"groups":[[1]]}""")
             Briefs.SYSTEM -> {
+                briefPrompts += prompt
                 val transcript = prompt.substringAfter("Transcript: \"").substringBefore("\"\n")
                 val jobs = briefs.entries.first { transcript.contains(it.key, ignoreCase = true) }.value
                 OpenRouterResult.Ok(
@@ -142,6 +152,8 @@ class GoldenCallTest {
         val gateway: HermesGateway = h.gateway,
         val online: MutableStateFlow<Boolean> = MutableStateFlow(true),
         private val gate: EffectGate = EffectGate.Open,
+        stt: SpeechToText? = null,
+        settings: CascadeSettings = SETTINGS,
     ) : AutoCloseable {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         private val version = MutableStateFlow(0L)
@@ -158,9 +170,9 @@ class GoldenCallTest {
             scope = scope,
             ports = CascadePorts.gateway(gateway, h.config, router, out, store, network = object : Network {
                 override val online = this@Call.online
-            }),
+            }, stt = stt),
             bank = bank,
-            settings = { SETTINGS },
+            settings = { settings },
             telemetry = TelemetrySink.None,
             onAppEffect = { appEffects += it },
             // A kill wakes the waits too (nothing else changes after it).
@@ -240,6 +252,60 @@ class GoldenCallTest {
         // Heard: the stock line first, then the result in Hermes's words (headline first).
         assertEquals("start.lookup", call.heard().first())
         assertTrue(call.heard().toString(), call.heard().any { "14 in stock" in it })
+        assertEquals(1, promptCount())
+        noDoubles()
+    }
+
+    // ── 1b. the stock line does not wait for the accurate pass ───────────────────────────
+
+    /** The accurate pass (R-STT-2) answers only when [release] is completed. */
+    private class HeldAccurate(private val text: String) : SpeechToText {
+        val release = CompletableDeferred<Unit>()
+        val asked = MutableStateFlow(0)
+        override val events: Flow<SttEvent> = emptyFlow()
+        override suspend fun accurate(turnId: String): Transcript? {
+            asked.value += 1
+            release.await()
+            return Transcript(text, text.split(' ').map { Word(it, confidence = 0.95) }, TranscriptPass.Accurate)
+        }
+    }
+
+    /**
+     * R-Q-3 / R-SPK-2: the `start.*` line plays at commit, from the cache, while the accurate pass
+     * is still running; the brief, the repair and the submit wait for it and use its words.
+     */
+    @Test fun theStockLinePlaysBeforeTheAccuratePassAndTheSubmitUsesTheAccurateText() {
+        h.signIn()
+        val heardFast = "Check how many Castrel aviators we have in stock."
+        val accurate = HeldAccurate("Check how many Kestrel aviators we have in stock.")
+        val call = Call(
+            routes = mapOf("stock" to newTask(line = "start.lookup")),
+            briefs = mapOf("stock" to listOf("Check stock of the Kestrel aviators.")),
+            stt = accurate,
+            // The pass never times out here: only `release` lets the turn go on.
+            settings = SETTINGS.copy(accuratePass = true, accuratePassWaitMs = 60_000),
+        )
+        call.start()
+        call.say(heardFast)
+
+        call.until("the stock line, with the accurate pass still out", timeoutMs = 5_000) { call.heard().contains("start.lookup") }
+        // The pass runs on its own coroutine: it may be asked a moment after the line started.
+        runBlocking { withTimeoutOrNull(5_000) { accurate.asked.first { it > 0 } } }
+        assertEquals(1, accurate.asked.value)
+        assertFalse(accurate.release.isCompleted)
+        assertEquals("no brief before the accurate words", 0, call.router.briefPrompts.size)
+        assertEquals("nothing submitted before the accurate words", 0, promptCount())
+        assertTrue(call.actor.ui.value.tasks.isEmpty())
+
+        accurate.release.complete(Unit)
+        call.until("the result spoken") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        val brief = call.router.briefPrompts.single()
+        assertTrue(brief, brief.contains("Kestrel aviators") && !brief.contains("Castrel"))
+        val prompt = prompts().single()
+        assertTrue("the transcript block carries the accurate words: $prompt", prompt.contains("Check how many Kestrel aviators we have in stock") && !prompt.contains("Castrel"))
+        assertEquals("the line played once, first", listOf("start.lookup"), call.heard().filter { it == "start.lookup" })
+        assertEquals("start.lookup", call.heard().first())
+        assertEquals(TaskUiStatus.Done, call.actor.ui.value.tasks.single().status)
         assertEquals(1, promptCount())
         noDoubles()
     }
