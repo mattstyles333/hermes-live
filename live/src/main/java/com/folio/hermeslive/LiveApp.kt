@@ -8,6 +8,14 @@ import com.folio.hermeslive.audio.AndroidCallEffects
 import com.folio.hermeslive.audio.CascadeAudioFactory
 import com.folio.hermeslive.call.CallEngine
 import com.folio.hermeslive.call.CallSwitch
+import com.folio.hermeslive.call.GptLiveAgentsFactory
+import com.folio.hermeslive.call.GptLiveOnDemand
+import com.folio.hermeslive.call.GptLiveOnDemandFactory
+import com.folio.hermeslive.call.SherpaPreRoll
+import com.folio.hermeslive.audio.CaptureSource
+import com.folio.hermeslive.audio.MicAudioSource
+import com.folio.hermeslive.stt.SherpaEngines
+import com.folio.hermeslive.stt.SttEngineConfig
 import com.folio.hermeslive.cascade.CallSpeechFactory
 import com.folio.hermeslive.cascade.CascadeApp
 import com.folio.hermeslive.cascade.AndroidNetwork
@@ -172,7 +180,10 @@ class LiveGraph(private val app: Context) {
         )
     }
 
-    /** GPT-Live (today's call, unchanged). Use [calls]; this is its engine. */
+    /**
+     * GPT-Live. Use [calls]; this is its engine. Parallel agents (Settings, off by default) run
+     * its delegations as tasks on Bill's process runtime; built only while signed in.
+     */
     val engine: CallEngine by lazy {
         CallEngine(
             scope = mainScope,
@@ -182,6 +193,31 @@ class LiveGraph(private val app: Context) {
             audio = AndroidCallAudio(app),
             effects = AndroidCallEffects(app),
             memory = settings,
+            agentsFactory = GptLiveAgentsFactory.gated(
+                enabled = { VoiceShell.of(app).gate.gptLiveAgentsActive },
+                signedIn = { account.config() != null && account.currentAuth() != null },
+                runtime = { VoiceShell.of(app).shell.appRuntime() },
+            ),
+            offCall = { running -> OffCall.afterHangUp(app, running) },
+            // As in a Grok call: the voice says results, so task notifications stay quiet during the call.
+            onAgentsLive = { cascadeApp.grokLive = it },
+            onDemandFactory = GptLiveOnDemandFactory { engine ->
+                val live = settings.settings.value
+                val od = GptLiveOnDemandFactory.settings(live)
+                if (!od.enabled) {
+                    null
+                } else {
+                    GptLiveOnDemand(
+                        engine = engine,
+                        settings = od,
+                        vadFactory = { SherpaEngines.vad(app.assets, SttEngineConfig()) },
+                        micFactory = { MicAudioSource(if (live.echoCancel) CaptureSource.VOICE_COMMUNICATION else CaptureSource.VOICE_RECOGNITION) },
+                        transcriber = SherpaPreRoll.of(modelManager, live),
+                        scope = mainScope,
+                        clock = System::currentTimeMillis,
+                    )
+                }
+            },
         )
     }
 }

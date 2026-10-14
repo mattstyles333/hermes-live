@@ -29,8 +29,11 @@ import com.folio.hermeslive.call.CallRequest
 import com.folio.hermeslive.call.CallUiState
 import com.folio.hermeslive.cascade.CascadeAppRuntime
 import com.folio.hermeslive.cascade.CascadeCallEngine
+import com.folio.hermeslive.call.CallEngine
+import com.folio.hermeslive.call.ondemand.OnDemandUi
 import com.folio.hermeslive.grok.GrokCallEngine
 import com.folio.hermeslive.ui.GrokCallRoute
+import com.folio.hermeslive.ui.GptLiveCallRoute
 import com.folio.hermeslive.cascade.CascadeSignOut
 import com.folio.hermeslive.cascade.appRuntime
 import com.folio.hermeslive.data.VoiceShell
@@ -351,8 +354,10 @@ class LiveActivity : ComponentActivity() {
             else -> {
                 // Grok's call uses Bill's screen too (grok-voice slice).
                 val grokCall = active as? GrokCallEngine
-                val billActive = active is CascadeCallEngine || grokCall != null
-                val hasSession = (active as? CascadeCallEngine)?.session != null || grokCall?.session != null
+                // GPT-Live with parallel agents uses Bill's screen too (its task tray).
+                val gptAgents = (active as? CallEngine)?.takeIf { it.agentSession?.runtime != null }
+                val billActive = active is CascadeCallEngine || grokCall != null || gptAgents != null
+                val hasSession = (active as? CascadeCallEngine)?.session != null || grokCall?.session != null || gptAgents != null
                 val screen = mainScreen(billActive, call.inCall, hasSession, billOutro, viewingTask != null)
                 LaunchedEffect(screen) { if (screen == MainScreen.Bill) billOutro = true }
                 // Bill's end fades into home; every other change cuts as before. Bill's three screens are one
@@ -372,6 +377,7 @@ class LiveActivity : ComponentActivity() {
                     when {
                         shown == MainScreen.Home -> Home(call, elapsed, voiceLine, meetingStarter)
                         grokCall != null && shown != MainScreen.BillViewer -> GrokScreen(grokCall, shown, call, settings.haptics)
+                        gptAgents != null && shown != MainScreen.BillViewer -> GptLiveAgentsScreen(gptAgents, shown, call, settings.haptics)
                         else -> BillScreen(shown, call, settings.pauseMs, settings.haptics)
                     }
                 }
@@ -433,11 +439,33 @@ class LiveActivity : ComponentActivity() {
         )
     }
 
+    /** GPT-Live's call with parallel agents on Bill's screen, and its end transition. */
+    @Composable
+    private fun GptLiveAgentsScreen(engine: CallEngine, shown: MainScreen, call: CallUiState, haptics: Boolean) {
+        val g = graph
+        val rt = engine.agentSession?.runtime
+        if (rt == null) {
+            LaunchedEffect(Unit) { billOutro = false }
+            return
+        }
+        GptLiveCallRoute(
+            engine = engine,
+            runtime = rt,
+            onHaptic = { if (haptics) g.haptic() },
+            ending = shown == MainScreen.BillEnded && !call.inCall,
+            onCloseEnded = ::closeBillOutro,
+            onCallAgain = { requestStart(CallRequest()) },
+        )
+    }
+
     /** The idle home screen (and GPT-Live's call screen). */
     @Composable
     private fun Home(call: CallUiState, elapsed: String?, voiceLine: String?, meeting: MeetingStarter?) {
         val g = graph
+        val gptLive = g.calls.active.collectAsStateWithLifecycle().value as? CallEngine
+        val session by (gptLive?.onDemandUi ?: remember { MutableStateFlow(OnDemandUi()) }).collectAsStateWithLifecycle()
         CallScreen(
+            session = session,
             state = if (micRefused && !call.inCall) call.copy(error = "Hermes Live needs the microphone. Allow it in Settings › Apps.") else call,
             elapsed = elapsed,
             voiceLine = voiceLine,

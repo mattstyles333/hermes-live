@@ -12,6 +12,8 @@ class CascadeGate(
     private val key: () -> KeyStatus,
     /** The xAI key (grok-voice slice); none by default. */
     private val xaiKey: () -> KeyStatus = { KeyStatus() },
+    /** GPT-Live › Parallel agents is switched on ([GptLivePrefs]; off by default). */
+    private val gptLiveAgents: () -> Boolean = { false },
 ) {
     /** Bill: engine `cascade` and a usable OpenRouter key. */
     val active: Boolean get() = settings().voiceEngine == VoiceEngine.Cascade && key().usable
@@ -19,11 +21,14 @@ class CascadeGate(
     /** Grok Voice: engine Grok and a usable xAI key. */
     val grokActive: Boolean get() = settings().voiceEngine == VoiceEngine.Grok && xaiKey().usable
 
+    /** GPT-Live with parallel agents (Settings, off by default): its delegations run as tasks on the shared task API. */
+    val gptLiveAgentsActive: Boolean get() = settings().voiceEngine == VoiceEngine.GptLive && gptLiveAgents()
+
     /**
      * The Hermes task machinery (the runtime: actor, store, gateway, off-call service) is wanted:
-     * Bill, or Grok (which drives the same tasks through the shared task API).
+     * Bill, Grok or GPT-Live with agents (which drive the same tasks through the shared task API).
      */
-    val tasksActive: Boolean get() = active || grokActive
+    val tasksActive: Boolean get() = active || grokActive || gptLiveAgentsActive
 
     /** Bill could run a call (a usable OpenRouter key), whichever engine is chosen: Grok's offline fallback. */
     val billAvailable: Boolean get() = key().usable
