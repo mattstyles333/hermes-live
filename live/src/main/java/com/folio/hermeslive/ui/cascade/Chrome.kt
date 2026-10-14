@@ -68,21 +68,29 @@ import com.folio.hermeslive.ui.SurfaceHigh
 import com.folio.hermeslive.ui.VoidBlack
 import kotlinx.coroutines.delay
 
+/** The controls row's height: the buttons and their padding (the end keeps the tray in place). */
+internal val CONTROLS_HEIGHT = 90.dp
+
 /** The top bar: call time, engine, connection. */
 @Composable
-internal fun TopBar(chrome: CascadeChrome, now: State<Long>, top: State<TopModel>) {
+internal fun TopBar(chrome: CascadeChrome, now: State<Long>, top: State<TopModel>, endedAfterMs: Long? = null, live: () -> Float = { 1f }) {
     Probe("top")
     Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp).padding(top = 14.dp).height(20.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.weight(1f)) { CallTime(chrome.callStartedAtMs, now) }
+        Box(Modifier.weight(1f)) { CallTime(chrome.callStartedAtMs, now, endedAfterMs) }
         Text(chrome.engine, style = LabelStyle.copy(fontSize = 11.sp), color = PrintMute, maxLines = 1)
-        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) { ConnectionDot(top) }
+        // The connection belongs to the call: it fades with the wind-down.
+        Box(Modifier.weight(1f).graphicsLayer { alpha = live() }, contentAlignment = Alignment.CenterEnd) { ConnectionDot(top) }
     }
 }
 
+/** The call time; once the call ended, frozen at [endedAfterMs]. */
 @Composable
-private fun CallTime(startedAtMs: Long?, now: State<Long>) {
-    if (startedAtMs == null) return
-    val text = elapsed(now.value - startedAtMs)
+private fun CallTime(startedAtMs: Long?, now: State<Long>, endedAfterMs: Long?) {
+    val text = when {
+        endedAfterMs != null -> elapsed(endedAfterMs)
+        startedAtMs != null -> elapsed(now.value - startedAtMs)
+        else -> return
+    }
     Text(text, style = SmallStyle.copy(fontSize = 12.sp, fontFeatureSettings = "tnum"), color = PrintMute, modifier = Modifier.semantics { contentDescription = "Call time $text" }.testTag("call-time"))
 }
 
@@ -225,25 +233,59 @@ internal fun Flyouts(memory: ScreenMemory, motion: CascadeMotion) {
     }
 }
 
-/** Mute, end, speaker. */
+/**
+ * Mute, end, speaker. [onEnd] presses the End button; once the call is ending ([ending]) the
+ * buttons stop taking taps, the End button stays pressed in ([press] 0..1) and the others fade
+ * with [live].
+ */
 @Composable
-internal fun Controls(chrome: CascadeChrome, intents: CascadeIntents) {
+internal fun Controls(
+    chrome: CascadeChrome,
+    intents: CascadeIntents,
+    onEnd: () -> Unit = intents::end,
+    ending: Boolean = false,
+    press: () -> Float = { 0f },
+    live: () -> Float = { 1f },
+) {
     Probe("controls")
     Row(Modifier.fillMaxWidth().padding(bottom = 22.dp, top = 10.dp), horizontalArrangement = Arrangement.spacedBy(22.dp, Alignment.CenterHorizontally)) {
-        RoundButton(if (chrome.muted) GlyphKind.MicOff else GlyphKind.Mic, if (chrome.muted) "Unmute" else "Mute", if (chrome.muted) PrintInk else SurfaceHigh, if (chrome.muted) VoidBlack else PrintInk, "cascade-mute", intents::mute)
-        RoundButton(GlyphKind.EndCall, "End call", EndRed, PrintInk, "cascade-end", intents::end)
+        val fade = Modifier.graphicsLayer { alpha = live() }
+        RoundButton(
+            if (chrome.muted) GlyphKind.MicOff else GlyphKind.Mic, if (chrome.muted) "Unmute" else "Mute", if (chrome.muted) PrintInk else SurfaceHigh,
+            if (chrome.muted) VoidBlack else PrintInk, "cascade-mute", intents::mute, enabled = !ending, modifier = fade,
+        )
+        RoundButton(
+            GlyphKind.EndCall, "End call", EndRed, PrintInk, "cascade-end", onEnd, enabled = !ending,
+            modifier = Modifier.graphicsLayer {
+                // Pressed in: smaller and a shade darker, and it stays so while the call winds down.
+                val p = press()
+                scaleX = 1f - 0.12f * p
+                scaleY = scaleX
+                alpha = (1f - 0.2f * p) * live()
+            },
+        )
         RoundButton(
             if (chrome.speakerOn) GlyphKind.Speaker else GlyphKind.Earpiece, if (chrome.speakerOn) "Speaker on" else "Speaker off",
-            SurfaceHigh, PrintInk, "cascade-speaker", intents::speaker,
+            SurfaceHigh, PrintInk, "cascade-speaker", intents::speaker, enabled = !ending, modifier = fade,
         )
     }
 }
 
 @Composable
-private fun RoundButton(glyph: GlyphKind, description: String, background: Color, tint: Color, tag: String, onClick: () -> Unit, size: Dp = 58.dp) {
+private fun RoundButton(
+    glyph: GlyphKind,
+    description: String,
+    background: Color,
+    tint: Color,
+    tag: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: Dp = 58.dp,
+    enabled: Boolean = true,
+) {
     Box(
-        Modifier.size(size).clip(CircleShape).background(background).border(1.dp, Hairline, CircleShape)
-            .clickable(role = Role.Button, onClickLabel = description, onClick = onClick)
+        modifier.size(size).clip(CircleShape).background(background).border(1.dp, Hairline, CircleShape)
+            .clickable(enabled = enabled, role = Role.Button, onClickLabel = description, onClick = onClick)
             .semantics { contentDescription = description }
             .testTag(tag),
         contentAlignment = Alignment.Center,

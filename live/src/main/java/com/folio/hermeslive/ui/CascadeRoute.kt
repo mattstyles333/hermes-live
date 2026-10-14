@@ -32,17 +32,57 @@ import com.folio.hermes.ApprovalChoice
 import com.folio.hermes.cascade.Event
 import com.folio.hermes.cascade.DecisionRecord
 import com.folio.hermes.cascade.ResumeChoice
+import com.folio.hermeslive.call.CallPhase
+import com.folio.hermeslive.call.CallUiState
+import com.folio.hermeslive.ui.cascade.CallEnd
 import com.folio.hermeslive.ui.cascade.CascadeCallScreen
+import com.folio.hermeslive.ui.cascade.EndReason
 import com.folio.hermeslive.ui.cascade.CascadeChrome
 import com.folio.hermeslive.ui.cascade.CascadeHistoryItem
 import com.folio.hermeslive.ui.cascade.CascadeIntents
 import com.folio.hermeslive.ui.cascade.EventIntents
 import com.folio.hermeslive.ui.cascade.HapticIntent
 
+/** Which main screen the activity shows (below settings, sign-in and "Preparing Bill…"). */
+enum class MainScreen {
+    /** Bill's call is running. */
+    Bill,
+
+    /** Bill's call just ended: the end transition, until it closes (or a new call starts). */
+    BillEnded,
+
+    /** Bill's screen with no call (a result notification's Open). */
+    BillViewer,
+
+    /** The idle home screen (and GPT-Live's call screen). */
+    Home,
+}
+
+/**
+ * The main screen. [outro]: Bill's call screen was up when the call ended and its end transition
+ * has not closed yet, so the screen stays instead of cutting to home.
+ */
+fun mainScreen(billActive: Boolean, inCall: Boolean, hasSession: Boolean, outro: Boolean, viewing: Boolean): MainScreen = when {
+    billActive && hasSession && inCall -> MainScreen.Bill
+    billActive && hasSession && outro && !inCall -> MainScreen.BillEnded
+    viewing && !inCall -> MainScreen.BillViewer
+    else -> MainScreen.Home
+}
+
+/** How Bill's call ended, from the engine's state once it is over (null while it runs). */
+fun callEndOf(call: CallUiState): CallEnd? {
+    if (call.inCall || (call.phase != CallPhase.Ended && call.phase != CallPhase.Failed)) return null
+    // The engine names no other reason: a goodbye, the notification, the tile and a headset all end it the same way.
+    val reason = if (call.error != null) EndReason.Error else EndReason.HungUp
+    return CallEnd(reason, call.summary?.durationMs, call.error)
+}
+
 /**
  * Bill's call screen on a running cascade (S-D's [CascadeCallScreen] on the actor's state and
  * events), with the approvals slot filled by the tap-only cards (R-TASK-6). [viewer]: no call is
  * running (a result notification's Open): the task cards and their results, and End closes it.
+ * [ending]: the call has ended and the screen plays its end transition; [onCloseEnded] leaves for
+ * home and [onCallAgain] starts a new call.
  */
 @Composable
 fun CascadeCallRoute(
@@ -53,12 +93,15 @@ fun CascadeCallRoute(
     decisions: () -> List<DecisionRecord>,
     onHaptic: (HapticIntent) -> Unit,
     onClose: () -> Unit,
+    ending: Boolean = false,
+    onCloseEnded: () -> Unit = onClose,
+    onCallAgain: () -> Unit = {},
 ) {
     val call by engine.state.collectAsState()
     val approvals by runtime.approvals.collectAsState()
     val clarify by runtime.clarify.collectAsState()
     val actor = runtime.core.actor
-    val intents = remember(engine, runtime, viewer) { cascadeIntents(engine, runtime, viewer, onHaptic, onClose) }
+    val intents = remember(engine, runtime, viewer) { cascadeIntents(engine, runtime, viewer, onHaptic, onClose, onCloseEnded, onCallAgain) }
     val history = remember(runtime, call.phase) {
         runCatching { runtime.core.history() }.getOrDefault(emptyList()).filterNot { it.current }.map {
             CascadeHistoryItem(it.id, it.title, it.endedWallMs ?: it.startedWallMs, it.taskIds.size)
@@ -78,6 +121,7 @@ fun CascadeCallRoute(
         decisions = decisions,
         history = history,
         approvals = approvalsSlot(approvals, clarify, engine),
+        ended = if (ending) callEndOf(call) else null,
     )
 }
 
@@ -99,11 +143,15 @@ internal fun cascadeIntents(
     viewer: Boolean,
     onHaptic: (HapticIntent) -> Unit,
     onClose: () -> Unit,
+    onCloseEnded: () -> Unit = onClose,
+    onCallAgain: () -> Unit = {},
 ): CascadeIntents {
     val app = object : CascadeIntents {
         override fun mute() = engine.toggleMute()
         override fun end() = if (viewer) onClose() else engine.end()
         override fun speaker() = engine.toggleSpeaker()
+        override fun closeEnded() = onCloseEnded()
+        override fun callAgain() = onCallAgain()
         override fun openConversation(conversationId: String) = runtime.core.openConversation(conversationId)
         override fun haptic(intent: HapticIntent) = onHaptic(intent)
     }
