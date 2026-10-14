@@ -107,6 +107,7 @@ class LiveGraph(private val app: Context) {
             },
             onEndCall = { calls.cascadeEngine?.end() },
             onHaptic = { cascadeEffects.haptic(strong = false) },
+            user = { settings.username },
         )
     }
 
