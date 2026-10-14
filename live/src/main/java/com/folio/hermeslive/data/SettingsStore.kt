@@ -57,6 +57,9 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
             .putString(K_LIVE_MODEL, next.liveModel)
             .putString(K_ACCURATE_MODEL, next.accurateModel)
             .putBoolean(K_SPEECH_MODELS_CARD, next.speechModelsCard)
+            .putString(K_GROK_VOICE, next.grokVoice)
+            .putString(K_GROK_CUSTOM_VOICE, next.grokCustomVoice)
+            .putString(K_GROK_MODEL, next.grokModel)
             .apply()
         _settings.value = next
     }
@@ -112,6 +115,9 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
             liveModel = prefs.getString(K_LIVE_MODEL, null),
             accurateModel = prefs.getString(K_ACCURATE_MODEL, null),
             speechModelsCard = prefs.getBoolean(K_SPEECH_MODELS_CARD, d.speechModelsCard),
+            grokVoice = prefs.getString(K_GROK_VOICE, null) ?: d.grokVoice,
+            grokCustomVoice = prefs.getString(K_GROK_CUSTOM_VOICE, null) ?: d.grokCustomVoice,
+            grokModel = prefs.getString(K_GROK_MODEL, null) ?: d.grokModel,
         ).normalized()
     }
 
@@ -159,6 +165,9 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
         private const val K_LIVE_MODEL = "cascade_live_model"
         private const val K_ACCURATE_MODEL = "cascade_accurate_model"
         private const val K_SPEECH_MODELS_CARD = "cascade_speech_models_card"
+        private const val K_GROK_VOICE = "grok_voice"
+        private const val K_GROK_CUSTOM_VOICE = "grok_custom_voice"
+        private const val K_GROK_MODEL = "grok_model"
         private const val K_SERVER = "server_url"
         private const val K_USER = "username"
         private const val K_SESSION = "stored_session_id"

@@ -81,6 +81,9 @@ class GrokRealtime(
     @Volatile var conversationId: String? = null
         private set
 
+    /** The session config went out on this socket: audio may follow (it is dropped before). */
+    @Volatile private var configured = false
+
     /** Server events, in order (one consumer). */
     val events: Flow<ServerEvent> = channel.receiveAsFlow()
 
@@ -111,7 +114,7 @@ class GrokRealtime(
     }
 
     /** Microphone audio, PCM s16le mono at [GrokConfig.sampleRate]. */
-    fun appendAudio(pcm: ByteArray): Boolean = pcm.isNotEmpty() && send(RealtimeProtocol.appendAudio(pcm))
+    fun appendAudio(pcm: ByteArray): Boolean = configured && pcm.isNotEmpty() && send(RealtimeProtocol.appendAudio(pcm))
 
     /** Close for good (hang-up). */
     fun close() {
@@ -141,6 +144,7 @@ class GrokRealtime(
         val request = Request.Builder().url(url).header("Authorization", "Bearer $k").build()
         val gen = synchronized(lock) {
             socket?.cancel()
+            configured = false
             ++generation
         }
         if (_link.value !is LinkState.Reconnecting) _link.value = LinkState.Connecting
@@ -180,6 +184,7 @@ class GrokRealtime(
             configured = true
             val s = spec()
             webSocket.send(RealtimeProtocol.encode(RealtimeProtocol.sessionUpdate(config(), s.instructions, s.tools, s.turnDetection)))
+            this@GrokRealtime.configured = true
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

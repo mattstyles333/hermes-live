@@ -7,8 +7,26 @@ import com.folio.hermes.telemetry.TelemetrySink
  * R-Q-1: the cascade runs only when the user picked it **and** a usable OpenRouter key is saved.
  * Asking never decrypts the key and never builds anything.
  */
-class CascadeGate(private val settings: () -> LiveSettings, private val key: () -> KeyStatus) {
+class CascadeGate(
+    private val settings: () -> LiveSettings,
+    private val key: () -> KeyStatus,
+    /** The xAI key (grok-voice slice); none by default. */
+    private val xaiKey: () -> KeyStatus = { KeyStatus() },
+) {
+    /** Bill: engine `cascade` and a usable OpenRouter key. */
     val active: Boolean get() = settings().voiceEngine == VoiceEngine.Cascade && key().usable
+
+    /** Grok Voice: engine Grok and a usable xAI key. */
+    val grokActive: Boolean get() = settings().voiceEngine == VoiceEngine.Grok && xaiKey().usable
+
+    /**
+     * The Hermes task machinery (the runtime: actor, store, gateway, off-call service) is wanted:
+     * Bill, or Grok (which drives the same tasks through the shared task API).
+     */
+    val tasksActive: Boolean get() = active || grokActive
+
+    /** Bill could run a call (a usable OpenRouter key), whichever engine is chosen: Grok's offline fallback. */
+    val billAvailable: Boolean get() = key().usable
 }
 
 /** What the cascade needs from the app shell when it is built. Everything is lazy or a provider. */
@@ -41,8 +59,8 @@ fun interface CascadeFactory {
 }
 
 /**
- * The one way to get a cascade: [runtime] builds it through [factory] only while [gate] is open,
- * and closes it as soon as the gate shuts (engine switched back, key removed or refused). With
+ * The one way to get a cascade: [runtime] builds it through [factory] only while [gate] is open
+ * (Bill, or Grok for its tasks: [CascadeGate.tasksActive]), and closes it as soon as the gate shuts (engine switched back, key removed or refused). With
  * the engine on `gpt-live`, or no key, nothing is built: no speech-to-text, no OpenRouter, no
  * Hermes task sessions, no off-call service (R-Q-1; `CascadeOffStateTest`).
  */
@@ -55,7 +73,7 @@ class CascadeShell(
 
     @Synchronized
     fun runtime(): CascadeRuntime? {
-        if (!gate.active) {
+        if (!gate.tasksActive) {
             release()
             return null
         }

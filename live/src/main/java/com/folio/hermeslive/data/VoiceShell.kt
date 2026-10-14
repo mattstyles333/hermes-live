@@ -77,9 +77,15 @@ class VoiceShell(
         OpenRouter(openRouterConfig, key = key, client = client, telemetry = telemetry)
     },
     val dirs: CascadeDirs = CascadeDirs.of(context),
+    /** The xAI key for Grok Voice (null: none, so Grok stays off). */
+    val xaiKeys: OpenRouterKeyStore? = null,
+    xaiChecker: KeyChecker? = null,
 ) {
+    /** Checks an xAI key (`GET /v1/api-key`); tests pass a fake. */
+    val xaiChecker: KeyChecker = xaiChecker ?: XaiKeyChecker(client, telemetry = telemetry)
+
     val storage: CascadeStorage by lazy { CascadeStorage(dirs, telemetry) }
-    val gate = CascadeGate({ settings.settings.value }, { keys.status.value })
+    val gate = CascadeGate({ settings.settings.value }, { keys.status.value }, { xaiKeys?.status?.value ?: KeyStatus() })
     val speechModels: SpeechModels get() = host?.speechModels ?: SpeechModels.None
     val offCallHooks: OffCallHooks get() = host?.offCallHooks ?: OffCallHooks.None
 
@@ -146,7 +152,7 @@ class VoiceShell(
      */
     fun onSettingsChanged() {
         val active = gate.active
-        if (!active) shell.release()
+        if (!gate.tasksActive) shell.release()
         prep.refresh()
         val opened = active && wasActive != true
         wasActive = active
@@ -184,6 +190,7 @@ class VoiceShell(
                     ),
                     client = g.client,
                     host = app as? CascadeHost,
+                    xaiKeys = XaiKeys.store(app),
                 ).also {
                     instance = it
                     it.settleSpeechModels()

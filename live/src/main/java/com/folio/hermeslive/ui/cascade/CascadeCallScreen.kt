@@ -26,6 +26,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -257,7 +258,10 @@ internal fun CascadeCallContent(
             Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))) {
                 TopBar(chrome, now, sections.top, endedAfterMs = endRun?.summary?.durationMs, live = live)
                 Column(early) {
-                    JevStrip(sections.jev, memory.chipEpoch, motion, onAnchor = { jevAnchor[0] = it.x; jevAnchor[1] = it.y }) { memory.decisionsOpen = true }
+                    val strip = chrome.tools?.let { tools -> remember(tools) { mutableStateOf(JevModel(tools, inFlight = tools.any { it.choice == "…" }, latencyMs = null)) } } ?: sections.jev
+                    JevStrip(strip, memory.chipEpoch, motion, label = chrome.stripLabel, onAnchor = { jevAnchor[0] = it.x; jevAnchor[1] = it.y }) {
+                        if (chrome.tools == null) memory.decisionsOpen = true
+                    }
                     ConnectionBanner(sections.banner)
                     Flyouts(memory, motion)
                 }

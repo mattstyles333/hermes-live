@@ -3,6 +3,8 @@ package com.folio.hermeslive.data
 import com.folio.hermes.cascade.CascadeSettings
 import com.folio.hermes.live.BridgeSettings
 import com.folio.hermes.openrouter.CloudSttModels
+import com.folio.hermes.realtime.GrokModels
+import com.folio.hermes.realtime.GrokVoices
 import com.folio.hermeslive.call.FallbackRoute
 import com.folio.hermeslive.call.GapSettings
 
@@ -78,6 +80,14 @@ data class LiveSettings(
      * recognition already wrote the words.
      */
     val transcriptCleanup: TranscriptCleanupMode = TranscriptCleanupMode.OnDeviceOnly,
+
+    // ── Settings › Voice › Grok (off unless [voiceEngine] is Grok and an xAI key is saved) ──
+    /** Grok's voice: a built-in one (`GrokVoices.BUILT_IN`); [grokCustomVoice] wins when set. */
+    val grokVoice: String = GrokVoices.DEFAULT,
+    /** A custom xAI voice id (8 lowercase letters or digits), or empty. */
+    val grokCustomVoice: String = "",
+    /** The realtime model (`grok-voice-latest` by default). */
+    val grokModel: String = GrokModels.DEFAULT,
 ) {
     /** The same settings with every Voice field inside its range (what is saved and used). */
     fun normalized(): LiveSettings = copy(
@@ -87,7 +97,13 @@ data class LiveSettings(
         ttsModel = ttsModel.trim().ifEmpty { DEFAULT_TTS_MODEL },
         vocabulary = cleanVocabulary(vocabulary),
         cloudSttModel = cloudSttModel.trim().takeIf(::isModelId) ?: CloudSttModels.DEFAULT.id,
+        grokVoice = GrokVoices.of(grokVoice).takeIf { it in GrokVoices.BUILT_IN } ?: GrokVoices.DEFAULT,
+        grokCustomVoice = grokCustomVoice.trim().lowercase().takeIf(GrokVoices::isCustomId).orEmpty(),
+        grokModel = grokModel.trim().takeIf { GROK_MODEL.matches(it) } ?: GrokModels.DEFAULT,
     )
+
+    /** The voice id a Grok call uses: the custom id when one is set, else the chosen voice. */
+    fun grokVoiceId(): String = normalized().let { n -> n.grokCustomVoice.ifEmpty { n.grokVoice } }
 
     /**
      * The cascade's knobs from these settings (spec v2 §12: S0 owns the fields, the user sets
@@ -152,6 +168,7 @@ data class LiveSettings(
 
         private val WHITESPACE = Regex("\\s+")
         private val MODEL_ID = Regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$")
+        private val GROK_MODEL = Regex("^grok-voice[A-Za-z0-9._-]*$")
 
         /** An OpenRouter model id's shape (`vendor/model`). */
         fun isModelId(s: String): Boolean = MODEL_ID.matches(s)
@@ -213,6 +230,9 @@ enum class VoiceEngine(val wire: String) {
 
     /** On-phone speech-to-text, Jev, Hermes agents and Bill's voice (spec v2). */
     Cascade("cascade"),
+
+    /** xAI Grok Voice (speech to speech) delegating to Hermes agents through Bill's task table. */
+    Grok("grok"),
     ;
 
     companion object {

@@ -218,10 +218,12 @@ class CascadeAppRuntime(
             notify: (taskId: String, label: String, headline: String) -> Unit,
             learn: (heard: String, meant: String) -> Unit,
             haptic: (kind: String) -> Unit,
+            /** True for a notify kind that must stay quiet now (a Grok call says results itself). */
+            quiet: (kind: String) -> Boolean = { false },
         ): (Effect) -> Unit = { effect ->
             when (effect) {
                 // Spec v2 §14 item 12: the label and headline come from the task state.
-                is Effect.Notify -> effect.taskId?.let { id -> core()?.notifyInfo(id, effect.kind)?.let { notify(id, it.label, it.headline) } }
+                is Effect.Notify -> if (!quiet(effect.kind)) effect.taskId?.let { id -> core()?.notifyInfo(id, effect.kind)?.let { notify(id, it.label, it.headline) } }
                 is Effect.LearnWord -> learn(effect.heard, effect.chosen) // §14 item 13
                 is Effect.Haptic -> haptic(effect.kind)
                 else -> Unit

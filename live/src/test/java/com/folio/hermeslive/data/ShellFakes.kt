@@ -96,6 +96,11 @@ class TestShell(context: Context, name: String, scope: CoroutineScope, val sink:
     val box = SoftwareSecretBox()
     val settings = SettingsStore(context.getSharedPreferences("$name-settings", Context.MODE_PRIVATE))
     val keys = OpenRouterKeyStore(context.getSharedPreferences("$name-key", Context.MODE_PRIVATE), box, sink)
+
+    /** Grok's xAI key (its own box and prefs) and a checker that never leaves the test. */
+    val xaiKeys = OpenRouterKeyStore(context.getSharedPreferences("$name-xai", Context.MODE_PRIVATE), SoftwareSecretBox(), sink, item = "xai_key")
+    var xaiAnswer: KeyCheckResult = KeyCheckResult.Valid
+    val xaiChecks = AtomicInteger()
     private val config = OpenRouterConfig(baseUrl = "https://openrouter.example/api/v1", retryBackoffMs = 1)
     val shell = VoiceShell(
         context = context,
@@ -112,5 +117,7 @@ class TestShell(context: Context, name: String, scope: CoroutineScope, val sink:
             OpenRouter(config, key = key, client = server.client(), telemetry = sink)
         },
         dirs = CascadeDirs(java.io.File(context.noBackupFilesDir, "cascade-$name"), java.io.File(context.cacheDir, "share-$name")),
+        xaiKeys = xaiKeys,
+        xaiChecker = KeyChecker { xaiChecks.incrementAndGet(); xaiAnswer },
     )
 }

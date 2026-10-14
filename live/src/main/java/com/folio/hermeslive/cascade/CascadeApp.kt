@@ -9,6 +9,7 @@ import com.folio.hermes.cascade.BillVoice
 import com.folio.hermes.cascade.CascadeCore
 import com.folio.hermes.cascade.CascadePorts
 import com.folio.hermes.cascade.PhraseBank
+import com.folio.hermes.cascade.registry.DurableTaskRegistry
 import com.folio.hermes.cascade.ports.Clock
 import com.folio.hermes.cascade.ports.LiveOpenRouter
 import com.folio.hermes.openrouter.OpenRouter
@@ -50,6 +51,12 @@ class CascadeApp(
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val running = MutableStateFlow(0)
+
+    /**
+     * A Grok call is live: Grok tells the user about finished and failed tasks itself, so their
+     * notifications stay quiet (as during a Bill call); "needs you" still notifies.
+     */
+    @Volatile var grokLive: Boolean = false
 
     /** Voice tasks running (0 until a runtime exists). */
     val tasksRunning: StateFlow<Int> = running.asStateFlow()
@@ -93,6 +100,7 @@ class CascadeApp(
                 notify = { id, label, headline -> ResultNotifications.post(context, TaskResultNotice(id, label, headline)) },
                 learn = { heard, meant -> runCatching { shell.vocabulary.learn(heard, meant) } },
                 haptic = { main.post(onHaptic) },
+                quiet = { kind -> grokLive && kind != DurableTaskRegistry.NOTIFY_NEEDS_YOU },
             ),
         )
         return CascadeAppRuntime(

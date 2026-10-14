@@ -43,6 +43,8 @@ class OpenRouterKeyStore(
     private val prefs: SharedPreferences,
     private val box: SecretBox,
     private val telemetry: TelemetrySink = TelemetrySink.Default,
+    /** The telemetry item name (`openrouter_key`, `xai_key`): which key failed, never the key. */
+    private val item: String = "openrouter_key",
 ) {
     private val _status = MutableStateFlow(readStatus())
     val status: StateFlow<KeyStatus> = _status.asStateFlow()
@@ -98,7 +100,7 @@ class OpenRouterKeyStore(
 
     // The exception's type only: a message could echo what was being sealed.
     private fun report(name: String, e: Exception) = runCatching {
-        telemetry.event(name, mapOf("item" to "openrouter_key", "type" to e.javaClass.simpleName.lowercase()), true)
+        telemetry.event(name, mapOf("item" to item, "type" to e.javaClass.simpleName.lowercase()), true)
     }
 
     companion object {
@@ -118,13 +120,14 @@ object KeyPaste {
         data class Problem(val message: String) : Parsed
     }
 
-    fun parse(clip: CharSequence?): Parsed {
+    /** [provider] names the key in the messages (`OpenRouter`, `xAI`). */
+    fun parse(clip: CharSequence?, provider: String = "OpenRouter"): Parsed {
         val text = clip?.toString()?.trim()?.removePrefix("Bearer ")?.trim().orEmpty()
         return when {
-            text.isEmpty() -> Parsed.Problem("The clipboard is empty. Copy your OpenRouter key first.")
+            text.isEmpty() -> Parsed.Problem("The clipboard is empty. Copy your $provider key first.")
             text.any { it.isWhitespace() } -> Parsed.Problem("That isn't a key: it has spaces in it.")
-            text.length !in MIN_LENGTH..MAX_LENGTH -> Parsed.Problem("That doesn't look like an OpenRouter key.")
-            text.any { it.code !in 0x21..0x7e } -> Parsed.Problem("That doesn't look like an OpenRouter key.")
+            text.length !in MIN_LENGTH..MAX_LENGTH -> Parsed.Problem("That doesn't look like an $provider key.")
+            text.any { it.code !in 0x21..0x7e } -> Parsed.Problem("That doesn't look like an $provider key.")
             else -> Parsed.Key(text)
         }
     }
