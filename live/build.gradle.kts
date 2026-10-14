@@ -48,8 +48,8 @@ android {
         applicationId = "com.folio.hermeslive"
         minSdk = 31
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.1.0"
+        versionCode = 5
+        versionName = "1.2.0"
         // Instrumented tests (S-C audio and STT, on the emulator). Long corpus benches run only
         // with the instrumentation argument bench=true (see src/androidTest/README.md).
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
