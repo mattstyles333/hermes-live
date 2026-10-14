@@ -83,6 +83,12 @@ data class ConnectionState(
     val hermesUp: Boolean = false,
     /** Phase 1 (S-B): memo mode is on (offline during a call, or started offline; R-OFF-1/2). */
     val memo: Boolean = false,
+    /**
+     * The `Network` port's last word (additive, test-shape slice). [online] also turns false when a
+     * request fails as offline while the port still says online; then the outbox retries on a timer
+     * (`CascadeSettings.offlineRetryMs`), since no network change will come to flush it.
+     */
+    val portOnline: Boolean = true,
 )
 
 /** Decision-log bookkeeping: records waiting for their first audio. */
@@ -173,6 +179,8 @@ data class State(
     val jev: JevStatus = JevStatus(),
     /** The pause ring: tick timer seq while it runs, when the silence began, and its fill 0..1. */
     val tickSeq: Long? = null,
+    /** The outbox retry timer while held turns wait with the port online (additive). */
+    val outboxRetrySeq: Long? = null,
     val tickBegan: Long = 0L,
     val pauseProgress: Float = 0f,
     val actions: ActionQueue = ActionQueue(),

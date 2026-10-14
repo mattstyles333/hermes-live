@@ -176,6 +176,7 @@ class CascadeCore private constructor(
             zone: ZoneId = ZoneId.systemDefault(),
             gate: EffectGate = EffectGate.Open,
             seed: Long = Random.nextLong(),
+            trace: (Event, State) -> Unit = { _, _ -> },
         ): CascadeCore {
             val env = env(bank, MemoRouting(zone))
             val actor = CascadeActor(
@@ -196,6 +197,7 @@ class CascadeCore private constructor(
                 onAppEffect = onAppEffect,
                 gate = gate,
                 seed = seed,
+                trace = trace,
             )
             return CascadeCore(actor, env, ports, scope)
         }

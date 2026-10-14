@@ -244,6 +244,17 @@ class Tx(var s: State, val env: CascadeEnv) {
         if (f.sent > 0) report("cascade.outbox", mapOf("event" to "sent", "count" to f.sent, "size" to s.outbox.size))
     }
 
+    /**
+     * A request failed as offline but the network port says online: no network change will come
+     * to flush the outbox, so retry it after `offlineRetryMs` (the reducer's [CascadeReducer.OUTBOX_RETRY]).
+     */
+    fun armOutboxRetry() {
+        if (!s.connection.portOnline || s.outboxRetrySeq != null) return
+        val seq = nextSeq()
+        s = s.copy(outboxRetrySeq = seq)
+        effects += Effect.StartTimer(Timer(CascadeReducer.OUTBOX_RETRY, seq), s.settings.offlineRetryMs)
+    }
+
     /** Hold a turn for the network (C1 `holdOffline`): the first hold while online says `error.offline`. */
     fun holdOffline(turnId: String, turn: HeldTurn): Boolean {
         val (box, held) = s.outbox.hold(turnId, turn)
@@ -253,6 +264,7 @@ class Tx(var s: State, val env: CascadeEnv) {
             s = s.copy(connection = s.connection.copy(online = false))
             emit(CascadeEvent.Offline)
             say(AppLines.OFFLINE, SpeechKind.Reply)
+            armOutboxRetry()
         }
         report("cascade.outbox", mapOf("event" to "held", "size" to s.outbox.size))
         env.conversation.held(this, turnId, turn)

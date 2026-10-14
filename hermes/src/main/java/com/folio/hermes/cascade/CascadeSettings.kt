@@ -39,6 +39,11 @@ data class CascadeSettings(
     val redirectFloor: Double = 0.6,
     /** Without Jev (unavailable or offline), a turn commits at `pause + this`. R-RT-8. */
     val noJevCommitExtraMs: Long = 500L,
+    /**
+     * Held turns retry after this when a request failed as offline but the network port still
+     * says online (or came back while the turn was being held): no network change would flush them.
+     */
+    val offlineRetryMs: Long = 10_000L,
     /** Offer Jev the `listen` backchannel lines (Settings, default off). */
     val backchannel: Boolean = false,
     /** Exchanges in Jev's `state.recent`. R-CTX-1. */
