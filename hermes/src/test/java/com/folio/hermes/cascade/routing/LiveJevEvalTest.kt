@@ -4,6 +4,7 @@ import com.folio.hermes.cascade.PhraseBank
 import com.folio.hermes.openrouter.JevAnswer
 import com.folio.hermes.openrouter.OpenRouter
 import com.folio.hermes.openrouter.OpenRouterResult
+import java.time.LocalDate
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -18,6 +19,10 @@ annotation class LiveJev
  * hooks' questions and wording, then the R-CTX-1 budget). The hub runs it; it is skipped without
  * `OPENROUTER_API_KEY`, and always when `CI` is set. The key is read from the environment and
  * never printed.
+ *
+ * **Record mode** (`RECORD_JEV=1`, plus the key): also writes each case's request fingerprint and
+ * Jev's answers to `src/test/resources/…/routing/jev-recorded-<date>.json` ([JevRecording]),
+ * which [RecordedJevTest] replays offline in Tier 0. Re-record when the Jev wording changes.
  *
  * Per question (spec v2 §14 item 16), for information:
  * - **raw:** Jev's answer as the probe scores it, with a confusion matrix;
@@ -39,6 +44,8 @@ class LiveJevEvalTest {
         assumeTrue("never in CI", System.getenv("CI").isNullOrBlank())
         val bank = PhraseBank.load()
         val router = OpenRouter(key = { key })
+        val record = System.getenv("RECORD_JEV") == "1"
+        val recorded = mutableListOf<JevRecording.Recorded>()
         for (set in listOf(RoutingEvals.TUNED, RoutingEvals.HELD_OUT)) {
             val results = RoutingEvals.load(set).map { case ->
                 val request = RoutingEvals.request(case, bank)
@@ -47,6 +54,19 @@ class LiveJevEvalTest {
                 Triple(case, (result as? OpenRouterResult.Ok)?.value, (System.nanoTime() - started) / 1_000_000)
             }
             report(set, results, bank)
+            if (record) {
+                recorded += results.map { (case, answers, ms) ->
+                    JevRecording.Recorded(
+                        set = set, id = case.id, fingerprint = JevRecording.fingerprint(case, bank, router.config.jevModel),
+                        answers = answers, ms = ms, effective = answers?.let { RoutingEvals.effective(case, it, bank) }.orEmpty(),
+                    )
+                }
+            }
+        }
+        if (record) {
+            // Answers and fingerprints only: never the key, headers or anything said by a person.
+            val file = JevRecording.write(JevRecording.Recording(LocalDate.now().toString(), router.config.jevModel, recorded))
+            println("\n== recorded ${recorded.size} cases (${recorded.count { it.answers == null }} without an answer) to ${file.path}")
         }
     }
 
