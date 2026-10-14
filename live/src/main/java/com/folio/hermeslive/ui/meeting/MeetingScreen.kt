@@ -114,7 +114,7 @@ fun MeetingScreenView(screen: MeetingScreen, nowMs: Long, actions: MeetingAction
                 }
                 MeetingScreen.NeedsModels -> Message(
                     "Prepare speech models first",
-                    "Meeting notes use Bill's speech models on the phone. Download them in Settings › Voice › Speech models.",
+                    "Meeting notes use Bill's speech models on the phone. In Settings › Voice, choose Bill as the voice engine, then download them under Speech models.",
                     tag = "meeting-needs-models",
                 ) {
                     Pill("Open Settings", filled = true, tag = "meeting-prepare", onClick = actions.onPrepareModels)
@@ -275,7 +275,7 @@ fun doneTitle(s: MeetingScreen.Done): String = when (s.outcome) {
 }
 
 fun doneText(s: MeetingScreen.Done): String = when (val o = s.outcome) {
-    is MeetingOutbox.Outcome.Sent -> "\"${MeetingBrief.label(s.meta)}\" is with Hermes. You'll get a notification when the notes are ready; Hear it reads the summary."
+    is MeetingOutbox.Outcome.Sent -> "\"${MeetingBrief.label(s.meta)}\" is with Hermes. When the notes are ready you'll get a notification with Hear it, like any task."
     is MeetingOutbox.Outcome.Held -> heldText(o.reason)
     MeetingOutbox.Outcome.Missing, null -> "The transcript stays on the phone. Send it any time from Settings › Meeting mode."
 }

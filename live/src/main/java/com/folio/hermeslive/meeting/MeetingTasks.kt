@@ -25,6 +25,14 @@ sealed interface MeetingSubmit {
 fun interface MeetingTasks {
     suspend fun submit(brief: String, label: String, key: String): MeetingSubmit
 
+    /**
+     * Get ready to send, before any meeting data is read: the app's builds Bill's runtime here,
+     * and building it wipes the store first when another account has signed in since
+     * (`CascadeSignOut.ownedBy`). So a meeting recorded for one account is gone before it could
+     * be read for another. Default: nothing.
+     */
+    suspend fun prepare() = Unit
+
     companion object {
         /** Nothing connected: every submit is held. */
         val None = MeetingTasks { _, _, _ -> MeetingSubmit.NotAvailable("not_connected") }

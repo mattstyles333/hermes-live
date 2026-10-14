@@ -96,10 +96,42 @@ class MeetingOutboxTest {
         rig.ended()
         rig.outbox.queue("m1")
         rig.log.put(rig.log.meta("m1")!!.copy(additions = listOf("Add the budget")))
-        rig.outbox.queue("m1", resend = true)
+        rig.outbox.queue("m1")
         assertEquals(listOf("meeting-m1-1", "meeting-m1-2"), rig.tasks.calls.map { it.key })
         assertTrue(rig.tasks.calls[1].brief.contains("Add the budget"))
         assertEquals("task-meeting-m1-2", rig.log.meta("m1")!!.taskId)
+    }
+
+    @Test fun sendingAHeldMeetingAgainFromHistoryKeepsItsKey() = runTest {
+        val rig = Rig()
+        rig.ended()
+        // The first start may be in the task table already; only its reply was lost.
+        rig.tasks.reply = { MeetingSubmit.NotAvailable("no_reply") }
+        rig.outbox.queue("m1")
+        rig.tasks.reply = { MeetingSubmit.Sent("t-1") }
+        rig.outbox.queue("m1")
+        assertEquals(listOf("meeting-m1-1", "meeting-m1-1"), rig.tasks.calls.map { it.key })
+        assertEquals(1, rig.log.meta("m1")!!.sends)
+    }
+
+    @Test fun anotherAccountsWipeBeforeTheSendMeansNothingIsSent() = runTest {
+        val rig = Rig()
+        rig.ended()
+        rig.tasks.reply = { MeetingSubmit.Offline }
+        rig.outbox.queue("m1")
+        assertEquals(1, rig.tasks.calls.size)
+        // Building Bill's runtime for a different account wipes the store first.
+        val wiping = object : MeetingTasks {
+            override suspend fun prepare() {
+                rig.store.keys(MeetingLog.PREFIX).forEach { rig.store.put(it, null) }
+            }
+            override suspend fun submit(brief: String, label: String, key: String): MeetingSubmit = rig.tasks.submit(brief, label, key)
+        }
+        val outbox = MeetingOutbox(rig.log, { wiping }, { rig.writer }, { ZoneId.of("UTC") }, { rig.now }, Events())
+        assertEquals(0, outbox.flush())
+        assertEquals(MeetingOutbox.Outcome.Missing, outbox.send("m1"))
+        assertEquals(1, rig.tasks.calls.size)
+        assertTrue(rig.log.all().isEmpty())
     }
 
     @Test fun inMeetingTasksAreHeldAndRetriedWithTheirOwnKey() = runTest {

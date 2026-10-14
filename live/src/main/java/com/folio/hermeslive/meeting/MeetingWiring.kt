@@ -51,6 +51,11 @@ class CascadeMeetingTasks(
     private val signedIn: () -> Boolean,
     private val afterStart: () -> Unit = {},
 ) : MeetingTasks {
+    /** Build Bill's runtime now (its account check may wipe the store) before the outbox reads a meeting. */
+    override suspend fun prepare() {
+        if (signedIn()) tasks()
+    }
+
     override suspend fun submit(brief: String, label: String, key: String): MeetingSubmit {
         if (!signedIn()) return MeetingSubmit.NotAvailable("signed_out")
         val api = tasks() ?: return MeetingSubmit.NotAvailable("bill_off")

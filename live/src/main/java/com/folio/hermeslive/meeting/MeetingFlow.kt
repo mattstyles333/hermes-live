@@ -319,7 +319,8 @@ class MeetingFlow(
         return MeetingBrief.transcriptLines(t, zone()).joinToString("\n").ifEmpty { "(nothing was transcribed)" }
     }
 
-    fun resend(id: String) = scope.launch { outbox.queue(id, resend = true) }
+    /** History's Send: a held meeting is tried again with its own key; a sent one goes again as a new request. */
+    fun resend(id: String) = scope.launch { outbox.queue(id) }
 
     fun delete(id: String) {
         if (sessionFlow.value?.id == id) return

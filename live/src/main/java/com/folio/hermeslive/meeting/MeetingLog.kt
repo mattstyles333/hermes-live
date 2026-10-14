@@ -6,8 +6,9 @@ import kotlinx.serialization.json.Json
 /**
  * Meetings in the cascade's durable [Store] (the same `FileStore`: fsynced, CRC per line, torn
  * lines skipped). Every key starts with `cascade.meeting.`, so a Hermes sign-out wipes meetings
- * with the rest of Bill's account-bound state (`CascadeSignOut`): a held meeting never reaches
- * another account's server.
+ * with the rest of Bill's account-bound state (`CascadeSignOut`), and Bill's runtime wipes them
+ * when another account signs in (`CascadeSignOut.ownedBy`, run by [MeetingTasks.prepare] before the
+ * outbox reads a meeting): a held meeting never reaches another account's server.
  *
  * | Key / log | What |
  * |---|---|

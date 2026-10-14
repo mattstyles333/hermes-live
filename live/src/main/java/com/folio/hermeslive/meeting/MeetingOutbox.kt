@@ -38,23 +38,34 @@ class MeetingOutbox(
     }
 
     /** Send meeting [id] now if it is queued (its stored brief, or a fresh one). */
-    suspend fun send(id: String): Outcome = lock.withLock { sendLocked(id) }
+    suspend fun send(id: String): Outcome = lock.withLock {
+        prepare()
+        sendLocked(id)
+    }
 
-    /** Ask to send meeting [id] (after the meeting, or again from history), then try at once. */
-    suspend fun queue(id: String, resend: Boolean = false): Outcome = lock.withLock {
+    /**
+     * Ask to send meeting [id] (after the meeting, or from history), then try at once. A queued
+     * meeting keeps its key and stored brief (its first start may already be in the task table,
+     * with the reply lost); only a meeting already **sent** becomes a new request (a new key and a
+     * fresh brief, so additions made since count).
+     */
+    suspend fun queue(id: String): Outcome = lock.withLock {
+        prepare()
         val meta = log.meta(id) ?: return@withLock Outcome.Missing
         if (meta.phase.live) return@withLock Outcome.Missing
-        if (resend || meta.phase != MeetingPhase.Queued) {
-            // Each send is a new request (a new key and a fresh brief, so additions made since count);
-            // retries of one send keep its key and its stored brief.
+        if (meta.phase != MeetingPhase.Queued) {
             log.putBrief(id, null)
             log.put(meta.copy(phase = MeetingPhase.Queued, queuedAt = wall(), sends = meta.sends + 1, taskId = null, heldReason = null))
         }
         sendLocked(id)
     }
 
+    /** Before any meeting is read: the task side may wipe the store for another account. */
+    private suspend fun prepare() = runCatching { tasks().prepare() }
+
     /** Try everything held: queued meetings, then tasks Hermes has not taken. */
     suspend fun flush(): Int = lock.withLock {
+        prepare()
         var sent = 0
         log.all().filter { it.phase == MeetingPhase.Queued }.forEach { if (sendLocked(it.id) is Outcome.Sent) sent++ }
         log.tasks().filter { it.taskId == null }.forEach { if (sendTaskLocked(it) is Outcome.Sent) sent++ }
@@ -63,6 +74,7 @@ class MeetingOutbox(
 
     /** Hold and try one in-meeting task. */
     suspend fun task(task: MeetingTask): Outcome = lock.withLock {
+        prepare()
         log.putTask(task)
         sendTaskLocked(task)
     }
