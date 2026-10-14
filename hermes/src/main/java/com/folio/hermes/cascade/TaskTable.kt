@@ -351,6 +351,8 @@ data class TaskTable(
             is TurnUpdate.Accepted -> {
                 // Hermes has this run's text: it never needs sending again.
                 run = run.copy(accepted = true, text = null)
+                // The card stops spinning (R-DUR-2): once per task, on its first acceptance.
+                if (!t.accepted) event = CascadeEvent.TaskAccepted(t.id)
                 t = t.copy(
                     accepted = true,
                     queuedAtServer = update.status == SubmitStatus.Queued && run.kind == RunKind.Start,

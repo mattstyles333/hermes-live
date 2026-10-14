@@ -88,6 +88,7 @@ class BillSmokeTest {
         val out = CapturingAudioOut()
         val corpus = CorpusAudioSource(pace = 2.0)
         val events = ArrayList<Pair<Long, CascadeEvent>>()
+        val statuses = HashMap<String, LinkedHashMap<TaskUiStatus, Long>>()
         val watch = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val result = JSONObject()
         try {
@@ -99,6 +100,9 @@ class BillSmokeTest {
             val signIn = runBlocking { g.account.signIn(args.getString("hermesUrl") ?: "http://10.0.2.2:18119", "fake", "fake-password") }
             assertTrue("signed in to the fake Hermes: $signIn", signIn is SignInResult.Ok)
             shell.shell.release()
+            // A fresh Bill: what earlier runs left in his durable store (an offline memo held by the
+            // dry run, a task waiting on approval) would otherwise be sent or recovered in this call.
+            freshBill(shell)
             shell.keys.save(key!!, KeyCheck.Valid)
             // Not shell.onSettingsChanged(): that would auto-prepare (about 285 TTS requests). Stock
             // lines are therefore not cached here: their latency is an upper bound.
@@ -117,6 +121,13 @@ class BillSmokeTest {
             val engine = g.calls.cascadeEngine as CascadeCallEngine
             val actor = engine.session!!.core.actor
             watch.launch { actor.events.collect { e -> synchronized(events) { events += System.nanoTime() / 1_000_000 to e } } }
+            // First time each task shows each status (the card's Starting → Running → Done).
+            watch.launch {
+                actor.ui.collect { ui ->
+                    val now = System.nanoTime() / 1_000_000
+                    synchronized(statuses) { ui.tasks.forEach { t -> statuses.getOrPut(t.id) { LinkedHashMap() }.putIfAbsent(t.status, now) } }
+                }
+            }
             // The noise floor learns over the first 2 s: give it quiet first (the source idles in silence).
             Thread.sleep(2_500)
 
@@ -139,29 +150,50 @@ class BillSmokeTest {
                 return
             }
             waitFor("turn committed", 20_000) { at { it is CascadeEvent.TurnCommitted } != null }
-            waitFor("task started", 30_000) { actor.ui.value.tasks.isNotEmpty() }
-            waitFor("task running", 30_000) { actor.ui.value.tasks.any { it.status == TaskUiStatus.Running || it.currentTool != null } }
+            // This call's task: the one the committed turn started (never an older card).
+            fun ours() = actor.state.value.tasks.tasks.firstOrNull { t -> synchronized(events) { events.any { (_, e) -> e is CascadeEvent.TurnCommitted && e.turnId == t.turnId } } }
+            val taskId = run {
+                waitFor("task started", 30_000) { ours() != null }
+                ours()!!.id
+            }
+            // The ui projection follows the state a moment later: the card may not be there yet.
+            fun card() = actor.ui.value.tasks.firstOrNull { it.id == taskId }
+            fun seen(status: TaskUiStatus) = synchronized(statuses) { statuses[taskId]?.get(status) }
+            waitFor("task running", 30_000) { card()?.let { it.status == TaskUiStatus.Running || it.currentTool != null } == true }
+            waitFor("a tool on the card", 10_000) { card()?.let { it.currentTool != null || it.steps > 0 } == true }
+            // Let the card settle on screen (the satellite fades in over about 0.3 s), then capture
+            // while the fake's tools are still running (its stock check takes about 2.5 s).
+            Thread.sleep(700)
+            result.put("midtask_card", card()?.status?.name)
             shell("screencap -p /sdcard/Download/bill-smoke-midtask.png")
-            waitFor("task finished", 60_000) { at { it is CascadeEvent.TaskFinished } != null }
-            waitFor("result spoken", 60_000) { at { it is CascadeEvent.ResultSpoken } != null && !actor.speaking }
-            val task = actor.ui.value.tasks.first()
+            waitFor("task finished", 60_000) { at { it is CascadeEvent.TaskFinished && it.id == taskId } != null }
+            waitFor("result spoken", 60_000) { at { it is CascadeEvent.ResultSpoken && it.id == taskId } != null && !actor.speaking }
+            val task = card()!!
             val played = out.played
+            val started = at { it is CascadeEvent.TaskStarted && it.id == taskId }!!
+            val finished = at { it is CascadeEvent.TaskFinished && it.id == taskId }!!
             result
                 .put("route", actor.ui.value.jev.action?.choice)
                 .put("tasks", actor.ui.value.tasks.size)
                 .put("task_status", task.status.name)
+                .put("task_statuses", synchronized(statuses) { statuses[taskId]?.keys?.joinToString(",") { it.name } })
                 .put("task_steps", task.steps)
                 .put("clips_played", played.size)
                 .put("speech_end_to_commit_ms", at { it is CascadeEvent.TurnCommitted }!! - speechEnd)
-                .put("speech_end_to_first_audio_ms", played.firstOrNull()?.let { it.startedAtMs - speechEnd })
-                .put("speech_end_to_accepted_ms", at { it is CascadeEvent.TaskAccepted }?.let { it - speechEnd })
-                .put("task_finished_to_result_audio_ms", at { it is CascadeEvent.TaskFinished }!!.let { fin -> played.firstOrNull { it.startedAtMs >= fin }?.startedAtMs?.minus(fin) })
+                .put("speech_end_to_stock_line_ms", played.firstOrNull()?.let { it.startedAtMs - speechEnd })
                 .put("jev_latency_ms", actor.ui.value.jev.latencyMs)
+                .put("speech_end_to_task_started_ms", started - speechEnd)
+                .put("task_started_to_accepted_ms", at { it is CascadeEvent.TaskAccepted && it.id == taskId }?.let { it - started })
+                .put("task_started_to_running_ms", seen(TaskUiStatus.Running)?.let { it - started })
+                .put("task_started_to_first_tool_ms", at { it is CascadeEvent.ToolStarted && it.id == taskId }?.let { it - started })
+                .put("task_finished_to_result_audio_ms", played.firstOrNull { it.startedAtMs >= finished }?.startedAtMs?.minus(finished))
+                .put("task_finished_to_result_spoken_ms", at { it is CascadeEvent.ResultSpoken && it.id == taskId }!! - finished)
             main { g.calls.end() }
             waitFor("call ended", 10_000) { !g.calls.state.value.inCall }
             scenario.close()
             assertEquals("new_task", actor.ui.value.jev.action?.choice ?: result.optString("route"))
             assertEquals(1, result.getInt("tasks"))
+            assertEquals(TaskUiStatus.Done.name, result.getString("task_status"))
             assertTrue("a stock line and the result were spoken", played.size >= 2)
             result.put("pass", true)
         } catch (e: Throwable) {
@@ -178,6 +210,14 @@ class BillSmokeTest {
             shell.onSettingsChanged()
             runBlocking { g.account.signOut() }
         }
+    }
+
+    /** Wipe Bill's durable store, decision log and rotations (keep the TTS cache and the speech models). No runtime may be open. */
+    private fun freshBill(shell: VoiceShell) {
+        shell.shell.release()
+        shell.dirs.store.deleteRecursively()
+        shell.dirs.decisions.delete()
+        shell.dirs.rotations.delete()
     }
 
     private companion object {
@@ -200,7 +240,32 @@ class BillSmokeTest {
         }
         val b = bytes.toByteArray()
         val src = ShortArray(b.size / 2) { i -> ((b[2 * i].toInt() and 0xff) or (b[2 * i + 1].toInt() shl 8)).toShort() }
-        val n = (src.size.toLong() * 16_000 / rate).toInt()
-        return ShortArray(n) { i -> src[minOf(src.size - 1, (i.toLong() * rate / 16_000).toInt())] }
+        return resample(src, rate, 16_000)
+    }
+
+    /**
+     * Band-limited resampling (windowed sinc, cut-off just under the lower Nyquist). Picking every
+     * 1.5th sample instead folds 8-12 kHz into the speech band and smears the consonants the
+     * recogniser needs (a phone's mic has an anti-alias filter; the test input should too).
+     */
+    private fun resample(src: ShortArray, from: Int, to: Int): ShortArray {
+        if (from == to) return src
+        val ratio = from.toDouble() / to
+        val cutoff = 0.95 * minOf(1.0, to.toDouble() / from)
+        val half = 16
+        val n = (src.size / ratio).toInt()
+        return ShortArray(n) { i ->
+            val centre = i * ratio
+            val first = kotlin.math.ceil(centre - half / cutoff).toInt().coerceAtLeast(0)
+            val last = kotlin.math.floor(centre + half / cutoff).toInt().coerceAtMost(src.size - 1)
+            var acc = 0.0
+            for (j in first..last) {
+                val x = (j - centre) * cutoff
+                val sinc = if (x == 0.0) 1.0 else kotlin.math.sin(Math.PI * x) / (Math.PI * x)
+                val window = 0.5 + 0.5 * kotlin.math.cos(Math.PI * x / half)
+                acc += src[j] * cutoff * sinc * window
+            }
+            acc.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+        }
     }
 }

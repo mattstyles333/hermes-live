@@ -257,8 +257,12 @@ class CascadeReduceTest {
         assertEquals(listOf("stock check"), UiProjection.project(s).tasks.map { it.label })
         assertEquals(SendState.Sending, UiProjection.project(s).tasks.single().send)
 
-        at(1_300, Event.TaskUpdated("t1", submit.runId, TurnUpdate.Accepted("rt1", com.folio.hermes.SubmitStatus.Streaming)))
+        val accepted = at(1_300, Event.TaskUpdated("t1", submit.runId, TurnUpdate.Accepted("rt1", com.folio.hermes.SubmitStatus.Streaming)))
         assertEquals(SendState.Accepted, UiProjection.project(s).tasks.single().send)
+        // The card stops spinning: TaskAccepted once, on the task's first acceptance.
+        assertEquals(listOf(CascadeEvent.TaskAccepted("t1")), accepted.emitted().filterIsInstance<CascadeEvent.TaskAccepted>())
+        assertTrue(at(1_301, Event.TaskUpdated("t1", submit.runId, TurnUpdate.Accepted("rt1", com.folio.hermes.SubmitStatus.Streaming))).emitted().none { it is CascadeEvent.TaskAccepted })
+        assertEquals(TaskUiStatus.Running, UiProjection.project(s).tasks.single().status)
         // Status never submits (R-TASK-3).
         val statusAnswer = ok("turn" to answer("done"), "action" to answer("status"), "task" to answer("t1"), "enough" to answer("line_then_writer"))
         val seq2 = sayAndPause("how's it going", from = 10_000)

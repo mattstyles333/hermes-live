@@ -37,7 +37,7 @@ DRY_RUN=1 tools/cascade-smoke.sh [out-dir]              # no key, no OpenRouter 
 
 It starts `tools/fake-hermes/run.sh` if nothing answers on :18119 (and resets only a fake it
 started), builds, `adb install -r` (the models stay), runs the one class with `am instrument`,
-records 20 s of screen, and writes `bill.json` (timings, no transcripts), the fake's prompt count
+records 45 s of screen, and writes `bill.json` (timings, no transcripts), the fake's prompt count
 and double-submit check, and a mid-task screenshot to out-dir (default
 `~/reports/assets/hermes-cascade-smoke`). The key goes in as `-e openrouterKey` and is never written.
 
@@ -63,7 +63,15 @@ What `BillSmokeTest` does, i.e. the hooks an emulator test uses (debug builds on
    (the microphone service's while-in-use rule). Wait for `graph.calls.state.value.phase == Live`.
 5. **Watch Bill:** `(graph.calls.cascadeEngine as CascadeCallEngine).session!!.core.actor` has
    `ui` (`CascadeUiState`) and `events` (`CascadeEvent`: `TurnCommitted`, `TurnHeld`,
-   `TaskFinished`, `ResultSpoken`…; `TaskAccepted` is not emitted by the core yet).
+   `TaskAccepted`, `TaskFinished`, `ResultSpoken`…). Follow the task the committed turn started
+   (`TaskRecord.turnId`), never `tasks.first()`.
+6. **Fresh Bill:** the test deletes Bill's durable store, decision log and rotations first (the
+   TTS cache and the speech models stay). Otherwise what an earlier run left is sent or
+   recovered in this call: the dry run's offline memo became a task that stopped at the fake's
+   approval step, and the first real smoke timed out waiting for "running" on that card.
+7. **Spoken input:** the request is spoken by OpenRouter TTS (24 kHz) and resampled to 16 kHz with
+   a band-limited filter. Picking samples without one aliased the consonants: "stock" was heard
+   as "sto", Jev waited for more (`turn` 0.48) and the turn was parked.
    End with `graph.calls.end()` on the main thread.
 
 `DRY_RUN` adds `BuildHooks.hosts = mapOf("openrouter.ai" to "127.0.0.1")` and a placeholder key,
