@@ -238,6 +238,17 @@ class GoldenCallTest {
 
         fun task(id: String) = actor.ui.value.tasks.first { it.id == id }
 
+        /**
+         * At least [count] results spoken, Bill quiet, and each spoken task already Done on its
+         * card. The result is spoken from the turn's Completed update; the card turns Done when
+         * the run ends, a separate actor event. With instant speech either can land first, so a
+         * wait on the speech alone could see the card still Running.
+         */
+        fun resultsSpoken(count: Int = 1): Boolean {
+            val spoken = events.filterIsInstance<CascadeEvent.ResultSpoken>()
+            return spoken.size >= count && spoken.all { r -> actor.ui.value.tasks.any { it.id == r.id && it.status == TaskUiStatus.Done } } && !actor.speaking
+        }
+
         /** What the user heard: a stock line as its slot id, anything else (writer, results) as quoted text. */
         fun heard(): List<String> = out.said.map { text -> bank.slots.firstOrNull { text in it.lines }?.id ?: "\"$text\"" }
 
@@ -269,7 +280,7 @@ class GoldenCallTest {
         call.start()
         call.say("Check how many Kestrel aviators we have in stock.")
 
-        call.until("the result spoken") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        call.until("the result spoken") { call.resultsSpoken() }
         val task = call.actor.ui.value.tasks.single()
         assertEquals(TaskUiStatus.Done, task.status)
         assertEquals("both tool steps reached the card: $task events ${call.events.filter { it is CascadeEvent.ToolStarted || it is CascadeEvent.ToolFinished }}", 2, task.steps)
@@ -325,7 +336,7 @@ class GoldenCallTest {
         assertTrue(call.actor.ui.value.tasks.isEmpty())
 
         accurate.release.complete(Unit)
-        call.until("the result spoken") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        call.until("the result spoken") { call.resultsSpoken() }
         val brief = call.router.briefPrompts.single()
         assertTrue(brief, brief.contains("Kestrel aviators") && !brief.contains("Castrel"))
         val prompt = prompts().single()
@@ -355,7 +366,7 @@ class GoldenCallTest {
         call.start()
         call.say("Check how many Kestrel aviators we have in sto")
 
-        call.until("the result spoken") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        call.until("the result spoken") { call.resultsSpoken() }
         assertEquals("the stock line, never a prompt: ${call.heard()}", "start.lookup", call.heard().first())
         assertTrue(call.heard().none { it == AppLines.HOLD_GO_ON || it == AppLines.HOLD_CONFIRM })
         assertEquals(TaskUiStatus.Done, call.actor.ui.value.tasks.single().status)
@@ -382,7 +393,7 @@ class GoldenCallTest {
         assertEquals(listOf("So the thing about the"), call.actor.state.value.turn.pending)
 
         call.say("Yes, check the Kestrel stock")
-        call.until("the result spoken") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        call.until("the result spoken") { call.resultsSpoken() }
         assertTrue(prompts().single().contains("So the thing about the Yes, check the Kestrel stock"))
         assertEquals(listOf(AppLines.HOLD_GO_ON, AppLines.HOLD_CONFIRM, "start.lookup"), call.heard().take(3))
         noDoubles()
@@ -397,7 +408,7 @@ class GoldenCallTest {
         call.start()
         call.say("Three things: check stock of the Kestrels, email the supplier about the late order, and draft the Friday newsletter.")
 
-        call.until("three results spoken") { call.events.count { it is CascadeEvent.ResultSpoken } == 3 && !call.actor.speaking }
+        call.until("three results spoken") { call.resultsSpoken(3) }
         val ui = call.actor.ui.value
         assertEquals(listOf("t1", "t2", "t3"), ui.tasks.map { it.id })
         assertTrue(ui.tasks.all { it.status == TaskUiStatus.Done })
@@ -453,7 +464,7 @@ class GoldenCallTest {
 
         assertEquals("status never submits", 1, promptCount())
         assertEquals(TaskUiStatus.Running, call.task("t1").status)
-        call.until("the job's result") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        call.until("the job's result") { call.resultsSpoken() }
         assertEquals(1, promptCount())
         noDoubles()
     }
@@ -494,7 +505,7 @@ class GoldenCallTest {
         assertTrue(call.heard().toString(), call.heard().all { it.startsWith("error.offline") || it.startsWith("\"") || it.startsWith("social") })
 
         call.online.value = true
-        call.until("the memo's task done and spoken") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        call.until("the memo's task done and spoken") { call.resultsSpoken() }
         val ui = call.actor.ui.value
         assertEquals(0, ui.connection.outbox)
         assertFalse(ui.connection.memo)
@@ -530,7 +541,7 @@ class GoldenCallTest {
         // The app came back to an unfinished conversation: the Resume card; Continue reads the result.
         assertNotNull(second.actor.ui.value.resume)
         second.actor.send(Event.ResumeChosen(ResumeChoice.Continue))
-        second.until("the result spoken") { second.events.any { it == CascadeEvent.ResultSpoken("t1") } && !second.actor.speaking }
+        second.until("the result spoken") { second.events.any { it == CascadeEvent.ResultSpoken("t1") } && second.resultsSpoken() }
         assertEquals(TaskUiStatus.Done, second.task("t1").status)
         assertTrue(second.heard().toString(), second.heard().any { "14 in stock" in it })
         assertEquals(1, promptCount())
@@ -565,7 +576,7 @@ class GoldenCallTest {
         assertNotNull(second.actor.ui.value.resume)
 
         second.actor.send(Event.ResumeChosen(ResumeChoice.Play))
-        second.until("the result spoken") { second.events.any { it == CascadeEvent.ResultSpoken("t1") } && !second.actor.speaking }
+        second.until("the result spoken") { second.events.any { it == CascadeEvent.ResultSpoken("t1") } && second.resultsSpoken() }
         assertNull(second.actor.ui.value.resume)
         assertFalse(second.task("t1").unread)
         assertTrue(second.heard().toString(), second.heard().any { "Slow job finished" in it })
@@ -603,7 +614,7 @@ class GoldenCallTest {
         val prompt = prompts().single()
         assertTrue(prompt, prompt.contains("Clarity: key_doubt (0.95)") && prompt.contains("Bill is checking \"Kestrel\""))
         // Nobody answers: the job finishes as it was sent.
-        call.until("the result spoken") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        call.until("the result spoken") { call.resultsSpoken() }
         assertEquals(TaskUiStatus.Done, call.task("t1").status)
         assertEquals("nothing more was sent", 1, promptCount())
         noDoubles()
@@ -621,7 +632,7 @@ class GoldenCallTest {
         assertTrue(got[1].str("text")!!, got[1].str("text")!!.contains("Correction: I asked the user \"Kestrel, right?\"") && got[1].str("text")!!.contains("No, Castrol."))
         assertEquals("a redirect, not a queued note", false, got[1].bool("queued"))
         assertEquals("redirected", got[1].str("outcome"))
-        call.until("one result for the redirected job") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        call.until("one result for the redirected job") { call.resultsSpoken() }
         assertEquals(listOf("t1"), call.actor.ui.value.tasks.map { it.id })
         assertEquals(1, call.events.count { it is CascadeEvent.ResultSpoken })
         assertTrue(call.heard().toString(), "update.redirect" in call.heard())
@@ -633,7 +644,7 @@ class GoldenCallTest {
         val call = startDoubted()
         call.say("Yes, that's right.")
         call.until("the yes acknowledged") { "ack.understood" in call.heard() }
-        call.until("the result spoken") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        call.until("the result spoken") { call.resultsSpoken() }
         assertEquals("no redirect, no note", 1, promptCount())
         assertEquals(TaskUiStatus.Done, call.task("t1").status)
         noDoubles()
