@@ -13,7 +13,7 @@ import com.folio.hermes.openrouter.JevAnswer
 /**
  * Jev's answers → the plan, with the spec v2 rules (the C1 [Router.decide] stays for the default
  * registry):
- * - R-RT-3: `action` below the floor plays `clarify.confirm` and never starts a task; `task`
+ * - R-RT-3: `action` below `actionFloor` plays `clarify.confirm` and never starts a task; `task`
  *   below its floor asks which one, unless exactly one task fits the action, which then wins.
  * - R-RT-5: the stock line must come from the action's groups, else the action's default slot.
  * - R-RT-6: `enough = line_only` counts only for reply, update, cancel and end call, at ≥ 0.7.
@@ -44,7 +44,7 @@ object CeoRouter {
     fun decide(state: State, answers: Map<String, JevAnswer>, bank: PhraseBank): Decision {
         val settings = state.settings
         val floor = settings.confidenceFloor
-        val action = answers[CascadeBrain.ACTION]?.takeIf { it.confidence >= floor }?.choice
+        val action = answers[CascadeBrain.ACTION]?.takeIf { it.confidence >= settings.actionFloor }?.choice
         if (action == null || action !in ALLOWED) return Decision(Route.Clarify, CONFIRM, writer = false)
         val clarity = answers[CascadeBrain.CLARITY]?.takeIf { it.confidence >= floor }?.choice
         if (clarity == CascadeBrain.GARBLED && action != CascadeBrain.END_CALL) return Decision(Route.AskRepeat, null, writer = false)
