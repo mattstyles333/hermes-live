@@ -26,7 +26,7 @@ jobs:
           # The action's default adds the retired 'tools' package, which newer sdkmanagers reject.
           packages: platform-tools platforms;android-37.0
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
 
       # Hermes Live must be signed with Folio's key: both declare the signature permission
       # com.folio.permission.HERMES, and Folio reads Hermes Live's connection through it.

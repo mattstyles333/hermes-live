@@ -29,7 +29,7 @@ jobs:
           # The action's default adds the retired 'tools' package, which newer sdkmanagers reject.
           packages: platform-tools platforms;android-37.0
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
 
       # Build only: tests and lint run locally before every merge (user, 2026-10-14).
       - name: Assemble debug
