@@ -47,7 +47,6 @@ object BriefPlanner {
             clarity = clarity(a),
             vocabulary = tx.s.settings.vocabulary,
             recent = tx.recentExchanges(),
-            answer = a.data[KeyDoubt.ANSWER],
             chunk = index + 1,
             chunks = count,
             carried = carried,
@@ -62,14 +61,13 @@ object BriefPlanner {
      * user's numbers or falls back to the user's own words; a set cut short gets one more task
      * for whatever the cut lost.
      */
-    fun plan(tx: Tx, a: ActionState, set: BriefSet?, offline: String?): List<PlannedTask> {
+    fun plan(tx: Tx, a: ActionState, set: BriefSet?, offline: String?, doubtNote: String? = null): List<PlannedTask> {
         val t = transcript(tx, a)
         val repaired = Repair.check(t, set?.repaired ?: Briefs.applyFixes(t.text, set?.fixes.orEmpty()), tx.s.settings.vocabulary)
         val notes = listOfNotNull(
             set?.notes?.takeIf { it.isNotBlank() },
             repaired.rejected.takeIf { it.isNotEmpty() }?.let { r -> "repair not applied (only uncertain or vocabulary words may change): " + r.joinToString("; ") { "\"${it.first}\" -> \"${it.second}\"" } },
-            a.data[KeyDoubt.ANSWER]?.let { "asked about a doubtful word; the user answered \"$it\"" },
-            if (a.data[KeyDoubt.STATE] == KeyDoubt.UNANSWERED) "asked about a doubtful word; no answer, so going with what was heard" else null,
+            doubtNote,
         ).joinToString(" ")
         val block = TranscriptBlock(
             transcript = repaired.text,

@@ -164,7 +164,7 @@ class Tx(var s: State, val env: CascadeEnv) {
         return seq
     }
 
-    /** Open [gate] on queued turn [turnId] (R-STT-2 accurate pass, R-STT-5 key doubt); it starts once all its gates are open. */
+    /** Open [gate] on queued turn [turnId] (R-STT-2 accurate pass); it starts once all its gates are open. */
     fun openGate(turnId: String, gate: String) {
         s = s.copy(actions = s.actions.copy(waiting = s.actions.waiting.map { if (it.turnId == turnId) it.copy(gates = it.gates - gate) else it }))
     }

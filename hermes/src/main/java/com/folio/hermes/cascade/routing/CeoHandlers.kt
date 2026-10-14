@@ -16,28 +16,17 @@ import com.folio.hermes.cascade.writer.WriterPrompts
 
 /**
  * `update_task` in CEO mode (R-RT-7, R-TASK-7, spec v2 §0): the `update.*` line waits for the
- * run's `Accepted` ([Confirmations.expectAck]); a key doubt asks first; a queued task's brief is
- * amended; a failed task is retried with the same brief.
+ * run's `Accepted` ([Confirmations.expectAck]); a key doubt never blocks (the update goes at once,
+ * its notes block says what was doubtful); a queued task's brief is amended; a failed task is
+ * retried with the same brief. The answer to a key-doubt question that corrects it arrives here
+ * as a redirect ([KeyDoubt.answer]).
  */
 class CeoUpdateTaskHandler(private val memo: MemoRouting) : RouteHandler {
     override fun playsSlotFirst(tx: Tx): Boolean = false
 
-    override fun start(tx: Tx): Next {
-        if (KeyDoubt.needed(tx, tx.action)) return KeyDoubt.ask(tx)
-        return go(tx)
-    }
+    override fun start(tx: Tx): Next = go(tx)
 
     override fun resume(tx: Tx, result: ActionResult): Next = when (result) {
-        is ActionResult.Written -> KeyDoubt.afterQuestion(tx, result.spoke) ?: go(tx)
-        is ActionResult.TimerFired -> {
-            KeyDoubt.waited(tx)
-            if (tx.action.data[KeyDoubt.STATE] == KeyDoubt.DROPPED) {
-                tx.play("cancel.drop")
-                Next.Done
-            } else {
-                go(tx)
-            }
-        }
         is ActionResult.Busy -> send(tx, TaskTable.kindFor(UpdateMode.Redirect, result.mode))
         else -> Next.Done
     }
@@ -69,25 +58,34 @@ class CeoUpdateTaskHandler(private val memo: MemoRouting) : RouteHandler {
         return Next.Done
     }
 
-    /** The update text: the user's words, plus the transcript block when a word was doubtful or it was dictated offline. */
+    /**
+     * The update text: the user's words (for a key-doubt answer, what Bill asked and what they
+     * said), plus the transcript block when a word was doubtful or it was dictated offline.
+     */
     private fun text(tx: Tx): String {
         val a = tx.action
         val t = BriefPlanner.transcript(tx, a)
         val clarity = a.record.answers[CascadeBrain.CLARITY]?.choice
         val offline = memo.offlineNote(tx, a.turnId)
         val doubtful = t.uncertain.isNotEmpty() || clarity == CascadeBrain.MINOR_DOUBT || clarity == CascadeBrain.KEY_DOUBT
-        val answer = a.data[KeyDoubt.ANSWER]
-        if (!doubtful && offline == null && answer == null) return a.text
-        val notes = listOfNotNull(answer?.let { "asked about a doubtful word; the user answered \"$it\"" }).joinToString(" ")
-        return a.text + "\n\n" + BriefTemplate.block(TranscriptBlock(a.text, Repair.marked(t), BriefPlanner.clarity(a), notes, offline))
+        val said = KeyDoubt.correction(a) ?: a.text
+        if (!doubtful && offline == null) return said
+        return said + "\n\n" + BriefTemplate.block(TranscriptBlock(a.text, Repair.marked(t), BriefPlanner.clarity(a), "", offline))
     }
 }
 
-/** `cancel_task` (R-TASK-4): `session.interrupt` (a queued task is just dropped), then a short confirmation. */
+/**
+ * `cancel_task` (R-TASK-4): `session.interrupt` (a queued task is just dropped), then a short
+ * confirmation. [CeoRouter.ALL_TASKS] stops every running and queued task ([CancelAll]).
+ */
 class CeoCancelTaskHandler(private val memo: MemoRouting) : RouteHandler {
     override fun start(tx: Tx): Next {
         val a = tx.action
         val route = a.decision.route as Route.CancelTask
+        if (route.taskId == CeoRouter.ALL_TASKS) {
+            if (MemoRouting.isMemo(tx, a.turnId)) memo.record(tx, a.turnId, "cancel_task", 1)
+            return CancelAll.start(tx)
+        }
         val queued = tx.s.tasks[route.taskId]?.let(TaskQueue::isQueued) == true
         if (MemoRouting.isMemo(tx, a.turnId)) memo.record(tx, a.turnId, "cancel_task", 1)
         return when (CeoTasks.cancel(tx, route.taskId)) {
@@ -106,7 +104,8 @@ class CeoCancelTaskHandler(private val memo: MemoRouting) : RouteHandler {
         }
     }
 
-    override fun resume(tx: Tx, result: ActionResult): Next = confirm(tx)
+    override fun resume(tx: Tx, result: ActionResult): Next =
+        if ((tx.action.decision.route as Route.CancelTask).taskId == CeoRouter.ALL_TASKS) CancelAll.next(tx) else confirm(tx)
 
     private fun confirm(tx: Tx): Next {
         val a = tx.action
@@ -145,7 +144,7 @@ object CeoReadResultHandler : RouteHandler {
     }
 }
 
-/** A turn folded into a waiting key-doubt question as its answer: nothing more to do. */
+/** A turn taken as the "yes" to a key-doubt question ([KeyDoubt.answer]): its "Got it." is all. */
 object CeoReplyHandler : RouteHandler {
     override fun start(tx: Tx): Next = if (tx.action.data.containsKey(KeyDoubt.ABSORBED)) Next.Done else ReplyHandler.start(tx)
 }

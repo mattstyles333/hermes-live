@@ -40,6 +40,8 @@ if [[ -z ${SKIP_BUILD:-} ]]; then (cd "$ROOT" && ./gradlew -q :live:assembleDebu
 "${ADB[@]}" install -r -t "$ROOT/live/build/outputs/apk/debug/live-debug.apk" >/dev/null
 "${ADB[@]}" install -r -t "$ROOT/live/build/outputs/apk/androidTest/debug/live-debug-androidTest.apk" >/dev/null
 
+# A result left on the device by an earlier run must never be read as this run's.
+"${ADB[@]}" shell rm -f /sdcard/Android/data/com.folio.hermeslive/files/smoke/bill.json
 "${ADB[@]}" shell screenrecord --time-limit 45 /sdcard/Download/bill-smoke.mp4 >/dev/null 2>&1 &
 rec=$!
 set +e
@@ -57,4 +59,8 @@ curl -fsS "http://127.0.0.1:$PORT/__fake/assert/prompts" | python3 -c 'import js
 curl -fsS "http://127.0.0.1:$PORT/__fake/assert/double-submits" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({"no_double_submits": d.get("ok")}))' >"$OUT/fake-doubles.json"
 grep -E "OK \(|FAILURES|Tests run" "$OUT/instrument.txt" || true
 cat "$OUT/bill.json" "$OUT/fake-prompts.json" "$OUT/fake-doubles.json" 2>/dev/null || true
+# `am instrument` exits 0 when a test fails: the verdict is the test's own (bill.json and the runner's summary).
+if grep -q "FAILURES" "$OUT/instrument.txt" || ! python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("pass") else 1)' "$OUT/bill.json" 2>/dev/null; then
+  [[ $status == 0 ]] && status=1
+fi
 exit $status

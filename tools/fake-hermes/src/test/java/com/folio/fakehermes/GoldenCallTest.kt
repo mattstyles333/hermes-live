@@ -74,7 +74,9 @@ import org.junit.Test
  *
  * 1. one task (1b: its stock line does not wait for the accurate pass); 2. one request split into three; 3. a correction to a running task; 4. status;
  * 5. cancel; 6. an offline memo, then reconnect; 7. killed mid-submit, then a restart; 8. resume
- * with Play after the app was closed with a task running.
+ * with Play after the app was closed with a task running; 9. a key doubt starts the task at once
+ * and asks after (no answer, a correction redirects, a yes sends nothing); 10. "stop everything"
+ * with three tasks.
  */
 class GoldenCallTest {
     private val h = Harness(FakeHermesProcess("scenarios/test.json"))
@@ -90,6 +92,8 @@ class GoldenCallTest {
     private class ScriptedOpenRouter(
         val routes: Map<String, Map<String, String>>,
         val briefs: Map<String, List<String>>,
+        /** The writer's doubted word per keyword, given only when the brief prompt asks for it (R-STT-5). */
+        val doubts: Map<String, String> = emptyMap(),
     ) : OpenRouterPort {
         val clipText: MutableMap<AudioClip, String> = Collections.synchronizedMap(IdentityHashMap())
 
@@ -115,10 +119,11 @@ class GoldenCallTest {
                 briefPrompts += prompt
                 val transcript = prompt.substringAfter("Transcript: \"").substringBefore("\"\n")
                 val jobs = briefs.entries.first { transcript.contains(it.key, ignoreCase = true) }.value
+                val doubt = doubts.entries.firstOrNull { Briefs.DOUBT in prompt && transcript.contains(it.key, ignoreCase = true) }?.value
                 OpenRouterResult.Ok(
                     """{"briefs":[""" + jobs.joinToString(",") { job ->
                         """{"brief":"Goal: $job\nDone when: it is done","label":"${job.split(' ').take(3).joinToString(" ")}","summary":"On it."}"""
-                    } + """],"repaired":"","notes":""}""",
+                    } + """],"repaired":"","notes":""""" + (doubt?.let { ""","doubt":{"word":"$it","question":"$it, right?"}""" } ?: "") + "}",
                 )
             }
             else -> error("unexpected writer job")
@@ -148,6 +153,7 @@ class GoldenCallTest {
     private inner class Call(
         routes: Map<String, Map<String, String>>,
         briefs: Map<String, List<String>> = emptyMap(),
+        doubts: Map<String, String> = emptyMap(),
         val store: Store = MemoryStore(),
         val gateway: HermesGateway = h.gateway,
         val online: MutableStateFlow<Boolean> = MutableStateFlow(true),
@@ -162,7 +168,7 @@ class GoldenCallTest {
             version.value = ticks.incrementAndGet()
         }
 
-        val router = ScriptedOpenRouter(routes, briefs)
+        val router = ScriptedOpenRouter(routes, briefs, doubts)
         val out = SpokenLog(router, ::changed)
         val events = CopyOnWriteArrayList<CascadeEvent>()
         val appEffects = CopyOnWriteArrayList<Effect>()
@@ -493,6 +499,101 @@ class GoldenCallTest {
         assertEquals(1, promptCount())
         noDoubles()
         gateway.disconnect()
+    }
+
+    // ── 9. a key doubt never blocks (hub decision 2026-10-14) ──────────────────────────────
+
+    private fun doubtedTask() = newTask() + ("clarity" to "key_doubt")
+
+    /** A key-doubted slow job, started; returns once its question was heard and Hermes has the prompt. */
+    private fun startDoubted(): Call {
+        val call = Call(
+            routes = mapOf("slow job" to doubtedTask(), "Castrol" to mapOf("action" to "reply"), "right" to mapOf("action" to "reply", "line" to "ack.yes")),
+            briefs = mapOf("slow job" to listOf("Run the slow job for the Kestrel account.")),
+            doubts = mapOf("slow job" to "Kestrel"),
+        )
+        call.start()
+        call.say("Run the slow job for the Kestrel account.")
+        call.until("the question asked, the task already running") {
+            "\"Kestrel, right?\"" in call.heard() && call.actor.ui.value.tasks.singleOrNull()?.status == TaskUiStatus.Running
+        }
+        return call
+    }
+
+    /** No answer: the task started before the question and runs on unchanged. */
+    @Test fun aKeyDoubtStartsTheTaskAtOnceAndAsksInParallel() {
+        h.signIn()
+        val call = startDoubted()
+        val heard = call.heard()
+        assertEquals("the start line first, then the question", listOf("start.one", "\"Kestrel, right?\""), heard.take(2))
+        call.until("Hermes has the job") { promptCount() == 1 }
+        val prompt = prompts().single()
+        assertTrue(prompt, prompt.contains("Clarity: key_doubt (0.95)") && prompt.contains("Bill is checking \"Kestrel\""))
+        // Nobody answers: the job finishes as it was sent.
+        call.until("the result spoken") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        assertEquals(TaskUiStatus.Done, call.task("t1").status)
+        assertEquals("nothing more was sent", 1, promptCount())
+        noDoubles()
+    }
+
+    @Test fun aCorrectionToTheKeyDoubtRedirectsTheTask() {
+        h.signIn()
+        val call = startDoubted()
+        call.until("Hermes has the job") { promptCount() == 1 }
+        call.say("No, Castrol.")
+        call.until("the correction reached the task") { promptCount() == 2 }
+        val session = h.sessions().single().str("stored_session_id")!!
+        val got = h.prompts(session)
+        assertEquals(2, got.size)
+        assertTrue(got[1].str("text")!!, got[1].str("text")!!.contains("Correction: I asked the user \"Kestrel, right?\"") && got[1].str("text")!!.contains("No, Castrol."))
+        assertEquals("a redirect, not a queued note", false, got[1].bool("queued"))
+        assertEquals("redirected", got[1].str("outcome"))
+        call.until("one result for the redirected job") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        assertEquals(listOf("t1"), call.actor.ui.value.tasks.map { it.id })
+        assertEquals(1, call.events.count { it is CascadeEvent.ResultSpoken })
+        assertTrue(call.heard().toString(), "update.redirect" in call.heard())
+        noDoubles()
+    }
+
+    @Test fun aConfirmationOfTheKeyDoubtSendsNothing() {
+        h.signIn()
+        val call = startDoubted()
+        call.say("Yes, that's right.")
+        call.until("the yes acknowledged") { "ack.understood" in call.heard() }
+        call.until("the result spoken") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        assertEquals("no redirect, no note", 1, promptCount())
+        assertEquals(TaskUiStatus.Done, call.task("t1").status)
+        noDoubles()
+    }
+
+    // ── 10. stop everything ──────────────────────────────────────────────────────────────
+
+    @Test fun stopEverythingCancelsAllThreeWithoutAskingWhich() {
+        h.signIn()
+        val jobs = listOf("Run the slow job for Leeds.", "Run the slow job for Bristol.", "Run the slow job for Cardiff.")
+        val call = Call(
+            routes = mapOf(
+                "three slow jobs" to newTask(split = "several", line = "start.parallel"),
+                "stop everything" to mapOf("action" to "cancel_task", "task" to "none", "line" to "cancel.all"),
+            ),
+            briefs = mapOf("three slow jobs" to jobs),
+        )
+        call.start()
+        call.say("Three slow jobs: Leeds, Bristol and Cardiff.")
+        call.until("three running") { call.actor.ui.value.tasks.count { it.status == TaskUiStatus.Running } == 3 && promptCount() == 3 }
+        call.say("Stop everything.")
+        call.until("all three cancelled and the count said") {
+            call.actor.ui.value.tasks.all { it.status == TaskUiStatus.Cancelled } && "\"That's all three.\"" in call.heard() && !call.actor.speaking
+        }
+        assertTrue(call.heard().toString(), "cancel.all" in call.heard() && "cancel.which" !in call.heard())
+        // Each session got its interrupt (its turn then stops on the fake's own thread, a moment later).
+        val sessions = h.sessions()
+        assertEquals(3, sessions.size)
+        assertTrue("every session interrupted: $sessions", sessions.all { s -> s.arr("received").any { it.str("kind") == "interrupt" } })
+        assertEquals(setOf("t1", "t2", "t3"), call.events.filterIsInstance<CascadeEvent.TaskCancelled>().map { it.id }.toSet())
+        assertFalse("no result for a cancelled task", call.events.any { it is CascadeEvent.ResultSpoken })
+        assertEquals(3, promptCount())
+        noDoubles()
     }
 
     private companion object {

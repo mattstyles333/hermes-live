@@ -131,7 +131,7 @@ for lane in jev staging smoke; do
 done
 echo "  jev:"; sed 's/^/    /' "$WORK/jev.summary" 2>/dev/null
 echo "  staging: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print({k: d.get(k) for k in ("pass", "models_ready", "load_ms", "stt_ms", "fast_wer", "final_wer", "error") if k in d})' "$WORK/staging.json" 2>/dev/null)"
-echo "  smoke: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print({k: d.get(k) for k in ("pass", "speech_end_to_stock_line_ms", "jev_latency_ms", "speech_end_to_task_started_ms", "clip_end_to_stock_line_ms", "vad_end_minus_clip_end_ms", "speech_end_to_first_audio_ms", "clarity_doubt", "task_statuses", "error") if k in d})' "$OUT/bill.json" 2>/dev/null)"
+echo "  smoke: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print({k: d.get(k) for k in ("pass", "speech_end_to_stock_line_ms", "jev_latency_ms", "speech_end_to_task_started_ms", "clip_end_to_stock_line_ms", "vad_end_minus_clip_end_ms", "speech_end_to_first_audio_ms", "clarity_doubt", "key_doubt_asked", "task_statuses", "error") if k in d})' "$OUT/bill.json" 2>/dev/null)"
 echo "  screenshot: $OUT/bill-smoke-midtask.png"
 echo "  total $(secs "$started" "$(now)")s; logs in $WORK"
 exit $fail

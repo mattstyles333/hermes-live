@@ -28,7 +28,7 @@ data class ActionState(
     val stage: String = "",
     /** The correlation key of the result this action waits for (`writer:<seq>`, `plan:<seq>`, `busy:<seq>`, `interrupt:<taskId>`). */
     val waitingOn: String? = null,
-    /** Gates that must open before the action starts (phase 1: `accurate` for R-STT-2, `key_doubt` for R-STT-5). */
+    /** Gates that must open before the action starts (`accurate` for R-STT-2; a key doubt never gates since 2026-10-14). */
     val gates: Set<String> = emptySet(),
     /** The transcript the action uses (phase 1, S-A/S-C: repaired text, uncertain words). */
     val transcript: Transcript? = null,

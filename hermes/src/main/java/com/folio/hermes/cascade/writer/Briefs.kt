@@ -11,6 +11,9 @@ import kotlinx.serialization.json.contentOrNull
 /** One agent brief as the writer wrote it (R-TASK-2): the brief text, a 2–4 word label, a ≤ 12 word summary. */
 data class WrittenBrief(val brief: String, val label: String, val summary: String?)
 
+/** R-STT-5: the one word the writer thinks may be misheard, as the transcript has it, and Bill's short question about it. */
+data class WrittenDoubt(val word: String, val question: String)
+
 /**
  * What the writer returned for new work. [complete] is false when the JSON was cut short (only
  * the whole brief objects before the cut were kept). [repaired] and [notes] are the R-STT-6 repair.
@@ -22,6 +25,8 @@ data class BriefSet(
     val complete: Boolean,
     /** The writer's word fixes (`from` → `to`), applied to the transcript in code ([Briefs.applyFixes]). */
     val fixes: List<Pair<String, String>> = emptyList(),
+    /** Asked for only with a sure `key_doubt` ([BriefRequest.askDoubt]). */
+    val doubt: WrittenDoubt? = null,
 )
 
 /** What the writer is told about one turn of new work. */
@@ -41,6 +46,8 @@ data class BriefRequest(
     val chunk: Int = 1,
     val chunks: Int = 1,
     val carried: List<String> = emptyList(),
+    /** Jev is sure a key word may be misheard (R-STT-5): ask the writer to name it and word Bill's question. */
+    val askDoubt: Boolean = false,
 )
 
 /**
@@ -80,7 +87,14 @@ object Briefs {
         append("Transcript: \"").append(r.text).append("\"\n")
         r.marked?.takeIf { it != r.text }?.let { append("Uncertain words marked: \"").append(it).append("\"\n") }
         r.answer?.let { append("Asked about a doubtful word, the user answered: \"").append(it).append("\"\n") }
+        if (r.askDoubt) append(DOUBT)
     }
+
+    /** Added to the prompt with a sure `key_doubt` (R-STT-5): the task starts anyway; Bill asks this once it has. */
+    const val DOUBT =
+        "A name, number or date the job depends on may be misheard. Also answer \"doubt\":{\"word\":\"…\",\"question\":\"…\"}: " +
+            "word is that one word or short phrase exactly as the transcript has it; question is one short question Bill asks to check it, " +
+            "e.g. \"Kestrel, right?\" or \"Forty, or fourteen?\". Leave doubt out if nothing looks misheard.\n"
 
     /**
      * Parse the writer's answer. Tolerates a markdown fence and an answer cut short: whole brief
@@ -97,12 +111,18 @@ object Briefs {
             val briefs = (whole["briefs"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::brief) }.orEmpty()
             if (briefs.isEmpty()) return null
             val complete = (whole["complete"] as? JsonPrimitive)?.contentOrNull != "false"
-            return BriefSet(briefs.take(MAX_BRIEFS), whole.str("repaired")?.takeIf { it.isNotEmpty() }, whole.str("notes"), complete, fixes(whole["fixes"]))
+            return BriefSet(briefs.take(MAX_BRIEFS), whole.str("repaired")?.takeIf { it.isNotEmpty() }, whole.str("notes"), complete, fixes(whole["fixes"]), doubt(whole["doubt"]))
         }
         // Cut short: keep the whole briefs. The set is complete if the cut came after the array
         // closed (only the fixes or notes were lost, and the verbatim transcript stands).
         val (briefs, closed) = salvage(json)
         return if (briefs.isEmpty()) null else BriefSet(briefs.take(MAX_BRIEFS), null, null, complete = closed)
+    }
+
+    private fun doubt(e: JsonElement?): WrittenDoubt? {
+        val o = e as? JsonObject ?: return null
+        val word = o.str("word")?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return WrittenDoubt(word, o.str("question")?.trim().orEmpty())
     }
 
     private fun fixes(e: JsonElement?): List<Pair<String, String>> =

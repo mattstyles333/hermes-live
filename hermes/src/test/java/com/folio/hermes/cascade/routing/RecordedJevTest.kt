@@ -67,6 +67,27 @@ class RecordedJevTest {
         )
     }
 
+    /**
+     * The hub's 2026-10-14 rules on the recorded answers: the sure goodbyes (h44, h45: `turn = done`
+     * at 0.25 / 0.41, `end_call` 0.99) now end the turn; side talk and radio still do not act (h14:
+     * a goodbye Jev judged `ignore`; h15: the weather on the radio at `done` 0.52 with a reply);
+     * "stop everything" with two running tasks cancels both (h38); a misheard name still asks
+     * which (h40).
+     */
+    @Test fun sureGoodbyesActAndSideTalkStillDoesNot() {
+        val recording = JevRecording.latest()!!.second
+        fun effective(id: String): Map<String, String> {
+            val r = recording.cases.single { it.id == id }
+            return RoutingEvals.effective(cases.getValue(r.set to id), r.answers!!, bank)
+        }
+        assertEquals(mapOf("turn" to "done", "action" to "end_call", "task" to "none"), effective("h44"))
+        assertEquals(mapOf("turn" to "done", "action" to "end_call", "task" to "none"), effective("h45"))
+        assertEquals("ignore", effective("h14").getValue("turn"))
+        assertEquals("keep_listening", effective("h15").getValue("turn"))
+        assertEquals(mapOf("turn" to "done", "action" to "cancel_task", "task" to CeoRouter.ALL_TASKS), effective("h38"))
+        assertEquals("clarify", effective("h40").getValue("action"))
+    }
+
     /** The fingerprint is the request body itself: any wording or model change moves it. */
     @Test fun theFingerprintFollowsTheRequest() {
         val case = cases.values.first()

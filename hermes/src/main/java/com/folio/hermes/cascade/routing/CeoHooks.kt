@@ -75,7 +75,8 @@ class CeoHooks(private val memo: MemoRouting, private val summaries: BackgroundS
 
     /**
      * A turn was committed: keep its transcript (the fast-pass words for its text), flag a doubtful
-     * transcript (R-STT-5) and, if an action waits on a key-doubt question, take this turn as the answer.
+     * transcript (R-STT-5), apply the rules that need the words ("stop everything",
+     * [CeoRouter.withWords]) and, if a key-doubt question waits, take this turn as its answer.
      */
     override fun committed(tx: Tx, action: ActionState, event: TurnEvent.Done): ActionState {
         val transcript = transcriptFor(tx, action)
@@ -83,9 +84,10 @@ class CeoHooks(private val memo: MemoRouting, private val summaries: BackgroundS
         if (clarity != null && clarity.choice != CascadeBrain.CLEAR && clarity.choice != null && clarity.confidence >= tx.s.settings.confidenceFloor) {
             tx.emit(CascadeEvent.ClarityDoubt(action.turnId, clarity.choice!!))
         }
-        val withTranscript = action.copy(transcript = transcript)
+        val decision = CeoRouter.withWords(tx.s, event.answers, action.text, action.decision)
+        val withTranscript = action.copy(transcript = transcript, decision = decision)
         summaries.afterTurn(tx)
-        return KeyDoubt.absorb(tx, withTranscript) ?: withTranscript
+        return KeyDoubt.answer(tx, withTranscript)
     }
 
     /** R-CTX-2: a whole-writer answer no action waited for (the reducer routes it here). True if it was ours. */
@@ -95,6 +97,9 @@ class CeoHooks(private val memo: MemoRouting, private val summaries: BackgroundS
     override fun taskRunEnded(tx: Tx, event: Event.TaskRunEnded) {
         TaskQueue.pump(tx)
     }
+
+    /** "Stop everything" waits for every interrupt it sent ([CancelAll]). */
+    override fun taskInterrupted(tx: Tx, event: Event.TaskInterrupted) = CancelAll.interrupted(tx, event.taskId)
 
     /** The stored state is back (call start or off-call restore): queued tasks start while slots are free. */
     override fun restored(tx: Tx) {

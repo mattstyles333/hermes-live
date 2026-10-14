@@ -39,6 +39,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -158,6 +159,9 @@ class CascadePropertyTest {
 
         fun utterance(n: Int) = "item $n: please look after job number $n"
 
+        /** Key-doubt questions Bill rendered in this world. */
+        var questions = 0
+
         val router = object : OpenRouterPort {
             override suspend fun jev(state: JsonObject, questions: Map<String, JevQuestion>, timeoutMs: Long): OpenRouterResult<Map<String, JevAnswer>> {
                 val latest = state["latest"]?.jsonPrimitive?.contentOrNull.orEmpty()
@@ -180,7 +184,8 @@ class CascadePropertyTest {
                 delay(say.jevMs)
                 val target = "t${say.target}"
                 val answers = when (say.route) {
-                    Route.NewTask -> mapOf("action" to "new_task", "split" to "one", "clarity" to "clear", "line" to "start.one", "enough" to "line_then_writer")
+                    // Every third new task is key-doubted (R-STT-5, 2026-10-14): it starts at once, Bill asks, and the next turn may be taken as the answer.
+                    Route.NewTask -> mapOf("action" to "new_task", "split" to "one", "clarity" to if (say.n % 3 == 0) "key_doubt" else "clear", "line" to "start.one", "enough" to "line_then_writer")
                     Route.Status -> mapOf("action" to "status", "line" to "none", "enough" to "line_then_writer")
                     Route.Cancel -> mapOf("action" to "cancel_task", "task" to target, "line" to "cancel.one", "enough" to "line_only")
                     Route.Update -> mapOf("action" to "update_task", "task" to target, "update_mode" to "queue", "line" to "update.queued", "enough" to "line_only")
@@ -208,7 +213,9 @@ class CascadePropertyTest {
                 return when (system) {
                     Briefs.SYSTEM -> {
                         val transcript = prompt.substringAfter("Transcript: \"").substringBefore("\"\n").replace("\"", "'")
-                        OpenRouterResult.Ok(briefs(brief(transcript, "job", "On it.")))
+                        val set = briefs(brief(transcript, "job", "On it."))
+                        // Asked to name the doubted word: "number", so a later "… job number n" reads as a correction.
+                        OpenRouterResult.Ok(if (Briefs.DOUBT in prompt) set.dropLast(1) + ""","doubt":{"word":"number","question":"Number, right?"}}""" else set)
                     }
                     Summaries.SYSTEM -> OpenRouterResult.Ok("They run jobs by voice.")
                     // Unusable on purpose: the fallback makes one instruction per held turn.
@@ -217,7 +224,10 @@ class CascadePropertyTest {
                 }
             }
 
-            override suspend fun clip(text: String): OpenRouterResult<AudioClip> = OpenRouterResult.Ok(clipOf(400))
+            override suspend fun clip(text: String): OpenRouterResult<AudioClip> {
+                if (text == "Number, right?") questions++
+                return OpenRouterResult.Ok(clipOf(400))
+            }
 
             override fun isCached(text: String): Boolean = true
         }
@@ -339,6 +349,8 @@ class CascadePropertyTest {
                 }
                 settle(w)
                 check(w, null)
+                questions += w.questions
+                corrections += w.server.prompts.count { it.startsWith("Correction:") }
                 // A turn still held (Jev failed while flushing) waits durably for the next call: start one.
                 if (w.proc.actor.state.value.outbox.size > 0) {
                     restart(w)
@@ -511,7 +523,13 @@ class CascadePropertyTest {
      */
     @Test fun invariantsHoldWithTheAccuratePass() = invariants(accurate = true)
 
+    /** Coverage of the key-doubt path over a run of seeds: questions asked and corrections sent. */
+    private var questions = 0
+    private var corrections = 0
+
     private fun invariants(accurate: Boolean) {
+        questions = 0
+        corrections = 0
         val only = System.getenv("CASCADE_PROPERTY_SEED")?.toLongOrNull()
         val seeds = if (only != null) listOf(only) else (0 until SEQUENCES).map { BASE_SEED + it }
         for (seed in seeds) {
@@ -524,6 +542,10 @@ class CascadePropertyTest {
                     "minimal sequence (${minimal.size} of ${ops.size} ops; replay with CASCADE_PROPERTY_SEED=$seed):\n" +
                     minimal.joinToString("\n") { "  $it" } + "\nwhich fails with: ${run(minimal, seed, accurate)}",
             )
+        }
+        if (only == null) {
+            println("key doubt over ${seeds.size} calls (accurate pass ${if (accurate) "on" else "off"}): $questions questions, $corrections corrections")
+            assertTrue("the key-doubt path ran: $questions questions, $corrections corrections", questions > 0 && corrections > 0)
         }
     }
 

@@ -46,6 +46,39 @@ class CeoRouterTest {
         assertEquals("no turn answer at all keeps listening", TurnVerdict.KeepListening, Router.verdict(emptyMap(), s))
     }
 
+    /** Hub decision 2026-10-14: a sure goodbye ends the turn even when `turn = done` is under its floor. */
+    @Test fun aSureGoodbyeEndsTheTurnOnlyWithTurnDone() {
+        val s = CascadeSettings()
+        assertEquals(0.85, s.endCallDoneFloor, 0.0)
+        fun v(turn: JevAnswer, action: JevAnswer) = Router.verdict(mapOf("turn" to turn, "action" to action), s)
+        assertEquals("cheers, bye", TurnVerdict.Done, v(answer("done", 0.25), answer("end_call", 0.85)))
+        assertEquals(TurnVerdict.KeepListening, v(answer("done", 0.25), answer("end_call", 0.84)))
+        assertEquals("only end_call", TurnVerdict.KeepListening, v(answer("done", 0.52), answer("reply", 0.99)))
+        assertEquals("a goodbye to someone else stays ignored", TurnVerdict.Ignore, v(answer("ignore", 0.92), answer("end_call", 0.93)))
+        assertEquals("an unfinished turn keeps listening", TurnVerdict.KeepListening, v(answer("keep_listening", 0.9), answer("end_call", 0.99)))
+    }
+
+    /** Hub decision 2026-10-14: "stop everything" cancels every running task without asking which. */
+    @Test fun stopEverythingCancelsAllOnlyWithStopAllWords() {
+        val three = state(running("t1", 90_000), running("t2", 60_000), running("t3", 5_000))
+        val stop = arrayOf("action" to answer("cancel_task", 0.99), "task" to answer("none", 0.9))
+        fun routed(s: State, text: String, vararg a: Pair<String, JevAnswer>) = CeoRouter.withWords(s, mapOf(*a), text, decide(s, *a))
+        val all = Decision(Route.CancelTask(CeoRouter.ALL_TASKS), CeoRouter.CANCEL_ALL, writer = false)
+        listOf("Stop everything.", "Cancel all of them", "Kill them all.", "Stop everything. Cancel the lot.", "cancel all", "Scrap every task")
+            .forEach { assertEquals(it, all, routed(three, it, *stop)) }
+        // Without stop-all words (a misheard name, "all" inside a phrase): the newest, just started, as before.
+        listOf("Cancel the chase for Barden.", "cancel the chase for all the Barden frames", "stop that")
+            .forEach { assertEquals(it, Route.CancelTask("t3"), routed(three, it, *stop).route) }
+        // Nothing started lately: a misheard name still asks which.
+        val older = state(running("t1", 90_000), running("t2", 60_000))
+        assertEquals(Decision(Route.Clarify, AppLines.WHICH_CANCEL, false), routed(older, "Cancel the chase for Barden.", *stop))
+        assertEquals(all, routed(older, "Stop everything.", *stop))
+        // A named task wins; one task is that task (R-RT-3); other actions never cancel all.
+        assertEquals(Route.CancelTask("t2"), routed(three, "stop everything on the trade one", "action" to answer("cancel_task"), "task" to answer("t2")).route)
+        assertEquals(Route.CancelTask("t1"), routed(state(running("t1", 90_000)), "Stop everything.", *stop).route)
+        assertEquals(Route.Status(null), routed(three, "how is everything", "action" to answer("status"), "task" to answer("none")).route)
+    }
+
     @Test fun unsureActionPlaysClarifyConfirmAndNeverStartsATask() {
         val d = decide(state(), "action" to answer("new_task", 0.39), "line" to answer("start.one"))
         assertEquals(Decision(Route.Clarify, "clarify.confirm", writer = false), d)
