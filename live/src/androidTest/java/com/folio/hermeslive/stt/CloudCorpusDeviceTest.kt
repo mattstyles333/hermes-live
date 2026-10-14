@@ -93,6 +93,11 @@ class CloudCorpusDeviceTest {
         runner.close()
         engines.release()
 
+        // The stamp the actor counts the pause from (`SpeechEndedAt.atMs`, nanoTime / 1e6) against the clip's true end.
+        val stampLag = utts.mapNotNull { u ->
+            val at = (u.events.lastOrNull { it.event is SttEvent.SpeechEndedAt }?.event as? SttEvent.SpeechEndedAt)?.atMs ?: return@mapNotNull null
+            u.clipEndNanos?.let { at - it / 1e6 }
+        }
         val revisedMs = ArrayList<Double>()
         val deviceMs = ArrayList<Double>()
         var material = 0
@@ -122,6 +127,7 @@ class CloudCorpusDeviceTest {
             .put("accurate_share", utts.count { it.transcript?.pass == TranscriptPass.Accurate }.toDouble() / utts.size)
             .put("names_final", Scores.names(utts, names) { it.transcript?.text ?: it.fastText }.let { "${it.first}/${it.second}" })
             .put("end_to_speech_ended_ms", Scores.dist(utts.mapNotNull { it.endLagMs }))
+            .put("end_to_end_stamp_ms", Scores.dist(stampLag))
             .put("commit_wait_ms", Scores.dist(utts.mapNotNull { it.commitWaitMs }))
             .put("end_to_device_text_ms", Scores.dist(deviceMs))
         if (mode == "cloud") {

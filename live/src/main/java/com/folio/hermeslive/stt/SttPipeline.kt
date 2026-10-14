@@ -189,12 +189,15 @@ class SttPipeline(
     }
 
     private fun end(s: Segment, released: Boolean) {
-        val fast = finish(s)
-        if (released) emit(SttEvent.HoldToTalk(false))
         // The VAD ends a segment `minSilence` + its window after the last word (about 0.4 s):
         // stamp the real end so the pause is not that much longer (spec v2 §14, S-C problem 2).
+        // Stamped before the last decode: a live model that decodes the whole segment at the end
+        // (Moonshine) would otherwise push the pause back by that decode.
         val silentMs = if (released) 0L else ((samplesSeen - s.lastLoud) * 1000 / AudioRate.HZ).coerceIn(0L, MAX_HANGOVER_MS)
-        emit(SttEvent.SpeechEndedAt(nowMs() - silentMs))
+        val endAt = nowMs() - silentMs
+        val fast = finish(s)
+        if (released) emit(SttEvent.HoldToTalk(false))
+        emit(SttEvent.SpeechEndedAt(endAt))
         segment = null
         secondPass.submit(concat(s), fast)
     }
