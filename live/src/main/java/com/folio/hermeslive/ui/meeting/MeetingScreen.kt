@@ -283,7 +283,7 @@ fun doneText(s: MeetingScreen.Done): String = when (val o = s.outcome) {
 /** Why held notes have not gone, in plain words. */
 fun heldText(reason: String): String = when (reason) {
     "offline" -> "The phone is offline. The notes go to Hermes as soon as it is back online."
-    "bill_off" -> "Sending needs Bill: choose Bill in Settings › Voice and save an OpenRouter key. The notes wait on the phone until then."
+    "bill_off" -> "Sending needs Bill or Grok: choose one in Settings › Voice and save its key. The notes wait on the phone until then."
     "signed_out" -> "Sign in to Hermes and the notes go then. They wait on the phone until then."
     "no_reply" -> "Hermes's task list didn't answer in time. It tries again on its own; nothing is sent twice."
     else -> if (reason.startsWith("writer_")) "The transcript is long and couldn't be summarised just now. It tries again later." else "The notes wait on the phone and are tried again later."
