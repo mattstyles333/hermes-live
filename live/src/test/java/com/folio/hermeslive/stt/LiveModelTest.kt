@@ -97,4 +97,21 @@ class LiveModelTest {
         assertEquals(listOf("Check", "the", "stock."), s.words().map { it.text })
         assertTrue("no confidence", s.words().all { it.confidence == null })
     }
+
+    @Test fun moonshineNeverDecodesMoreThanAWindowAndKeepsEachWindowsText() {
+        val decoded = ArrayList<Int>()
+        var n = 0
+        val engine = MoonshineStreaming(null, decode = { samples ->
+            decoded += samples.size
+            "part${++n}"
+        }, minStepMs = 320L, maxWindowMs = 8_000L, nanos = { 0L })
+        val s = engine.open("")
+        // 20 s of loud audio with a quiet 32 ms frame at 7.0 s and at 14.5 s.
+        val quiet = setOf(7_000 / 32, 14_500 / 32)
+        repeat(20_000 / 32) { i -> s.accept(FloatArray(512) { if (i in quiet) 0f else 0.3f }) }
+        s.finish()
+        assertTrue("every decode within the window: ${decoded.max()}", decoded.all { it <= 8 * 16_000 })
+        val words = s.words().map { it.text }
+        assertTrue("finished windows keep their text: $words", words.size == 3 && words.last() == "part$n")
+    }
 }
