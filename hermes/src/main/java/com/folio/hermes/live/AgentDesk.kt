@@ -84,8 +84,8 @@ class InjectionGate(private val settings: AgentDeskSettings = AgentDeskSettings(
 
 /**
  * GPT-Live's parallel agents (gptlive-parallel slice). Each `session.delegation.created` becomes
- * its own durable task through the shared task API, keyed by the delegation id (a replayed or
- * doubled delegation never submits twice). Before that, [intents] decides whether the request is
+ * its own durable task through the shared task API, keyed by the voice session and delegation id
+ * (a replayed or doubled delegation never submits twice; another session's `del_1` is new work). Before that, [intents] decides whether the request is
  * about a task already running (status, cancel, update, read again); the session note at the
  * start of every session asks the model to delegate those as requests.
  *
@@ -112,8 +112,14 @@ class AgentDesk(
     private val jobs = mutableListOf<Job>()
     private var voice: AgentVoice? = null
 
-    /** Delegation ids of the current voice session (commentary and thinking need one of these). */
+    /**
+     * Delegation ids are kept qualified by their voice session ("<session>:<id>"), because the
+     * vendor's ids are only known to be unique within a session. [live]: the current session's
+     * (commentary and thinking need one of these); [rawOf]: the vendor's own id for the wire.
+     */
     private val live = hashSetOf<String>()
+    private val rawOf = hashMapOf<String, String>()
+    private var session = UUID.randomUUID().toString()
     private val seen = hashSetOf<String>()
     private val delegationOf = hashMapOf<String, String>()
     private val toolOf = hashMapOf<String, String>()
@@ -150,11 +156,17 @@ class AgentDesk(
         jobs += scope.launch { runCatching { tasks.unheard() }.getOrDefault(emptyList()).forEach(::enqueue) }
     }
 
-    /** A voice session is live: [voice] speaks for it. [newSession]: its delegation ids are new (reconnect, reopen). */
-    fun attach(voice: AgentVoice, newSession: Boolean = true) {
+    /**
+     * A voice session is live: [voice] speaks for it. [newSession]: its delegation ids are new
+     * (reconnect, reopen); [sessionId] is the vendor's (`session.started`), else a fresh one.
+     */
+    fun attach(voice: AgentVoice, newSession: Boolean = true, sessionId: String? = null) {
         if (stopped) return
         this.voice = voice
-        if (newSession) live.clear()
+        if (newSession) {
+            live.clear()
+            session = sessionId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
+        }
         voice.instruct(SESSION_NOTE)
         pump()
     }
@@ -197,14 +209,17 @@ class AgentDesk(
 
     override fun onDelegation(delegationId: String?, prompt: DelegationPrompt) {
         if (stopped) return
-        if (delegationId != null) {
-            live += delegationId
-            if (!seen.add(delegationId)) return
+        val qualified = delegationId?.let { raw ->
+            "$session:$raw".also {
+                live += it
+                rawOf[it] = raw
+            }
         }
+        if (qualified != null && !seen.add(qualified)) return
         handling++
         scope.launch {
             try {
-                handle(delegationId, prompt)
+                handle(qualified, prompt)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -299,7 +314,7 @@ class AgentDesk(
             val tool = t.currentTool ?: continue
             if (toolOf[t.id] == tool) continue
             toolOf[t.id] = tool
-            val d = delegationOf[t.id]?.takeIf { it in live } ?: continue
+            val d = delegationOf[t.id]?.takeIf { it in live }?.let(rawOf::get) ?: continue
             v?.think(d, "Task '${t.label}' is working: $tool. Not done yet.")
         }
     }
@@ -327,7 +342,7 @@ class AgentDesk(
         var asCommentary = 0
         var waited = 0L
         batch.forEach { n ->
-            val d = delegationOf[n.taskId]?.takeIf { it in live }
+            val d = delegationOf[n.taskId]?.takeIf { it in live }?.let(rawOf::get)
             if (d != null) {
                 asCommentary++
                 v.say(d, commentaryFor(n))
@@ -343,11 +358,11 @@ class AgentDesk(
     }
 
     private fun say(delegationId: String?, text: String) {
-        voice?.say(delegationId?.takeIf { it in live }, text)
+        voice?.say(delegationId?.takeIf { it in live }?.let(rawOf::get), text)
     }
 
     private fun think(delegationId: String?, text: String) {
-        val d = delegationId?.takeIf { it in live } ?: return
+        val d = delegationId?.takeIf { it in live }?.let(rawOf::get) ?: return
         voice?.think(d, text)
     }
 

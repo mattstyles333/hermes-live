@@ -155,7 +155,7 @@ class GptLiveAgentsTest {
         r.t.delegation("del_2")
         runCurrent()
         assertEquals("the single conversation is never used", 0, r.link.backend.calls.size)
-        assertEquals(listOf("del_1", "del_2"), r.tasks.started.map { it.third })
+        assertEquals("keyed by the voice session and the delegation", listOf("sess_1:del_1", "sess_1:del_2"), r.tasks.started.map { it.third })
         assertEquals(listOf("Check stock RB2140", "Email Safilo order"), r.tasks.started.map { it.second })
         assertTrue(r.tasks.started[1].first.contains("Recent spoken conversation"))
         // Both work at once: the orb thinks, music may play in the gap.

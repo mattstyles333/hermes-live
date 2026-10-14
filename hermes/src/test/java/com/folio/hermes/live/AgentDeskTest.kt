@@ -108,23 +108,44 @@ class AgentDeskTest {
         }
     }
 
-    @Test fun theDelegationIdIsTheKeySoARepeatOrAReconnectNeverSubmitsTwice() = runTest {
+    @Test fun theSessionAndDelegationIdAreTheKeySoARepeatNeverSubmitsTwice() = runTest {
         Rig(this).use { rig ->
-            rig.desk.attach(rig.voice)
+            rig.desk.attach(rig.voice, sessionId = "sess_A")
             rig.ask("del_1", "Check stock of RB2140 in Leeds")
             rig.ask("del_1", "Check stock of RB2140 in Leeds")
             advanceUntilIdle()
             assertEquals(1, rig.server.prompts.size)
-            // The line drops; the next session (or the next process) sees the same delegation again.
+            // The same delegation of the same session again (another desk, as after a process restart): the stored key wins.
             val again = rig.desk()
             again.start()
-            again.attach(rig.voice)
+            again.attach(rig.voice, sessionId = "sess_A")
             again.onDelegation("del_1", DelegationPrompt("Check stock of RB2140 in Leeds", "User: Check stock of RB2140 in Leeds"))
             advanceUntilIdle()
             assertEquals("no double submit", 1, rig.server.prompts.size)
             assertTrue(rig.events.any { it is AgentDeskEvent.Started && it.existing })
             assertEquals("one task", 1, rig.tasks.status().size)
             again.stop()
+        }
+    }
+
+    @Test fun anotherSessionsDelegationWithTheSameIdIsNewWork() = runTest {
+        Rig(this).use { rig ->
+            rig.desk.attach(rig.voice, sessionId = "sess_A")
+            rig.ask("del_1", "Check stock of RB2140 in Leeds")
+            advanceUntilIdle()
+            // The next call (or a reopened session) numbers its delegations afresh.
+            rig.desk.detach()
+            rig.desk.attach(rig.voice, sessionId = "sess_B")
+            rig.ask("del_1", "Email Safilo about the late order")
+            advanceUntilIdle()
+            assertEquals(2, rig.server.prompts.size)
+            assertEquals(listOf("Check stock RB2140", "Email Safilo late"), rig.tasks.status().map { it.label })
+            // sess_A's task finishing never speaks on sess_B's del_1.
+            rig.server.complete(rig.sessionOf(rig.server.prompts[0]).id, "Four in Leeds.")
+            advanceUntilIdle()
+            quiet(rig, 4_000)
+            assertTrue(rig.voice.said.none { it.first == "del_1" && it.second.contains("Four in Leeds") })
+            assertTrue(rig.voice.instructed.any { it.startsWith("Task 'Check stock RB2140' finished: Four in Leeds.") })
         }
     }
 

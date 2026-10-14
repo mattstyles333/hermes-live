@@ -125,6 +125,7 @@ class CallEngine(
     private var onDemand: GptLiveOnDemand? = null
     private var dormantSinceMs = 0L
     private var finishing = false
+    private var voiceSessionId: String? = null
     private val noOnDemand = MutableStateFlow(OnDemandUi())
 
     /** Who is audible, as of the last tick (the on-demand link reads these). */
@@ -422,7 +423,10 @@ class CallEngine(
 
     private fun onBridgeEvent(event: BridgeEvent) {
         when (event) {
-            is BridgeEvent.Started -> onStarted()
+            is BridgeEvent.Started -> {
+                voiceSessionId = event.sessionId
+                onStarted()
+            }
             is BridgeEvent.Transcript -> {
                 captions.append(event.fragment)
                 val now = clock()
@@ -537,7 +541,7 @@ class CallEngine(
             delegationCutOff = false
         }
         // Agents: the session note, then any results that waited (tasks outlive the line).
-        desk?.attach(b.voice)
+        desk?.attach(b.voice, sessionId = voiceSessionId)
         onDemand?.sessionReady()
         pendingPrompt?.let { prompt ->
             pendingPrompt = null
@@ -696,7 +700,7 @@ class CallEngine(
         _state.update { it.copy(phase = CallPhase.Live, notice = null, error = null) }
         val b = bridge ?: return
         if (_state.value.muted) b.setMuted(true)
-        desk?.attach(b.voice)
+        desk?.attach(b.voice, sessionId = voiceSessionId)
         preRoll?.let { said ->
             b.instruct("While the line was paused the user said: \"${said.take(PRE_ROLL_CHARS)}\". Respond to that now, as if you had heard it.")
         }
