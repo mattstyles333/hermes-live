@@ -201,7 +201,6 @@ class CoreFixesTest {
             assertEquals(LiveOpenRouter.WRITE_MAX_TOKENS, server.takeRequest().jsonBody()["max_tokens"]!!.jsonPrimitive.int)
         } finally {
             server.close()
-            tts.server.close()
         }
         // Worst case for four briefs: every line long, every field filled (about 4 characters a token).
         val line = "x".repeat(300)
