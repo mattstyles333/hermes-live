@@ -117,6 +117,20 @@ class OnDemandControllerTest {
         assertTrue(r.sink.events.any { it.first == "ondemand.open" && it.second["ok"] == false && it.third })
     }
 
+    @Test fun offlineAWaitingResultWaitsForTheNetworkInsteadOfRetrying() {
+        val r = Rig().connected()
+        r.closeByIdle()
+        val opens = r.link.opens.size
+        r.link.reachable = false
+        r.link.pendingNotice = true
+        r.idle(30_000)
+        assertEquals("no reopen loop while offline", opens, r.link.opens.size)
+        r.link.reachable = true
+        r.idle(150)
+        assertEquals(OpenReason.Result, r.link.opens.last().reason)
+        assertEquals(opens + 1, r.link.opens.size)
+    }
+
     @Test fun anOpenThatNeverBecomesReadyTimesOut() {
         val r = Rig(OnDemandSettings(openTimeoutMs = 5_000))
         r.controller.start()
@@ -176,6 +190,14 @@ class OnDemandControllerTest {
         assertEquals(0, r.link.closes)
         assertFalse(r.controller.ui.value.dimmed)
         assertEquals(SessionView.Connected, r.controller.ui.value.view)
+    }
+
+    @Test fun withTheSettingOffThePhoneNeverBuildsOrRunsTheDetector() {
+        var built = 0
+        val c = OnDemandController(FakeLink(), OnDemandSettings(enabled = false), vadFactory = { built++; FakeVad() }, context = { null }, clock = { 0L })
+        c.start()
+        repeat(100) { c.onMic(ShortArray(320), 320) }
+        assertEquals(0, built)
     }
 
     @Test fun neverClosesWithoutAVoiceDetector() {

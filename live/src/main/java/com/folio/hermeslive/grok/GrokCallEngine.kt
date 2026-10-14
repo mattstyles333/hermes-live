@@ -193,7 +193,7 @@ class GrokCallEngine(
         s.mute(request.muted)
         lateinit var ctl: OnDemandController
         ctl = OnDemandController(
-            link = GrokLink(s, realtime),
+            link = GrokLink(s, realtime, network::online),
             settings = onDemandTimings(callSettings.onDemandSettings(VoiceEngine.Grok)),
             vadFactory = vad,
             context = { s.contextNote(r.core.actor.state.value.conversation.summary) },

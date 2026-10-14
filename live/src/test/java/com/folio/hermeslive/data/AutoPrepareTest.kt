@@ -75,6 +75,17 @@ class AutoPrepareTest {
         assertFalse(t.shell.rerender())
     }
 
+    @Test fun theFirstVoiceChangeAfterARestartRendersOnMobileDataToo() {
+        val t = shell("auto-voice-restart", wifi = false)
+        t.settings.update { it.copy(voiceEngine = VoiceEngine.Cascade) }
+        val s = t.settings.settings.value
+        t.shell.storage.store.put(VoiceShell.PREPARED_KEY, VoicePrep.fingerprint(s.billVoice, s.ttsModel, com.folio.hermes.cascade.PhraseBank.load().version))
+        // A fresh process: the first settings change is the voice.
+        VoiceSettingsController(t.shell, scope).update { it.copy(billVoice = "george") }
+        kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeout(10_000) { t.shell.prep.state.first { it.phase == PrepPhase.Done && it.ready } } }
+        assertEquals(setOf("george"), speechVoices(t).toSet())
+    }
+
     private fun speechVoices(t: TestShell): List<String> = synchronized(t.server) {
         t.server.requests.filter { it.url.encodedPath.endsWith("/audio/speech") }.map { r ->
             val buf = okio.Buffer()

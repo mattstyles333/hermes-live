@@ -122,6 +122,9 @@ interface RealtimeLink {
 
     /** How the last successful open went; null before the first. */
     val lastOpen: OpenKind?
+
+    /** Worth trying to open now (e.g. the phone is online). False: a waiting result does not reopen yet; speech still tries. */
+    fun canOpen(): Boolean = true
 }
 
 /** [LinkAudio.OwnsMic]: the host's mic capture steps aside while the link has the mic. */

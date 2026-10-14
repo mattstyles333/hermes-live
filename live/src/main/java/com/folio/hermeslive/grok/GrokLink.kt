@@ -19,7 +19,12 @@ import com.folio.hermeslive.call.ondemand.RealtimeLink
  *
  * The call's first open is the session's own start ([GrokSession.start], done by the engine).
  */
-class GrokLink(private val session: GrokSession, private val realtime: GrokRealtime) : RealtimeLink {
+class GrokLink(
+    private val session: GrokSession,
+    private val realtime: GrokRealtime,
+    /** The phone is online: a waiting result reopens only then (no retry loop while offline). */
+    private val online: () -> Boolean = { true },
+) : RealtimeLink {
     override val audio: LinkAudio = LinkAudio.Fed
 
     /** We closed it (on purpose); cleared by [open]. */
@@ -67,6 +72,8 @@ class GrokLink(private val session: GrokSession, private val realtime: GrokRealt
             from += n
         }
     }
+
+    override fun canOpen(): Boolean = online()
 
     override fun isIdle(): Boolean = session.quiet()
     override fun hasPendingNotice(): Boolean = session.hasPendingNotice()

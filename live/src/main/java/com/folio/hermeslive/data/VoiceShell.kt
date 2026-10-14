@@ -118,7 +118,9 @@ class VoiceShell(
                 val s = cascadeSettings()
                 val openRouter = openRouters(keys::key)
                 val voice = BillVoice(openRouter.speech, storage.ttsCache(s.ttsCacheBytes), { s.voice }, { s.ttsModel })
-                RenderJob(PhraseRenderer(voice, s.renderConcurrency, telemetry), fingerprint(), warm = { openRouter.warm() })
+                val fp = fingerprint()
+                renderingFor = fp
+                RenderJob(PhraseRenderer(voice, s.renderConcurrency, telemetry), fp, warm = { openRouter.warm() })
             },
             prepared = object : VoicePrep.PreparedMarker {
                 override fun get(): String? = if (dirs.store.exists()) storage.store.get(PREPARED_KEY) else null
@@ -130,9 +132,6 @@ class VoiceShell(
     }
 
     @Volatile private var wasActive: Boolean? = null
-
-    /** The voice and model the stock lines were last asked for (a change re-renders them). */
-    @Volatile private var lastVoice: String? = null
 
     /** The voices each engine offers (Settings › Voice pickers; ondemand slice). */
     val catalog: VoiceCatalog by lazy { VoiceCatalog(client, java.io.File(context.cacheDir, "voices"), telemetry = telemetry) }
@@ -184,10 +183,22 @@ class VoiceShell(
         prep.refresh()
         val opened = active && wasActive != true
         wasActive = active
-        val voice = fingerprint()
-        val voiceChanged = lastVoice != null && lastVoice != voice
-        lastVoice = voice
-        if (opened) autoPrepare() else if (voiceChanged) rerender()
+        if (opened && autoPrepare()) return
+        // The stock lines were rendered (or are being rendered) for another voice or model: render
+        // them in this one (also on mobile data, as long as no speech models are missing). Decided
+        // from the stored marker, so it holds after a restart too.
+        if (active && voiceChanged()) rerender()
+    }
+
+    /** The voice, model and bank version the running render is for (null: none running). */
+    @Volatile private var renderingFor: String? = null
+
+    /** The lines were prepared, or are being rendered, for a different voice, model or bank version than now. */
+    private fun voiceChanged(): Boolean {
+        val now = fingerprint()
+        if (prep.state.value.phase == PrepPhase.Running) return renderingFor != null && renderingFor != now
+        val marker = if (dirs.store.exists()) runCatching { storage.store.get(PREPARED_KEY) }.getOrNull() else null
+        return marker != null && marker != now
     }
 
     /**

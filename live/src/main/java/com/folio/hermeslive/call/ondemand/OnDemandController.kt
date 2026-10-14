@@ -208,6 +208,8 @@ class OnDemandController(
     }
 
     private fun detect(pcm: ShortArray, count: Int): Boolean {
+        // Save cost off: the session never closes, so the phone does not listen (no detector is built).
+        if (!settings.enabled) return false
         if (vadResetDue) {
             vadResetDue = false
             framer.reset()
@@ -247,7 +249,7 @@ class OnDemandController(
         when (synchronized(lock) { phase }) {
             Phase.Closed -> when {
                 wantSpeech -> requestOpen(OpenReason.Speech)
-                link.hasPendingNotice() && failedAt?.let { now - it >= settings.retryMs } != false -> requestOpen(OpenReason.Result)
+                link.hasPendingNotice() && failedAt?.let { now - it >= settings.retryMs } != false && link.canOpen() -> requestOpen(OpenReason.Result)
                 else -> Unit
             }
             Phase.Opening -> when (link.phase) {

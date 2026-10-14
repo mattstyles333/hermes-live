@@ -12,6 +12,7 @@ class FakeLink(override val audio: LinkAudio = LinkAudio.Fed) : RealtimeLink {
     var hearsUser = false
     var talking = false
     var openResult = true
+    var reachable = true
     val opens = mutableListOf<OpenRequest>()
     var closes = 0
     val received = ArrayList<Short>()
@@ -45,6 +46,7 @@ class FakeLink(override val audio: LinkAudio = LinkAudio.Fed) : RealtimeLink {
         for (i in 0 until count) received += pcm[i]
     }
 
+    override fun canOpen() = reachable
     override fun isIdle() = idle
     override fun hasPendingNotice() = pendingNotice
     override fun userSpeaking() = hearsUser
