@@ -48,6 +48,13 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import com.folio.hermeslive.ui.PreparingBill
+import com.folio.hermeslive.meeting.MeetingEntry
+import com.folio.hermeslive.meeting.MeetingHost
+import com.folio.hermeslive.meeting.MeetingScreen
+import com.folio.hermeslive.ui.meeting.MeetingRoute
+import com.folio.hermeslive.ui.meeting.MeetingStarter
+import com.folio.hermeslive.ui.meeting.rememberMeetingStarter
+import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.runtime.remember
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.flatMapLatest
@@ -84,6 +91,9 @@ class LiveActivity : ComponentActivity() {
 
     /** Bill's screen with no call, on a result notification's Open (§14 item 9). */
     private var viewingTask by mutableStateOf<String?>(null)
+
+    /** Meeting mode asked for by an intent (the shortcut, the notification): its entry, until the screen takes it. */
+    private var meetingAsk by mutableStateOf<String?>(null)
 
     /** Bill's call screen was up when the call ended: it plays its end transition until closed. */
     private var billOutro by mutableStateOf(false)
@@ -128,6 +138,18 @@ class LiveActivity : ComponentActivity() {
             setTurnScreenOn(true)
         }
         if (intent?.action == MemoEntry.ACTION_MEMO) MemoEntry.reportUsed(this)
+        when (MeetingEntry.parse(intent)) {
+            MeetingEntry.Ask.Open -> {
+                if (intent?.action == MeetingEntry.ACTION_MEETING) MeetingEntry.reportUsed(this)
+                meetingAsk = "shortcut"
+                return
+            }
+            MeetingEntry.Ask.End -> {
+                MeetingHost.existing()?.flow?.end()
+                return
+            }
+            MeetingEntry.Ask.None -> Unit
+        }
         launch.openTaskId?.let(::openTask)
         val request = launch.request ?: return
         lifecycleScope.launch {
@@ -159,6 +181,8 @@ class LiveActivity : ComponentActivity() {
     }
 
     private fun requestStart(request: CallRequest) {
+        // The mic belongs to meeting mode while it takes notes: no call starts over it.
+        if (MeetingHost.existing()?.flow?.busy == true) return
         micRefused = false
         if (graph.calls.plan(request) == CallPlan.PreparingBill) {
             billOutro = false
@@ -238,6 +262,16 @@ class LiveActivity : ComponentActivity() {
             if (account is AccountState.SignedIn && voice == null) g.account.refreshVoiceStatus()
         }
         BackHandler(enabled = showSettings) { showSettings = false }
+        // Meeting mode: built only while Settings › Meeting mode is on (or a meeting is under way).
+        val meetingOn by remember { MeetingHost.prefs(this@LiveActivity) }.settings.collectAsStateWithLifecycle()
+        val meetingHost = remember(meetingOn.enabled) { MeetingHost.ifEnabled(this@LiveActivity) }
+        val meetingScreen by (meetingHost?.flow?.screen ?: remember { MutableStateFlow<MeetingScreen>(MeetingScreen.None) }).collectAsStateWithLifecycle()
+        val meetingStarter = meetingHost?.let { rememberMeetingStarter(it) }
+        LaunchedEffect(meetingAsk, meetingStarter) {
+            val entry = meetingAsk ?: return@LaunchedEffect
+            meetingAsk = null
+            if (!call.inCall) meetingStarter?.open(entry)
+        }
         when {
             showSettings -> SettingsScreen(
                 settings = settings,
@@ -251,6 +285,7 @@ class LiveActivity : ComponentActivity() {
                     onChange = { change -> g.settings.update(change) },
                     onSignOut = {
                         billOutro = false
+                        MeetingHost.existing()?.flow?.signedOut()
                         g.calls.end()
                         scope.launch {
                             g.account.signOut()
@@ -269,6 +304,8 @@ class LiveActivity : ComponentActivity() {
                     },
                 ),
             )
+            meetingHost != null && meetingStarter != null && meetingScreen !is MeetingScreen.None && !call.inCall ->
+                MeetingRoute(meetingHost, meetingScreen, meetingStarter, onOpenSettings = { showSettings = true })
             account !is AccountState.SignedIn && !call.inCall -> SignInScreen(
                 ui = signIn.copy(reason = (account as? AccountState.NeedsSignIn)?.reason),
                 onSignIn = { url, user, password ->
@@ -323,7 +360,7 @@ class LiveActivity : ComponentActivity() {
                     contentKey = { it == MainScreen.Home },
                     label = "main",
                 ) { shown ->
-                    if (shown == MainScreen.Home) Home(call, elapsed, voiceLine) else BillScreen(shown, call, settings.pauseMs, settings.haptics)
+                    if (shown == MainScreen.Home) Home(call, elapsed, voiceLine, meetingStarter) else BillScreen(shown, call, settings.pauseMs, settings.haptics)
                 }
             }
         }
@@ -360,7 +397,7 @@ class LiveActivity : ComponentActivity() {
 
     /** The idle home screen (and GPT-Live's call screen). */
     @Composable
-    private fun Home(call: CallUiState, elapsed: String?, voiceLine: String?) {
+    private fun Home(call: CallUiState, elapsed: String?, voiceLine: String?, meeting: MeetingStarter?) {
         val g = graph
         CallScreen(
             state = if (micRefused && !call.inCall) call.copy(error = "Hermes Live needs the microphone. Allow it in Settings › Apps.") else call,
@@ -382,6 +419,7 @@ class LiveActivity : ComponentActivity() {
                     g.calls.dismissSummary()
                     requestStart(CallRequest(newConversation = true))
                 },
+                onMeeting = meeting?.let { m -> { m.open("app") } },
             ),
         )
     }

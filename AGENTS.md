@@ -140,6 +140,24 @@ All in `:live`, dark: nothing below runs unless Settings › Voice › Voice eng
 
 **Tests:** `VoiceSettingsTest`, `OpenRouterKeyTest`, `FileStoreTest` (the same contract as `MemoryStore`, atomicity, corruption), `CascadeOffStateTest` (R-Q-1, with a control), `CascadeTelemetryPrivacyTest` (R-Q-2: sentinel key, transcript, headline and vocabulary through a raw sink), `VoicePrepTest`, `VoiceSettingsControllerTest`, `OffCallServiceTest` (lifecycle, timeout, notification intents, Hear it, declared types have no mic bit), `MemoEntryTest`, `VoiceSettingsScreenTest`.
 
+## Meeting mode (hub design 2026-10-14; dark: Settings › Meeting mode, off by default)
+
+Bill listens silently and keeps a timestamped transcript; at the end the transcript goes to Hermes as **one agent task** ("Meeting notes · <title>") that writes the notes. All in `:live` (`meeting/`, `ui/meeting/`); `:hermes` is unchanged.
+
+| Area | Where |
+|---|---|
+| Off state | `meeting/MeetingPrefs.kt` (`MeetingSettings.enabled` false: no Meeting button, no "Take meeting notes" shortcut, `MeetingHost.ifEnabled` builds nothing; GPT-Live never touches it). Gate to start: Bill's speech models on the phone (`SherpaMeetingSpeech.ready`), not the engine or the key, so it works offline and signed out ("Prepare speech models first") |
+| Store | `meeting/MeetingLog.kt`: the cascade's `FileStore`, keys `cascade.meeting.*` (so sign-out wipes them). Each finished segment is appended at once (`LogLine.Seg`), then improved in place (`Rev`: accurate/cloud pass, cleanup); marks and pauses are lines too. Text only, never audio |
+| One meeting | `meeting/MeetingSession.kt`: the accurate pass is taken on a 1.2 s quiet (or every 4 split segments) and stored as one revision of exactly the segments it covers (a count mismatch keeps the fast text); it is flushed before the mic stops (pause, end, a spoken sentence), because stopping capture drops held audio. Resume after a kill: the lost time counts as paused, numbering carries on |
+| Wake phrase | `meeting/WakePhrase.kt`: an utterance starting "Bill" / "hey Bill" / "OK Bill". A task only with a task verb ("start a task to …", "ask Hermes to …"); a note only with a note verb ("note that …", "mark …", "flag …"); anything else is meeting speech; "Bill" alone arms the next segment (8 s). Haptic ack, never speech; the segment stays in the transcript |
+| Brief | `meeting/MeetingBrief.kt`: the template; verbatim up to 60,000 characters (an agent-context choice: `prompt.submit` has no cap in the app and OkHttp's WebSocket queues 16 MiB). Over it: `BriefPlanner.chunks` (20,000) summarised by the writer, plus every marked passage verbatim; no key: the start and end with the middle left out, said so |
+| Sending | `meeting/MeetingOutbox.kt` (compile at send time, brief stored before the submit, key `meeting-<id>-<send>`; held with a reason, retried on start and when the network is back), `meeting/MeetingTasks.kt` + `MeetingWiring.kt` `CascadeMeetingTasks` (the shared task API, `CascadeCore.tasks.startTask`; needs Bill chosen with a key and a signed-in Hermes, else held as `bill_off` / `signed_out`) |
+| Screens | `meeting/MeetingFlow.kt` (intro, taking notes, interrupted, anything to add, done), `ui/meeting/MeetingScreen.kt` (pure), `MeetingRoute.kt` (permissions, service start), `MeetingSettings.kt` (Settings › Meeting mode: switch, wake word, retention 7/14/30/90 days, history: view, send again, delete). Renders `live/docs/screenshots/meeting-*.png` (`MeetingScreenshotRender`) |
+| Mic service | `meeting/MeetingService.kt`: `microphone` FGS from the visible activity, chronometer notification with Pause/Resume and End, partial wake lock only while recording; the intro or "Anything to add?" left 10 min frees the mic |
+| Retention | `MeetingRetention.prune` on start and on change: ended, sent or kept meetings older than N days are deleted; queued (unsent) ones are kept |
+
+Tests: `meeting/MeetingSessionTest` (persistence, accurate revisions, pause flush, kill and resume, marks, wake phrase, cleanup, no text in telemetry), `MeetingSpeechPipelineTest` (the real `SherpaSpeechToText` with fake engines: pause flushes, resume carries on), `WakePhraseTest`, `MeetingBriefTest` (template, cap, chunking, no writer), `MeetingOutboxTest` (offline then sent once, same key, summarised once, retention), `MeetingFlowTest`, `ui/meeting/MeetingScreenTest` + `MeetingOffStateTest` (Robolectric: states, taps, home button, off by default, sign-out wipe).
+
 ## Rules that matter
 
 - **Off state.**

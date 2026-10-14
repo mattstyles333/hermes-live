@@ -79,6 +79,8 @@ data class CallActions(
     val onSettings: () -> Unit = {},
     val onDismissSummary: () -> Unit = {},
     val onNewConversation: () -> Unit = {},
+    /** Meeting mode's button beside Talk; null hides it (meeting mode off). */
+    val onMeeting: (() -> Unit)? = null,
 )
 
 /**
@@ -463,7 +465,19 @@ private fun RoundControl(
 @Composable
 private fun IdleControls(state: CallUiState, actions: CallActions) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        RoundControl(GlyphKind.Talk, if (state.summary != null || state.error != null) "Talk again" else "Talk", 76.dp, PrintInk, VoidBlack, "talk", "Talk to Hermes", actions.onTalk)
+        val talk: @Composable () -> Unit = {
+            RoundControl(GlyphKind.Talk, if (state.summary != null || state.error != null) "Talk again" else "Talk", 76.dp, PrintInk, VoidBlack, "talk", "Talk to Hermes", actions.onTalk)
+        }
+        val meeting = actions.onMeeting
+        if (meeting == null) {
+            talk()
+        } else {
+            Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.Top) {
+                Spacer(Modifier.width(96.dp))
+                talk()
+                com.folio.hermeslive.ui.meeting.MeetingButton(meeting)
+            }
+        }
         Text(
             "New conversation",
             style = SmallStyle, color = PrintMute,

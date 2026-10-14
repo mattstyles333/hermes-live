@@ -198,7 +198,7 @@ tasks.withType<Test>().configureEach {
 
 // The screenshot renders are not tests: they leave Tier 0 (`test`) and run on their own when the
 // UI changes (`./gradlew :live:renderScreenshots`). `SmokeRenderTest` keeps one fast render in Tier 0.
-val screenshotRenders = listOf("*.ScreenshotRender", "*.CascadeScreenshotRender")
+val screenshotRenders = listOf("*.ScreenshotRender", "*.CascadeScreenshotRender", "*.MeetingScreenshotRender")
 tasks.withType<Test>().matching { it.name == "testDebugUnitTest" || it.name == "testReleaseUnitTest" || it.name == "testStagingUnitTest" }
     .configureEach { filter { screenshotRenders.forEach { excludeTestsMatching(it) } } }
 
