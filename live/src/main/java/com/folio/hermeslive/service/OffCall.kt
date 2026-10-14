@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /** What "Hear it" plays: [clips] in order. [title] is generic (it shows on the lock screen). */
-class Briefing(val clips: List<AudioClip>, val title: String = "Bill · result")
+class Briefing(val clips: List<AudioClip>, val title: String = "Hermes Live · result")
 
 /**
  * What the off-call service and "Hear it" need from the cascade (R-CONV-3). S-F implements it

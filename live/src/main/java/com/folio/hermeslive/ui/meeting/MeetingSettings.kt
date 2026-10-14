@@ -106,12 +106,12 @@ fun MeetingSettingsSection(settings: MeetingSettings, history: List<MeetingMeta>
     HorizontalDivider(color = Hairline)
     Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Toggle(
-            "Meeting notes", "A Meeting button beside Talk and a \"Take meeting notes\" shortcut. Bill listens silently, then Hermes writes the notes.",
+            "Meeting notes", "A Meeting button beside Talk and a \"Take meeting notes\" shortcut. The phone listens silently, then Hermes writes the notes.",
             settings.enabled, "meeting-enabled",
         ) { v -> actions.onChange { it.copy(enabled = v) } }
         if (settings.enabled) {
             Toggle(
-                "Wake word \"Bill\"", "\"Bill, note that …\" marks it in the notes; \"Bill, start a task to …\" starts an agent task. A haptic tick confirms; Bill never speaks.",
+                "Wake word \"Bill\"", "\"Bill, note that …\" marks it in the notes; \"Bill, start a task to …\" starts an agent task. A haptic tick confirms; nothing is spoken.",
                 settings.wakeWord, "meeting-wake",
             ) { v -> actions.onChange { it.copy(wakeWord = v) } }
             Column(

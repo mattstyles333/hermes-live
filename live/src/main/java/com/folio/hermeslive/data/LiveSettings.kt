@@ -7,6 +7,7 @@ import com.folio.hermes.realtime.GrokModels
 import com.folio.hermes.realtime.GrokVoices
 import com.folio.hermeslive.call.FallbackRoute
 import com.folio.hermeslive.call.GapSettings
+import com.folio.hermeslive.call.ondemand.OnDemandSettings
 
 /** Hermes Live's settings. Defaults are the shipped behaviour (see LiveSettingsTest). */
 data class LiveSettings(
@@ -88,6 +89,12 @@ data class LiveSettings(
     val grokCustomVoice: String = "",
     /** The realtime model (`grok-voice-latest` by default). */
     val grokModel: String = GrokModels.DEFAULT,
+
+    // ── Settings › Voice › "Save cost: close the voice session while agents work" (ondemand slice) ──
+    /** Grok Voice: drop the paid session while idle, reopen on speech or a result. */
+    val grokSaveCost: Boolean = true,
+    /** GPT-Live: the same (the GPT-Live engine reads it once it supports on-demand sessions). */
+    val gptLiveSaveCost: Boolean = true,
 ) {
     /** The same settings with every Voice field inside its range (what is saved and used). */
     fun normalized(): LiveSettings = copy(
@@ -97,7 +104,8 @@ data class LiveSettings(
         ttsModel = ttsModel.trim().ifEmpty { DEFAULT_TTS_MODEL },
         vocabulary = cleanVocabulary(vocabulary),
         cloudSttModel = cloudSttModel.trim().takeIf(::isModelId) ?: CloudSttModels.DEFAULT.id,
-        grokVoice = GrokVoices.of(grokVoice).takeIf { it in GrokVoices.BUILT_IN } ?: GrokVoices.DEFAULT,
+        // A built-in voice or one from xAI's live list (`GET /v1/tts/voices`); a custom id goes in grokCustomVoice.
+        grokVoice = grokVoice.trim().lowercase().takeIf { VOICE_ID.matches(it) } ?: GrokVoices.DEFAULT,
         grokCustomVoice = grokCustomVoice.trim().lowercase().takeIf(GrokVoices::isCustomId).orEmpty(),
         grokModel = grokModel.trim().takeIf { GROK_MODEL.matches(it) } ?: GrokModels.DEFAULT,
     )
@@ -131,6 +139,15 @@ data class LiveSettings(
             },
         )
     }
+
+    /** The on-demand session rules for a call on [engine] (Custom never has a paid session). */
+    fun onDemandSettings(engine: VoiceEngine): OnDemandSettings = OnDemandSettings(
+        enabled = when (engine) {
+            VoiceEngine.Grok -> grokSaveCost
+            VoiceEngine.GptLive -> gptLiveSaveCost
+            VoiceEngine.Cascade -> false
+        },
+    )
 
     fun gapSettings(): GapSettings = GapSettings(enabled = musicInGaps, duckOnSpeaker = duckOnSpeaker)
 
@@ -169,6 +186,7 @@ data class LiveSettings(
         private val WHITESPACE = Regex("\\s+")
         private val MODEL_ID = Regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$")
         private val GROK_MODEL = Regex("^grok-voice[A-Za-z0-9._-]*$")
+        private val VOICE_ID = Regex("^[a-z0-9][a-z0-9_-]{0,39}$")
 
         /** An OpenRouter model id's shape (`vendor/model`). */
         fun isModelId(s: String): Boolean = MODEL_ID.matches(s)

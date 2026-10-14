@@ -24,6 +24,8 @@ import com.folio.hermeslive.data.VoiceShell
 import com.folio.hermeslive.service.OffCall
 import com.folio.hermeslive.service.OffCallHooks
 import com.folio.hermeslive.stt.ModelManager
+import com.folio.hermeslive.stt.SherpaEngines
+import com.folio.hermeslive.stt.SttEngineConfig
 import java.io.File
 import com.folio.hermeslive.call.HermesLinkFactory
 import com.folio.hermeslive.call.LiveTransportFactory
@@ -165,6 +167,8 @@ class LiveGraph(private val app: Context) {
                     },
                     billMemo = { shell.gate.billAvailable && CallSpeechFactory.ready(modelManager, settings.settings.value) },
                     onLive = { cascadeApp.grokLive = it },
+                    // Save cost: the phone's Silero detector (bundled asset) listens while the session is parked.
+                    vad = { SherpaEngines.vad(app.assets, SttEngineConfig()) },
                 )
             },
             grokActive = { VoiceShell.of(app).gate.grokActive },

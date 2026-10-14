@@ -72,7 +72,7 @@ object KeyDoubt {
     }
 
     /** The line the brief's notes carry when Bill will ask. */
-    fun note(d: WrittenDoubt): String = "Bill is checking \"${d.word}\" with the user; a correction may follow."
+    fun note(d: WrittenDoubt): String = "The voice assistant is checking \"${d.word}\" with the user; a correction may follow."
 
     /** Ask [d] into [a]'s reply, after the start line, and wait (durably) for the answer to one of [taskIds]. */
     fun ask(tx: Tx, a: ActionState, d: WrittenDoubt, taskIds: List<String>) {

@@ -91,7 +91,7 @@ class CascadeTextTest {
     @Test fun orbInWords() {
         assertEquals("listening", orbStatus(CascadeUiState(turn = TurnUi(phase = TurnPhase.UserSpeaking))))
         assertEquals("listening while you hold", orbStatus(CascadeUiState(turn = TurnUi(holdToTalk = true))))
-        assertEquals("Bill: deciding. One agent working.", sceneDescription(CascadeUiState(turn = TurnUi(phase = TurnPhase.Deciding), tasks = listOf(task(TaskUiStatus.Running)))))
+        assertEquals("Call: deciding. One agent working.", sceneDescription(CascadeUiState(turn = TurnUi(phase = TurnPhase.Deciding), tasks = listOf(task(TaskUiStatus.Running)))))
         assertEquals("Hold the orb to talk", phaseLabel(CascadeUiState()))
     }
 

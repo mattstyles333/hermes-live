@@ -63,6 +63,10 @@ data class GrokUi(
  *   audio, and truncates the model's copy of its audio item to what was heard.
  * - **Reconnect:** the socket reconnects itself (resuming the conversation when it can); the
  *   loop resets what was in flight, and a conversation that could not resume gets the task list.
+ * - **On demand** (ondemand slice): [park] closes the socket while the call goes on (queued
+ *   notices wait); [resume] reopens it, resuming the conversation within xAI's window, else fresh
+ *   with a [ContextNote] (the summary, the last exchanges, the tasks). [quiet], [hasPendingNotice],
+ *   [userSpeaking] and [speaking] tell the on-demand controller when it may close.
  */
 class GrokSession(
     private val realtime: GrokRealtime,
@@ -119,6 +123,13 @@ class GrokSession(
     /** We asked for a response and its `response.created` has not come. */
     private var ownCreatePending = false
 
+    /** The last exchanges of this call (in memory only; for the [ContextNote]). */
+    private val exchanges = ArrayDeque<SpokenExchange>()
+    private var heardUser = ""
+
+    /** Builds the context note a fresh (non-resumed) reopen injects; set by [resume]. */
+    private var contextNote: (() -> String?)? = null
+
     /** Tool outputs the socket did not take (it was reconnecting): resent if the conversation resumed. */
     private val unsent = mutableListOf<Pair<FunctionCall, ToolOutcome>>()
     private var connectedOnce = false
@@ -151,6 +162,36 @@ class GrokSession(
         // A socket often fails before the phone notices it is offline: after the retries it is `unreachable`.
         if (link is LinkState.Offline || link == LinkState.Failed(GrokRealtime.UNREACHABLE)) realtime.reconnect()
     }
+
+    /** On demand: close the socket to save cost; the call, the queued notices and the tasks go on. Call on the session's thread. */
+    fun park() {
+        realtime.park()
+    }
+
+    /**
+     * On demand: reopen. A conversation that cannot resume gets [note] (or, without one, the task
+     * list) as a system item before anything else. False without a key.
+     */
+    fun resume(note: (() -> String?)? = null): Boolean {
+        contextNote = note
+        return realtime.resume()
+    }
+
+    /** The context note for a fresh session: [summary] (the conversation's), this call's last exchanges, the tasks. */
+    fun contextNote(summary: String?): String? = ContextNote.build(summary, exchanges.toList(), tasks.status())
+
+    /** Nothing in flight: no response, tool round or owed response, nothing injected and unspoken, not ending. Session thread. */
+    fun quiet(): Boolean = !responding && !toolsRunning && !createPending && !ownCreatePending && injecting == null &&
+        injected.isEmpty() && !turnPending && !ending
+
+    /** A notice waits to be injected (or is on its way in). Session thread. */
+    fun hasPendingNotice(): Boolean = queue.isNotEmpty() || injecting != null
+
+    /** The server hears the user. Session thread. */
+    fun userSpeaking(): Boolean = userSpeaking
+
+    /** Grok's audio is queued or playing. */
+    fun speaking(): Boolean = !playback.idle.value
 
     /** Hang-up: the socket closes, playback stops. Tasks keep running. */
     fun stop() {
@@ -189,7 +230,10 @@ class GrokSession(
                 }
                 _ui.value = _ui.value.copy(userSpeaking = false)
             }
-            is ServerEvent.UserTranscript -> _ui.value = _ui.value.copy(caption = e.text.takeLast(CAPTION_CHARS))
+            is ServerEvent.UserTranscript -> {
+                heardUser = e.text.takeLast(CAPTION_CHARS)
+                _ui.value = _ui.value.copy(caption = heardUser)
+            }
             is ServerEvent.ResponseCreated -> {
                 responding = true
                 ownCreatePending = false
@@ -255,6 +299,8 @@ class GrokSession(
     private fun responseDone(e: ServerEvent.ResponseDone) {
         responding = false
         turnPending = false
+        remember(heardUser, _ui.value.reply)
+        heardUser = ""
         e.calls.forEach(::gather)
         report("grok.response", mapOf("status" to e.status, "calls" to calls.size))
         if (injected.isNotEmpty() && e.responseId == injectedResponse) {
@@ -330,9 +376,16 @@ class GrokSession(
         injecting = null
         ownCreatePending = false
         if (!first && !state.resumed) {
-            // A new conversation: Grok has lost the task ids. Tell it, without a response.
-            val views = tasks.status().filter { it.status == "running" || it.status == "queued" || it.status == "waiting_on_user" }
-            if (views.isNotEmpty()) realtime.send(RealtimeProtocol.message(config().noticeRole, "Tasks still open: " + views.joinToString("; ") { "${it.id} \"${it.label}\" ${it.status}" } + "."))
+            // A new conversation: Grok has lost the conversation and the task ids. Tell it, without a response.
+            val note = contextNote?.let { runCatching { it() }.getOrNull() }
+            contextNote = null
+            if (note != null) {
+                realtime.send(RealtimeProtocol.message(config().noticeRole, note))
+                report("grok.context_note", mapOf("chars" to note.length))
+            } else {
+                val views = tasks.status().filter { it.status == "running" || it.status == "queued" || it.status == "waiting_on_user" }
+                if (views.isNotEmpty()) realtime.send(RealtimeProtocol.message(config().noticeRole, "Tasks still open: " + views.joinToString("; ") { "${it.id} \"${it.label}\" ${it.status}" } + "."))
+            }
         }
     }
 
@@ -373,6 +426,12 @@ class GrokSession(
             withTimeoutOrNull(drainCapMs) { playback.idle.first { it } }
             then()
         }
+    }
+
+    private fun remember(user: String, reply: String) {
+        if (user.isBlank() && reply.isBlank()) return
+        exchanges.addLast(SpokenExchange(user, reply))
+        while (exchanges.size > ContextNote.MAX_EXCHANGES) exchanges.removeFirst()
     }
 
     private fun taskIdOf(output: String): String? = Regex("\"task_id\":\"(t\\d+)\"").find(output)?.groupValues?.get(1)

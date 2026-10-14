@@ -29,8 +29,14 @@ import com.folio.hermeslive.call.RouteKind
 import com.folio.hermeslive.call.RouteOption
 import com.folio.hermeslive.call.RouteSelector
 import com.folio.hermeslive.call.VoiceCall
+import com.folio.hermeslive.call.ondemand.OnDemandController
+import com.folio.hermeslive.call.ondemand.OnDemandSettings
+import com.folio.hermeslive.call.ondemand.OnDemandUi
+import com.folio.hermeslive.call.ondemand.SessionView
 import com.folio.hermeslive.cascade.CascadeAppRuntime
 import com.folio.hermeslive.data.LiveSettings
+import com.folio.hermeslive.data.VoiceEngine
+import com.folio.hermeslive.stt.VoiceDetector
 import java.util.Locale
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -64,8 +70,13 @@ interface GrokNetwork {
  * socket, and Grok's voice streams to a 24 kHz [StreamOut]. Hang-up closes the socket; the tasks
  * carry on (the off-call service, as for Bill).
  *
- * Offline: a dropped socket with the phone offline says so, offers Bill's offline memo mode when
- * he can run ([billMemo]), and reconnects (resuming the conversation) when the network is back.
+ * Offline: a dropped socket with the phone offline says so, offers the Custom engine's offline memo
+ * mode when it can run ([billMemo]), and reconnects (resuming the conversation) when the network is back.
+ *
+ * Save cost (ondemand slice, Settings › Voice, on by default): an [OnDemandController] parks the
+ * socket after 8 s of all-idle while the call stays up; the phone listens ([vad], Silero) with a
+ * 1.5 s pre-roll and resumes the session when the user speaks or a task notice waits. Off, or with
+ * no voice detector, the socket stays open for the whole call as before.
  *
  * Runs on [scope]'s thread (Main), like the other engines.
  */
@@ -89,6 +100,10 @@ class GrokCallEngine(
     private val telemetry: TelemetrySink = TelemetrySink.Default,
     /** Tests: the socket's address. */
     private val baseConfig: GrokConfig = GrokConfig(),
+    /** The phone's voice detector for on-demand sessions (Silero on the mic thread); null: the session never closes. */
+    private val vad: () -> VoiceDetector? = { null },
+    /** Tests: shorter on-demand timings. */
+    private val onDemandTimings: (OnDemandSettings) -> OnDemandSettings = { it },
 ) : VoiceCall, CallAudio.Listener {
     private val _state = MutableStateFlow(CallUiState())
     override val state: StateFlow<CallUiState> = _state.asStateFlow()
@@ -106,6 +121,11 @@ class GrokCallEngine(
     private var autoMuted = false
     private var liveAtMs: Long? = null
     private var jobs = mutableListOf<Job>()
+    private var onDemand: OnDemandController? = null
+    private val _session = MutableStateFlow(OnDemandUi())
+
+    /** The on-demand session state (the orb dims and an indicator shows while "Listening (on phone)"). */
+    val sessionUi: StateFlow<OnDemandUi> = _session.asStateFlow()
 
     @Volatile private var micMuted = false
 
@@ -134,7 +154,7 @@ class GrokCallEngine(
         callSettings = settings()
         val r = runtime()
         if (r == null) {
-            _state.value = CallUiState(phase = CallPhase.Failed, error = "Grok can't start. Sign in to Hermes, and check the xAI key in Settings › Voice.")
+            _state.value = CallUiState(phase = CallPhase.Failed, error = "Grok Voice can't start. Sign in to Hermes, and check the xAI key in Settings › Voice.")
             return
         }
         rt = r
@@ -143,7 +163,7 @@ class GrokCallEngine(
         autoMuted = false
         liveAtMs = null
         micMuted = request.muted
-        _state.value = CallUiState(phase = CallPhase.Connecting, muted = request.muted, notice = "Connecting to Grok…")
+        _state.value = CallUiState(phase = CallPhase.Connecting, muted = request.muted, notice = "Connecting to Grok Voice…")
         audio.begin(this)
         devices = audio.devices()
         route = RouteChoice(RouteSelector.auto(devices, callSettings.fallbackRoute), manual = false)
@@ -171,21 +191,35 @@ class GrokCallEngine(
         val s = GrokSession(realtime, r.core.tasks, audioIo.out, scope, { config }, onEndCall = { scope.launch { finish("goodbye") } }, telemetry = telemetry)
         grok = s
         s.mute(request.muted)
+        lateinit var ctl: OnDemandController
+        ctl = OnDemandController(
+            link = GrokLink(s, realtime, network::online),
+            settings = onDemandTimings(callSettings.onDemandSettings(VoiceEngine.Grok)),
+            vadFactory = vad,
+            context = { s.contextNote(r.core.actor.state.value.conversation.summary) },
+            clock = clock,
+            wake = { scope.launch { if (onDemand === ctl) evaluate() } },
+            telemetry = telemetry,
+        )
+        onDemand = ctl
+        ctl.setMuted(request.muted)
         val requestedAt = clock()
         jobs += scope.launch { s.ui.collect { onGrok(it, requestedAt) } }
+        jobs += scope.launch { ctl.ui.collect { _session.value = it } }
         jobs += scope.launch {
             network.changes.collect { up ->
                 if (up) {
                     s.networkBack()
-                    _state.update { it.copy(offerBillMemo = false) }
+                    _state.update { it.copy(offerBillMemo = false, notice = if (s.ui.value.link == LinkState.Parked) null else it.notice) }
                 }
             }
         }
         if (!s.start()) {
-            finish("failed", error = "Add your xAI key in Settings › Voice to talk to Grok.")
+            finish("failed", error = "Add your xAI key in Settings › Voice to use Grok Voice.")
             return
         }
-        startMic(audioIo, s)
+        ctl.start()
+        startMic(audioIo, ctl)
         onLive(true)
         jobs += scope.launch {
             while (true) {
@@ -290,14 +324,14 @@ class GrokCallEngine(
     private fun setMuted(muted: Boolean) {
         micMuted = muted
         grok?.mute(muted)
+        onDemand?.setMuted(muted)
         _state.update { it.copy(muted = muted) }
     }
 
-    /** The mic on its own thread: 16 kHz frames, resampled to 24 kHz, to the socket. */
-    private fun startMic(audioIo: GrokAudioIo, s: GrokSession) {
+    /** The mic on its own thread: 16 kHz frames to the on-demand controller (which feeds the session while it is open). */
+    private fun startMic(audioIo: GrokAudioIo, ctl: OnDemandController) {
         val source = audioIo.source
         mic = Thread({
-            val resampler = Resampler16To24()
             val buf = ShortArray(source.sampleRate / 50)
             try {
                 source.open()
@@ -306,12 +340,13 @@ class GrokCallEngine(
                     if (n < 0) break
                     if (n == 0) continue
                     micDb = if (micMuted) Dbfs.FLOOR else Dbfs.of(Dbfs.pcm16ToFloat(buf, n))
-                    s.audio(resampler.convert(buf, n))
+                    ctl.onMic(buf, n)
                 }
             } catch (e: Exception) {
                 Telemetry.warn("audio.error", null, mapOf("engine" to "grok", "type" to e.javaClass.simpleName))
             } finally {
                 runCatching { source.close() }
+                ctl.micClosed()
             }
         }, "grok-mic").apply { isDaemon = true; start() }
     }
@@ -328,17 +363,19 @@ class GrokCallEngine(
                 }
                 _state.update { it.copy(phase = CallPhase.Live, startedAtMs = liveAtMs, notice = null, offerBillMemo = false) }
             }
-            is LinkState.Reconnecting -> _state.update { it.copy(phase = CallPhase.Reconnecting, notice = "Reconnecting to Grok…") }
+            is LinkState.Reconnecting -> _state.update { it.copy(phase = CallPhase.Reconnecting, notice = "Reconnecting to Grok Voice…") }
             LinkState.Offline -> {
-                _state.update { it.copy(phase = CallPhase.Reconnecting, notice = "You're offline. Grok needs the internet; it reconnects when you're back.", offerBillMemo = billMemo()) }
+                _state.update { it.copy(phase = CallPhase.Reconnecting, notice = "You're offline. Grok Voice needs the internet; it reconnects when you're back.", offerBillMemo = billMemo()) }
                 Telemetry.event("grok.offline_offer", mapOf("bill" to billMemo()))
             }
             is LinkState.Failed -> when {
                 link.code == GrokRealtime.UNAUTHORIZED -> finish("failed", error = "xAI refused the key. Check it in Settings › Voice.")
-                link.code == GrokRealtime.NO_KEY -> finish("failed", error = "Add your xAI key in Settings › Voice to talk to Grok.")
-                !network.online() -> _state.update { it.copy(phase = CallPhase.Reconnecting, notice = "You're offline. Grok needs the internet.", offerBillMemo = billMemo()) }
-                else -> finish("failed", error = "Grok can't be reached right now.")
+                link.code == GrokRealtime.NO_KEY -> finish("failed", error = "Add your xAI key in Settings › Voice to use Grok Voice.")
+                !network.online() -> _state.update { it.copy(phase = CallPhase.Reconnecting, notice = "You're offline. Grok Voice needs the internet.", offerBillMemo = billMemo()) }
+                else -> finish("failed", error = "Grok Voice can't be reached right now.")
             }
+            // Parked on purpose (save cost): the call is still live; offline, the offline notice stays.
+            LinkState.Parked -> if (network.online()) _state.update { it.copy(phase = CallPhase.Live, notice = null, offerBillMemo = false) }
             LinkState.Idle, LinkState.Connecting, LinkState.Closed -> Unit
         }
     }
@@ -348,14 +385,17 @@ class GrokCallEngine(
         val s = _state.value
         val r = rt ?: return
         if (!s.inCall) return
+        val ctl = onDemand
+        ctl?.tick()
         val g = grok?.ui?.value ?: GrokUi()
         val now = clock()
-        val userSpeaking = !s.muted && !otherCall && g.userSpeaking
+        val userSpeaking = !s.muted && !otherCall && (g.userSpeaking || ctl?.phoneHearsSpeech == true)
         val speaking = g.speaking
         val tasks = r.core.actor.ui.value.tasks
         val working = tasks.any { it.status == TaskUiStatus.Running || it.status == TaskUiStatus.Starting || it.status == TaskUiStatus.Queued }
         val headset = route.route?.kind?.isHeadset == true
-        val decision = policy.update(GapSignals(userSpeaking, speaking, working, headset, otherCall), now)
+        val base = GapSignals(userSpeaking, speaking, working, headset, otherCall)
+        val decision = policy.update(ctl?.gap(base) ?: base, now)
         if (decision.changed) audio.setFocus(decision.mode)
         val activity = when {
             speaking -> CallActivity.HermesSpeaking
@@ -402,7 +442,7 @@ class GrokCallEngine(
         val duration = liveAtMs?.let { endedAt - it }
         val summary = duration?.let {
             val cost = String.format(Locale.UK, "%.2f", it / 60_000.0 * GrokPricing.USD_PER_MINUTE)
-            val tasks = if (running > 0) " Grok's tasks carry on and you'll get a notification." else ""
+            val tasks = if (running > 0) " Your tasks carry on and you'll get a notification." else ""
             CallSummary(it, null, "Call ended. About \$$cost of Grok Voice.$tasks")
         }
         _state.value = CallUiState(phase = if (error != null && liveAtMs == null) CallPhase.Failed else CallPhase.Ended, summary = summary, error = error)
@@ -411,6 +451,9 @@ class GrokCallEngine(
             "call.end",
             mapOf("engine" to "grok", "reason" to reason, "failed" to (error != null), "duration_s" to ((duration ?: 0L) / 1000), "tasks_running" to running, "off_call" to held),
         )
+        onDemand?.stop()
+        onDemand = null
+        _session.value = _session.value.copy(view = SessionView.Connecting)
         grok?.stop()
         grok = null
         mic?.interrupt()

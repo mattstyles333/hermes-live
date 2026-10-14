@@ -84,9 +84,11 @@ class GrokPartsTest {
         assertEquals("ara", custom.grokVoice)
         assertEquals("ab12cd34", custom.grokVoiceId())
         assertEquals("grok-voice-3.0", custom.grokModel)
-        val bad = LiveSettings(grokVoice = "nobody", grokCustomVoice = "not a voice", grokModel = "gpt-4o").normalized()
+        // Any id shaped like a voice is kept (xAI's live list has voices beyond the documented ones); junk is not.
+        val bad = LiveSettings(grokVoice = "no body!", grokCustomVoice = "not a voice", grokModel = "gpt-4o").normalized()
         assertEquals(GrokVoices.DEFAULT, bad.grokVoiceId())
         assertEquals(GrokModels.DEFAULT, bad.grokModel)
+        assertEquals("nova", LiveSettings(grokVoice = "Nova").normalized().grokVoiceId())
         assertEquals(VoiceEngine.Grok, VoiceEngine.parse("grok"))
     }
 

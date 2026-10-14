@@ -180,7 +180,7 @@ class CascadeCallEngineTest {
         r.speech.failWith = IllegalStateException("missing model files: encoder.onnx")
         r.live()
         assertEquals(CallPhase.Failed, r.engine.state.value.phase)
-        assertTrue(r.engine.state.value.error!!.contains("Prepare Bill's voice"))
+        assertTrue(r.engine.state.value.error!!.contains("Prepare the voice"))
         assertEquals(1, r.audio.ended)
         assertNull(r.rt.stt.attached)
     }

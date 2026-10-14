@@ -34,7 +34,7 @@ class MainScreenTest {
             CallEnd(EndReason.HungUp, 252_000),
             callEndOf(CallUiState(phase = CallPhase.Ended, summary = CallSummary(252_000, null, "Call ended."))),
         )
-        val error = "The microphone or Bill's speech models could not start."
+        val error = "The microphone or the speech models could not start."
         assertEquals(CallEnd(EndReason.Error, null, error), callEndOf(CallUiState(phase = CallPhase.Failed, error = error)))
     }
 }

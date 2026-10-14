@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -49,5 +50,47 @@ class AutoPrepareTest {
         VoiceSettingsController(t.shell, scope).update { it.copy(pauseMs = 1_200) }
         assertFalse(t.shell.autoPrepare())
         assertTrue(t.server.requests.isEmpty())
+    }
+
+    @Test fun changingTheVoiceRendersTheStockLinesAgainInIt() {
+        val t = shell("auto-voice", wifi = true)
+        val c = VoiceSettingsController(t.shell, scope)
+        c.update { it.copy(voiceEngine = VoiceEngine.Cascade) }
+        val first = kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeout(10_000) { t.shell.prep.state.first { it.phase == PrepPhase.Done } } }
+        assertTrue(first.ready)
+        val before = speechVoices(t)
+        assertEquals("rendered in Bill's voice", setOf("bill"), before.toSet())
+        c.update { it.copy(billVoice = "george") }
+        val again = kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeout(10_000) { t.shell.prep.state.first { it.phase == PrepPhase.Done && it.ready } } }
+        assertEquals(first.phrases.total, again.phrases.total)
+        val after = speechVoices(t).drop(before.size)
+        assertEquals("every line again, in the new voice only", setOf("george"), after.toSet())
+        assertEquals(before.size, after.size)
+    }
+
+    @Test fun changingTheVoiceWithCustomOffRendersNothing() {
+        val t = shell("auto-voice-off", wifi = true)
+        VoiceSettingsController(t.shell, scope).update { it.copy(billVoice = "george") }
+        assertTrue(t.server.requests.isEmpty())
+        assertFalse(t.shell.rerender())
+    }
+
+    @Test fun theFirstVoiceChangeAfterARestartRendersOnMobileDataToo() {
+        val t = shell("auto-voice-restart", wifi = false)
+        t.settings.update { it.copy(voiceEngine = VoiceEngine.Cascade) }
+        val s = t.settings.settings.value
+        t.shell.storage.store.put(VoiceShell.PREPARED_KEY, VoicePrep.fingerprint(s.billVoice, s.ttsModel, com.folio.hermes.cascade.PhraseBank.load().version))
+        // A fresh process: the first settings change is the voice.
+        VoiceSettingsController(t.shell, scope).update { it.copy(billVoice = "george") }
+        kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeout(10_000) { t.shell.prep.state.first { it.phase == PrepPhase.Done && it.ready } } }
+        assertEquals(setOf("george"), speechVoices(t).toSet())
+    }
+
+    private fun speechVoices(t: TestShell): List<String> = synchronized(t.server) {
+        t.server.requests.filter { it.url.encodedPath.endsWith("/audio/speech") }.map { r ->
+            val buf = okio.Buffer()
+            r.body!!.writeTo(buf)
+            Regex("\"voice\":\"([^\"]+)\"").find(buf.readUtf8())!!.groupValues[1]
+        }
     }
 }

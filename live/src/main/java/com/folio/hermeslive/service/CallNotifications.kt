@@ -59,7 +59,7 @@ object CallNotifications {
         )
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_PLAYBACK, "Hear it", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Bill reading a result (the mic is off)"
+                description = "Reading a result aloud (the mic is off)"
                 setSound(null, null)
                 enableVibration(false)
             },

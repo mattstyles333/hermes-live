@@ -66,7 +66,7 @@ object Briefs {
             "- One brief per separate, independent job when split is several; otherwise one brief (steps that follow each other stay one job). At most 8.\n" +
             "- brief: short lines \"Goal: …\", \"Constraints: …\", \"Done when: …\" in the second person. Every detail the user gave; invent nothing.\n" +
             "- Copy names, numbers, amounts and dates exactly as the transcript has them.\n" +
-            "- label: 2 to 4 words naming the job. summary: at most 12 words Bill says to confirm it, e.g. \"reorder email to Safilo, 40 units, for your approval\".\n" +
+            "- label: 2 to 4 words naming the job. summary: at most 12 words the voice says to confirm it, e.g. \"reorder email to Safilo, 40 units, for your approval\".\n" +
             "- fixes: speech-to-text slips to correct, as {from, to} word pairs. ONLY words marked [word|alternative] or words that match " +
             "the vocabulary; an empty list when nothing needs fixing.\n" +
             "- notes: one short line about any repair or doubt, else empty.\n" +
@@ -93,7 +93,7 @@ object Briefs {
     /** Added to the prompt with a sure `key_doubt` (R-STT-5): the task starts anyway; Bill asks this once it has. */
     const val DOUBT =
         "A name, number or date the job depends on may be misheard. Also answer \"doubt\":{\"word\":\"…\",\"question\":\"…\"}: " +
-            "word is that one word or short phrase exactly as the transcript has it; question is one short question Bill asks to check it, " +
+            "word is that one word or short phrase exactly as the transcript has it; question is one short question the voice asks to check it, " +
             "e.g. \"Kestrel, right?\" or \"Forty, or fourteen?\". Leave doubt out if nothing looks misheard.\n"
 
     /**

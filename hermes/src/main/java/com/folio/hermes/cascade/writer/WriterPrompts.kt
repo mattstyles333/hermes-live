@@ -16,7 +16,7 @@ data class TaskPlan(val label: String, val prompt: String, val say: String)
  */
 object WriterPrompts {
     private const val VOICE =
-        "You are Bill, the voice of the user's own assistant, speaking on a phone call. Write only what Bill says: " +
+        "You are the voice of the user's own assistant, speaking on a phone call. Write only what you say aloud: " +
             "plain spoken English, short sentences, warm, dry and brief. No markdown, lists, emoji, URLs or stage directions."
 
     /** System prompt for a spoken line. [said] is the stock line already played, if any. */
@@ -26,7 +26,7 @@ object WriterPrompts {
         if (said == null) {
             append(" Open with a lead of one to four words as its own sentence or phrase, such as \"On it.\", \"Sure.\" or \"Right,\".")
         } else {
-            append(" Bill has just said \"$said\". Carry straight on from it: no opening lead, and do not repeat it.")
+            append(" You have just said \"$said\". Carry straight on from it: no opening lead, and do not repeat it.")
         }
     }
 
@@ -45,7 +45,7 @@ object WriterPrompts {
         "You turn a spoken request into a task for an AI agent with tools. Answer in exactly three lines:\n" +
             "LABEL: a 2 to 4 word name for the task, e.g. \"stock check\"\n" +
             "PROMPT: a clear, complete instruction for the agent, in the second person, with every detail the user gave\n" +
-            "SAY: one short spoken sentence for Bill confirming what he started, no lead word"
+            "SAY: one short spoken sentence confirming what you started, no lead word"
 
     fun plan(text: String, recent: List<Exchange>): String = buildString {
         if (recent.isNotEmpty()) {
@@ -88,9 +88,9 @@ object WriterPrompts {
             "the full answer is on screen.\n\nResult:\n${text.take(6_000)}"
 
     fun updated(label: String, mode: UpdateMode): String =
-        "Bill just passed the user's message to the task \"$label\" (${if (mode == UpdateMode.Queue) "after its current step" else "changing what it is doing now"}). Confirm it in one short sentence."
+        "You just passed the user's message to the task \"$label\" (${if (mode == UpdateMode.Queue) "after its current step" else "changing what it is doing now"}). Confirm it in one short sentence."
 
-    fun cancelled(label: String): String = "Bill just stopped the task \"$label\". Confirm it in one short sentence."
+    fun cancelled(label: String): String = "You just stopped the task \"$label\". Confirm it in one short sentence."
 
     private fun StringBuilder.context(recent: List<Exchange>, tasks: List<TaskBrief>) {
         if (recent.isNotEmpty()) {

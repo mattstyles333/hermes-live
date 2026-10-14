@@ -67,6 +67,7 @@ import com.folio.hermeslive.stt.SttModel
 import com.folio.hermeslive.data.VoiceEngine
 import com.folio.hermes.realtime.GrokPricing
 import com.folio.hermes.realtime.GrokVoices
+import com.folio.hermeslive.data.VoicePickerUi
 import com.folio.hermeslive.data.VoiceSettingsController
 import com.folio.hermeslive.data.VoiceShell
 import com.folio.hermeslive.data.VoiceUi
@@ -315,6 +316,8 @@ private fun VoiceSettingsWired(controller: VoiceSettingsController) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val ui by controller.ui.collectAsState()
+    val pickers = remember(controller) { controller.pickers() }
+    val picker by pickers.ui.collectAsState()
     LaunchedEffect(Unit) { controller.refresh() }
     LaunchedEffect(ui.cascadeActive) { MemoEntry.syncShortcut(context, ui.cascadeActive) }
     VoiceSettingsSection(
@@ -348,11 +351,25 @@ private fun VoiceSettingsWired(controller: VoiceSettingsController) {
             onCheckXaiKey = controller::recheckXaiKey,
             onRemoveXaiKey = controller::removeXaiKey,
         ),
+        picker,
+        VoicePickerActions(
+            onLoad = pickers::load,
+            onChooseTtsModel = pickers::chooseTtsModel,
+            onChooseVoice = pickers::chooseVoice,
+            onChooseGrokVoice = pickers::chooseGrokVoice,
+            onPreviewCustom = pickers::previewCustom,
+            onPreviewGrok = pickers::previewGrok,
+        ),
     )
 }
 
 @Composable
-fun VoiceSettingsSection(ui: VoiceUi, actions: VoiceActions) {
+fun VoiceSettingsSection(
+    ui: VoiceUi,
+    actions: VoiceActions,
+    picker: VoicePickerUi = VoicePickerUi(),
+    pickerActions: VoicePickerActions = VoicePickerActions(),
+) {
     val s = ui.settings
     val cascade = s.voiceEngine == VoiceEngine.Cascade
     Section("Voice") {
@@ -360,8 +377,8 @@ fun VoiceSettingsSection(ui: VoiceUi, actions: VoiceActions) {
         Choice(
             "Voice engine",
             when (s.voiceEngine) {
-                VoiceEngine.Cascade -> "Bill: on-phone speech, Jev and Hermes agents (OpenRouter)"
-                VoiceEngine.Grok -> "Grok: xAI's speech-to-speech voice, delegating to Hermes agents"
+                VoiceEngine.Cascade -> "Custom: on-phone speech recognition, Jev routing, your choice of voice"
+                VoiceEngine.Grok -> "Grok Voice: xAI's speech-to-speech voice, delegating to Hermes agents"
                 VoiceEngine.GptLive -> "GPT-Live, through Hermes (default)"
             },
             "engine",
@@ -377,7 +394,17 @@ fun VoiceSettingsSection(ui: VoiceUi, actions: VoiceActions) {
             }
         }
 
-        if (s.voiceEngine == VoiceEngine.Grok) GrokBlock(ui, actions)
+        when (s.voiceEngine) {
+            VoiceEngine.GptLive -> {
+                GptLiveVoiceOption(s, actions.onChange)
+                SaveCostToggle(s, actions.onChange)
+            }
+            VoiceEngine.Grok -> {
+                GrokBlock(ui, actions, picker, pickerActions)
+                SaveCostToggle(s, actions.onChange)
+            }
+            VoiceEngine.Cascade -> Unit
+        }
         KeyBlock(ui, actions)
 
         if (cascade) {
@@ -385,13 +412,13 @@ fun VoiceSettingsSection(ui: VoiceUi, actions: VoiceActions) {
             Choice("Tasks at once", "${s.maxTasks} (more wait their turn)", "max-tasks") {
                 actions.onChange { it.copy(maxTasks = if (it.maxTasks >= LiveSettings.MAX_TASKS) LiveSettings.MIN_TASKS else it.maxTasks + 1) }
             }
-            TextSetting("Voice", s.billVoice, "bill-voice", valid = { it.isNotBlank() && it.none(Char::isWhitespace) }) { v -> actions.onChange { it.copy(billVoice = v) } }
-            TextSetting("Speech model", s.ttsModel, "tts-model", valid = ::isModelId) { v -> actions.onChange { it.copy(ttsModel = v) } }
-            Text("Changing the voice or model means preparing Bill's voice again.", style = SmallStyle, color = PrintMute)
-            Toggle("Small listening noises", "Bill says \"mm-hm\" while you talk. Off by default: it can talk over you.", s.backchannel, "backchannel") { v ->
+            CustomVoicePicker(s, picker, pickerActions)
+            TextSetting("Or type a voice id", s.billVoice, "bill-voice", valid = { it.isNotBlank() && it.none(Char::isWhitespace) }) { v -> actions.onChange { it.copy(billVoice = v) } }
+            TextSetting("Or type a voice model id", s.ttsModel, "tts-model", valid = ::isModelId) { v -> actions.onChange { it.copy(ttsModel = v) } }
+            Toggle("Small listening noises", "The voice says \"mm-hm\" while you talk. Off by default: it can talk over you.", s.backchannel, "backchannel") { v ->
                 actions.onChange { it.copy(backchannel = v) }
             }
-            Toggle("Hold to talk", "Hold the orb or the headset button while you speak, instead of Bill waiting for a pause.", s.holdToTalk, "hold-to-talk") { v ->
+            Toggle("Hold to talk", "Hold the orb or the headset button while you speak, instead of waiting for a pause.", s.holdToTalk, "hold-to-talk") { v ->
                 actions.onChange { it.copy(holdToTalk = v) }
             }
             Toggle("Call audio processing", "Use the phone's echo canceller on the mic (recommended on the speaker).", s.echoCancel, "echo-cancel") { v ->
@@ -440,7 +467,7 @@ private fun KeyBlock(ui: VoiceUi, actions: VoiceActions) {
 
 /** Settings › Voice with Grok chosen: the xAI key, the voice (or a custom voice id), the model and the cost. */
 @Composable
-private fun GrokBlock(ui: VoiceUi, actions: VoiceActions) {
+private fun GrokBlock(ui: VoiceUi, actions: VoiceActions, picker: VoicePickerUi, pickerActions: VoicePickerActions) {
     var confirmRemove by remember { mutableStateOf(false) }
     val s = ui.settings
     val key = ui.xaiKey
@@ -466,18 +493,16 @@ private fun GrokBlock(ui: VoiceUi, actions: VoiceActions) {
     ui.xaiMessage?.let { Text(it, style = SmallStyle, color = if (key.check == KeyCheck.Refused) EndRed else PrintMute, modifier = Modifier.padding(top = 6.dp).testTag("xai-key-message")) }
     Text(
         "Your own xAI key, sealed on this phone with the Android Keystore. It is only sent to xAI, never logged. " +
-            "OpenRouter has no realtime voice, so Grok needs an xAI key.",
+            "OpenRouter has no realtime voice, so Grok Voice needs an xAI key.",
         style = SmallStyle, color = PrintMute, modifier = Modifier.padding(top = 6.dp),
     )
-    Choice("Grok's voice", s.grokVoice.replaceFirstChar { it.uppercase() } + if (s.grokCustomVoice.isNotEmpty()) " (custom voice in use)" else "", "grok-voice") {
-        actions.onChange { it.copy(grokVoice = GrokVoices.BUILT_IN[(GrokVoices.BUILT_IN.indexOf(it.grokVoice) + 1) % GrokVoices.BUILT_IN.size]) }
-    }
+    GrokVoicePicker(s, picker, pickerActions)
     TextSetting("Custom voice id (optional)", s.grokCustomVoice, "grok-custom-voice", valid = { it.isEmpty() || GrokVoices.isCustomId(it) }) { v ->
         actions.onChange { it.copy(grokCustomVoice = v) }
     }
     TextSetting("Grok model", s.grokModel, "grok-model", valid = { it.startsWith("grok-voice") && it.none(Char::isWhitespace) }) { v -> actions.onChange { it.copy(grokModel = v) } }
     Text(
-        "About \$${GrokPricing.USD_PER_MINUTE} a minute while a Grok call is open (xAI's price). Tasks run on your Hermes server as with Bill.",
+        "About \$${GrokPricing.USD_PER_MINUTE} a minute while a Grok Voice session is open (xAI's price). Tasks run on your Hermes server as with Custom.",
         style = SmallStyle, color = Ember, modifier = Modifier.padding(top = 6.dp).testTag("grok-cost"),
     )
 }
@@ -487,7 +512,7 @@ private fun PauseSlider(pauseMs: Int, onDone: (Int) -> Unit) {
     var value by remember(pauseMs) { mutableFloatStateOf(pauseMs.toFloat()) }
     Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Text("Pause before Jev decides", style = BodyStyle, color = PrintInk)
-        Text("%.1f s of quiet before Bill treats what you said as finished.".format(value / 1000f), style = SmallStyle, color = Ember)
+        Text("%.1f s of quiet before what you said counts as finished.".format(value / 1000f), style = SmallStyle, color = Ember)
         Slider(
             value = value,
             onValueChange = { value = it },
@@ -601,7 +626,7 @@ fun transcriptCleanupText(choice: TranscriptCleanupMode): String = when (choice)
     TranscriptCleanupMode.OnDeviceOnly -> "On device only (default): when the phone wrote the words, their text goes to OpenRouter " +
         "to fix misheard names, on your OpenRouter key. Never the audio."
     TranscriptCleanupMode.Always -> "Always: the text of each thing you say goes to OpenRouter to fix misheard names, also with cloud speech recognition."
-    TranscriptCleanupMode.Off -> "Off: your words go to Bill's helpers as the phone heard them."
+    TranscriptCleanupMode.Off -> "Off: your words go to the helpers as the phone heard them."
 }
 
 /** What each choice means, in plain words (the user must know when audio leaves the phone). */
@@ -626,7 +651,7 @@ fun cloudSttCost(model: CloudSttModel): String = model.dollarsPerHour?.let { "Ab
 private fun VocabularyBlock(ui: VoiceUi, actions: VoiceActions) {
     var text by remember { mutableStateOf(ui.settings.vocabulary.joinToString("\n")) }
     Text("Vocabulary", style = BodyStyle, color = PrintInk, modifier = Modifier.padding(top = 12.dp))
-    Text("Names and words Bill should hear right. One per line.", style = SmallStyle, color = PrintMute)
+    Text("Names and words the phone should hear right. One per line.", style = SmallStyle, color = PrintMute)
     OutlinedTextField(
         value = text,
         onValueChange = { v ->
@@ -669,10 +694,10 @@ private fun DecisionLogBlock(ui: VoiceUi, actions: VoiceActions) {
 private fun PrepareBlock(ui: VoiceUi, actions: VoiceActions) {
     val prep = ui.prep
     val p = prep.phrases
-    Text("Prepare Bill's voice", style = BodyStyle, color = PrintInk, modifier = Modifier.padding(top = 12.dp))
+    Text("Prepare the voice", style = BodyStyle, color = PrintInk, modifier = Modifier.padding(top = 12.dp))
     Text(
         when (prep.phase) {
-            PrepPhase.Idle -> if (prep.ready) "Ready." else "Records Bill's stock lines once and downloads the speech models."
+            PrepPhase.Idle -> if (prep.ready) "Ready." else "Records the stock lines once in the chosen voice and downloads the speech models."
             PrepPhase.Running -> "Preparing…"
             PrepPhase.Done -> "Ready."
             PrepPhase.Cancelled -> "Paused. Resume carries on where it stopped."

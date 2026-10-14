@@ -180,7 +180,7 @@ class MeetingService : Service() {
                         b.setContentTitle("Meeting notes paused · " + clock(m.elapsedMs(now))).setShowWhen(false)
                         b.addAction(Notification.Action.Builder(icon, "Resume", service(context, ACTION_RESUME)).build())
                     }
-                    b.setContentText(if (m.phase == MeetingPhase.Recording) "Bill is listening and stays silent" else "The mic is off")
+                    b.setContentText(if (m.phase == MeetingPhase.Recording) "Listening silently" else "The mic is off")
                     b.addAction(Notification.Action.Builder(icon, "End", activity(context, MeetingEntry.ACTION_MEETING_END)).build())
                 }
                 is MeetingScreen.Ending -> b.setContentTitle("Meeting ended").setContentText("Add anything, then send the notes")

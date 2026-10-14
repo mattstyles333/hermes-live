@@ -24,7 +24,7 @@ object GrokScreen {
             grok.speaking -> TurnPhase.BillSpeaking
             else -> TurnPhase.Idle
         }
-        val online = grok.link is LinkState.Open || grok.link is LinkState.Connecting || grok.link == LinkState.Idle
+        val online = grok.link is LinkState.Open || grok.link is LinkState.Connecting || grok.link == LinkState.Idle || grok.link == LinkState.Parked
         return tasks.copy(
             turn = TurnUi(phase = phase, partial = if (grok.userSpeaking) grok.caption else ""),
             jev = tasks.jev.copy(inFlight = false, answers = emptyMap(), latencyMs = null),

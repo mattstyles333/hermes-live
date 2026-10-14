@@ -114,7 +114,7 @@ fun MeetingScreenView(screen: MeetingScreen, nowMs: Long, actions: MeetingAction
                 }
                 MeetingScreen.NeedsModels -> Message(
                     "Prepare speech models first",
-                    "Meeting notes use Bill's speech models on the phone. In Settings › Voice, choose Bill as the voice engine, then download them under Speech models.",
+                    "Meeting notes use the on-phone speech models. In Settings › Voice, choose Custom as the voice engine, then download them under Speech models.",
                     tag = "meeting-needs-models",
                 ) {
                     Pill("Open Settings", filled = true, tag = "meeting-prepare", onClick = actions.onPrepareModels)
@@ -157,7 +157,7 @@ private fun ColumnScope.Taking(live: MeetingLive, nowMs: Long, actions: MeetingA
     Spacer(Modifier.height(20.dp))
     Column(Modifier.weight(1f).fillMaxWidth().testTag("meeting-transcript"), verticalArrangement = Arrangement.Bottom) {
         if (live.lines.isEmpty() && live.partial == null) {
-            Text(if (paused) "Paused. Nothing is heard until you resume." else "Listening. Bill stays silent; say \"Bill, note that …\" to mark something.", style = BodyStyle, color = PrintMute)
+            Text(if (paused) "Paused. Nothing is heard until you resume." else "Listening silently. Say \"Bill, note that …\" to mark something.", style = BodyStyle, color = PrintMute)
         }
         val n = live.lines.size
         live.lines.forEachIndexed { i, line ->
@@ -193,7 +193,7 @@ private fun ColumnScope.Intro(screen: MeetingScreen.Intro, actions: MeetingActio
     Spacer(Modifier.weight(0.5f))
     Text("What's the meeting?", style = StatusStyle, color = PrintInk, modifier = Modifier.testTag("meeting-intro"))
     Text(
-        "Optional: a title or a line of context for the notes. Bill will listen silently and send the transcript to Hermes for notes when you end.",
+        "Optional: a title or a line of context for the notes. The phone listens silently and sends the transcript to Hermes for notes when you end.",
         style = BodyStyle, color = PrintMute, modifier = Modifier.padding(top = 8.dp),
     )
     Spacer(Modifier.height(20.dp))
@@ -283,7 +283,7 @@ fun doneText(s: MeetingScreen.Done): String = when (val o = s.outcome) {
 /** Why held notes have not gone, in plain words. */
 fun heldText(reason: String): String = when (reason) {
     "offline" -> "The phone is offline. The notes go to Hermes as soon as it is back online."
-    "bill_off" -> "Sending needs Bill or Grok: choose one in Settings › Voice and save its key. The notes wait on the phone until then."
+    "bill_off" -> "Sending needs Custom or Grok Voice: choose one in Settings › Voice and save its key. The notes wait on the phone until then."
     "signed_out" -> "Sign in to Hermes and the notes go then. They wait on the phone until then."
     "no_reply" -> "Hermes's task list didn't answer in time. It tries again on its own; nothing is sent twice."
     else -> if (reason.startsWith("writer_")) "The transcript is long and couldn't be summarised just now. It tries again later." else "The notes wait on the phone and are tried again later."
