@@ -199,5 +199,5 @@ internal fun EndButtons(actions: EndActions, alpha: () -> Float) {
     }
 }
 
-/** What the end's buttons do; [close] and [again] are each sent at most once per end. */
+/** What the end's buttons do; [close] and [again] are each sent at most once per end (independently). */
 internal class EndActions(val close: () -> Unit, val again: () -> Unit)

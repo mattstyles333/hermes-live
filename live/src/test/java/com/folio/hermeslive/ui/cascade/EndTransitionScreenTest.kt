@@ -48,6 +48,7 @@ class EndTransitionScreenTest {
     private val ui = mutableStateOf(CascadeUiState())
     private val ended = mutableStateOf<CallEnd?>(null)
     private val near = mutableStateOf(false)
+    private val start = mutableStateOf<Long?>(0L)
     private val events = MutableSharedFlow<CascadeEvent>(extraBufferCapacity = 16)
     private var back: OnBackPressedDispatcher? = null
     private var started = false
@@ -61,7 +62,7 @@ class EndTransitionScreenTest {
                 LiveTheme {
                     CascadeCallContent(
                         ui, events, intents, motion = motion, proximityNear = near.value,
-                        chrome = CascadeChrome(callStartedAtMs = if (ended.value == null) 0L else null),
+                        chrome = CascadeChrome(callStartedAtMs = if (ended.value == null) start.value else null),
                         clock = { 30_000L }, wallClock = { 1_760_000_000_000L }, ended = ended.value,
                     )
                 }
@@ -133,8 +134,27 @@ class EndTransitionScreenTest {
         advance(60_000)
         assertTrue("never leaves by itself", calls.isEmpty())
         compose.onNodeWithTag("end-talk-again").performClick()
+        compose.onNodeWithTag("end-talk-again").performClick()
+        assertEquals("once", listOf("again"), calls)
+        // The new call did not take the screen: Close still leaves (once).
         compose.onNodeWithTag("end-close").performClick()
-        assertEquals("one choice per end", listOf("again"), calls)
+        compose.runOnUiThread { back!!.onBackPressed() }
+        assertEquals(listOf("again", "close"), calls)
+    }
+
+    @Test fun aReconnectThatFailsWhileConnectingShowsNoOldTime() {
+        show(FakeCascadeUi.Moments.endedDropped())
+        end(EndReason.Error, error = "The microphone stopped.")
+        advance(EndTimeline.WIND_MS + 300)
+        compose.onNodeWithTag("end-reconnect").performClick()
+        // The new call connects (no start yet), then fails before going live: the engine has no duration.
+        start.value = null
+        ended.value = null
+        advance(50)
+        ended.value = CallEnd(EndReason.Error, null, "The microphone or Bill's speech models could not start.")
+        advance(EndTimeline.WIND_MS + 300)
+        compose.onNodeWithTag("call-time").assertDoesNotExist()
+        compose.onNodeWithText("Call dropped · 2 tasks still running").assertIsDisplayed()
     }
 
     @Test fun theRunningCountFollowsTheTasks() {

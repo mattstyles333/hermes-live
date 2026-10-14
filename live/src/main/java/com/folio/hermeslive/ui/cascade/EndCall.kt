@@ -73,7 +73,7 @@ data class EndSummary(val durationMs: Long?, val running: Int, val done: Int, va
     companion object {
         /**
          * [tasks] at the end; [callStartMs] on the tasks' clock (null: count every finished
-         * task). [durationMs] comes from the engine, else the screen's clock.
+         * task). [durationMs] comes from the engine (null: the call never went live).
          */
         fun of(tasks: List<TaskUi>, callStartMs: Long?, durationMs: Long?): EndSummary = EndSummary(
             durationMs = durationMs,
@@ -115,12 +115,12 @@ class EndRun(val end: CallEnd, val summary: EndSummary, val reduced: Boolean) {
     companion object {
         /**
          * The run for [end]: [tapped] turns an unnamed hang-up into [EndReason.EndButton] (the
-         * screen saw its End button pressed).
+         * screen saw its End button pressed). The duration is the engine's only: it has one
+         * exactly when the call went live, so none means it never connected (no time shown).
          */
-        fun start(end: CallEnd, tapped: Boolean, tasks: List<TaskUi>, callStartMs: Long?, nowMs: Long, reduced: Boolean): EndRun {
+        fun start(end: CallEnd, tapped: Boolean, tasks: List<TaskUi>, callStartMs: Long?, reduced: Boolean): EndRun {
             val reason = if (tapped && end.reason == EndReason.HungUp) EndReason.EndButton else end.reason
-            val duration = end.durationMs ?: callStartMs?.let { (nowMs - it).coerceAtLeast(0) }
-            return EndRun(end.copy(reason = reason), EndSummary.of(tasks, callStartMs, duration), reduced)
+            return EndRun(end.copy(reason = reason), EndSummary.of(tasks, callStartMs, end.durationMs), reduced)
         }
     }
 }

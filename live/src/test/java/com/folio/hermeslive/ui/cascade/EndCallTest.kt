@@ -12,7 +12,7 @@ class EndCallTest {
     private val allDone = FakeCascadeUi.Moments.endedAllDone() // two done (16 s and 20.8 s), one unheard
 
     private fun run(reason: EndReason, tasks: Boolean, reduced: Boolean = false, tapped: Boolean = false): EndRun =
-        EndRun.start(CallEnd(reason, 252_000), tapped, (if (tasks) working else allDone).tasks, 0L, 30_000L, reduced)
+        EndRun.start(CallEnd(reason, 252_000), tapped, (if (tasks) working else allDone).tasks, 0L, reduced)
 
     @Test fun everyReasonGetsTheSameWindDownAndOnlyDropsDiffer() {
         for (reason in EndReason.entries) {
@@ -90,12 +90,11 @@ class EndCallTest {
         assertEquals("unheard counts every result not heard yet", 1, EndSummary.of(allDone.tasks, 18_000L, null).unheard)
     }
 
-    @Test fun durationIsTheEnginesElseTheScreenClock() {
-        val fromEngine = EndRun.start(CallEnd(EndReason.HungUp, 61_000), false, emptyList(), 1_000L, 500_000L, false)
+    @Test fun durationIsTheEnginesOnly() {
+        val fromEngine = EndRun.start(CallEnd(EndReason.HungUp, 61_000), false, emptyList(), 1_000L, false)
         assertEquals(61_000L, fromEngine.summary.durationMs)
-        val fromClock = EndRun.start(CallEnd(EndReason.HungUp, null), false, emptyList(), 1_000L, 73_500L, false)
-        assertEquals(72_500L, fromClock.summary.durationMs)
-        val neverLive = EndRun.start(CallEnd(EndReason.Error, null, "no mic"), false, emptyList(), null, 73_500L, false)
+        // No engine duration: the call never went live, whatever start the screen remembers.
+        val neverLive = EndRun.start(CallEnd(EndReason.Error, null, "no mic"), false, emptyList(), 1_000L, false)
         assertEquals(null, neverLive.summary.durationMs)
         assertEquals("Call dropped", neverLive.summary.line(dropped = true))
     }

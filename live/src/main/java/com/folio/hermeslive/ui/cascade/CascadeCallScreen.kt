@@ -212,14 +212,24 @@ internal fun CascadeCallContent(
     // The end (EndCall.kt): the call's start is remembered while it runs (the chrome drops it at the end).
     chrome.callStartedAtMs?.let { started -> SideEffect { memory.callStartMs = started } }
     val endRun = remember(ended) {
-        ended?.let { EndRun.start(it, memory.endTapped, ui.value.tasks, memory.callStartMs ?: chrome.callStartedAtMs, clock(), motion.reduceMotion) }
+        ended?.let { EndRun.start(it, memory.endTapped, ui.value.tasks, memory.callStartMs ?: chrome.callStartedAtMs, motion.reduceMotion) }
     }
-    // A new call after this end (Talk again, Reconnect) starts untapped.
-    DisposableEffect(endRun) { onDispose { if (endRun != null) memory.endTapped = false } }
+    // A new call after this end (Talk again, Reconnect) starts untapped and without the old call's start.
+    DisposableEffect(endRun) {
+        onDispose {
+            if (endRun != null) {
+                memory.endTapped = false
+                memory.callStartMs = null
+            }
+        }
+    }
     val endMs = remember(endRun) { mutableLongStateOf(if (animate) 0L else endAtMs) }
     val endActions = remember(endRun) {
-        var sent = false
-        fun once(block: () -> Unit) = { if (!sent) { sent = true; block() } }
+        // Each at most once per end, on its own: Close and Back still work after a Talk again that did not take.
+        fun once(block: () -> Unit): () -> Unit {
+            var sent = false
+            return { if (!sent) { sent = true; block() } }
+        }
         EndActions(close = once { current.closeEnded() }, again = once { current.callAgain() })
     }
     if (endRun != null) {
