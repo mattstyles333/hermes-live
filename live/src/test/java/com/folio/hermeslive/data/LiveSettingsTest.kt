@@ -1,5 +1,6 @@
 package com.folio.hermeslive.data
 
+import com.folio.hermeslive.call.GptLiveOnDemandFactory
 import com.folio.hermeslive.call.FallbackRoute
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -36,5 +37,19 @@ class LiveSettingsTest {
         assertEquals(0L, never.idleWarningMs)
         assertEquals(0L, never.callCapMs)
         assertFalse(LiveSettings(musicInGaps = false).gapSettings().enabled)
+    }
+
+    @Test fun saveCostIsOnForGrokOffForGptLiveAndNeverForCustom() {
+        val d = LiveSettings()
+        assertTrue(d.grokSaveCost)
+        assertFalse("GPT-Live's on-demand path is experimental: off by default", d.gptLiveSaveCost)
+        assertTrue(d.onDemandSettings(VoiceEngine.Grok).enabled)
+        assertFalse(d.onDemandSettings(VoiceEngine.GptLive).enabled)
+        assertFalse("GPT-Live's factory reads the same switch", GptLiveOnDemandFactory.settings(d).enabled)
+        assertTrue(GptLiveOnDemandFactory.settings(LiveSettings(gptLiveSaveCost = true)).enabled)
+        assertFalse(d.onDemandSettings(VoiceEngine.Cascade).enabled)
+        assertFalse(LiveSettings(grokSaveCost = false).onDemandSettings(VoiceEngine.Grok).enabled)
+        assertEquals(8_000L, d.onDemandSettings(VoiceEngine.Grok).idleCloseMs)
+        assertEquals("the engine's default is still GPT-Live", VoiceEngine.GptLive, d.voiceEngine)
     }
 }

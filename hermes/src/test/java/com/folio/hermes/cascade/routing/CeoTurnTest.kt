@@ -63,7 +63,7 @@ class CeoTurnTest {
         val text = h.submits().single().text
         assertTrue("As heard: email [Sapphire|Safilo] about forty units" in text)
         assertTrue("Clarity: key_doubt (0.90)" in text)
-        assertTrue(text, "Bill is checking \"Sapphire\" with the user" in text)
+        assertTrue(text, "The voice assistant is checking \"Sapphire\" with the user" in text)
         h.drain()
         assertEquals("the start line, then the question", "start.one", h.slotsSaid().first())
         assertEquals("Sapphire, right?", h.said()[1])

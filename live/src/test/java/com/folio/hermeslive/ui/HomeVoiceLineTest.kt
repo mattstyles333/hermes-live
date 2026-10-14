@@ -58,11 +58,11 @@ class HomeVoiceLineTest {
 
     @Test fun billReady() {
         val line = HomeVoiceLine.of(bill, noOpenAi, validKey, PrepState(), installed)
-        shows(line, "Voice: Bill · ready")
+        shows(line, "Voice: Custom · ready")
         compose.onNodeWithText("Unavailable", substring = true).assertDoesNotExist()
         // Rendering the stock lines alone does not hold a call back (the call switch needs only the models).
         val rendering = PrepState(phase = PrepPhase.Running, phrases = RenderProgress(total = 285, done = 40))
-        assertEquals("Voice: Bill · ready (lines 40 of 285)", HomeVoiceLine.of(bill, noOpenAi, validKey, rendering, installed))
+        assertEquals("Voice: Custom · ready (lines 40 of 285)", HomeVoiceLine.of(bill, noOpenAi, validKey, rendering, installed))
     }
 
     @Test fun billPreparingShowsProgress() {
@@ -71,21 +71,21 @@ class HomeVoiceLineTest {
             model(ModelRole.Accurate, ModelState.Downloading, 30 * mb, 120 * mb),
         )
         val prep = PrepState(phase = PrepPhase.Running, phrases = RenderProgress(total = 285, done = 100, cached = 20))
-        shows(HomeVoiceLine.of(bill, noOpenAi, validKey, prep, downloading), "Voice: Bill · preparing (speech models 25%, lines 120 of 285)")
+        shows(HomeVoiceLine.of(bill, noOpenAi, validKey, prep, downloading), "Voice: Custom · preparing (speech models 25%, lines 120 of 285)")
     }
 
     @Test fun billNeedsHisModels() {
         val missing = listOf(model(ModelRole.Streaming, ModelState.Missing, 0, 70 * mb), model(ModelRole.Accurate, ModelState.Paused, 20 * mb, 120 * mb))
-        shows(HomeVoiceLine.of(bill, noOpenAi, validKey, PrepState(), missing), "Voice: Bill · needs his speech models (about 170 MB), downloaded on Wi-Fi")
+        shows(HomeVoiceLine.of(bill, noOpenAi, validKey, PrepState(), missing), "Voice: Custom · needs its speech models (about 170 MB), downloaded on Wi-Fi")
     }
 
     @Test fun billNeedsAKey() {
-        shows(HomeVoiceLine.of(bill, noOpenAi, KeyStatus(), PrepState(), installed), "Voice: Bill · needs an OpenRouter key (Settings › Voice)")
+        shows(HomeVoiceLine.of(bill, noOpenAi, KeyStatus(), PrepState(), installed), "Voice: Custom · needs an OpenRouter key (Settings › Voice)")
     }
 
     @Test fun billKeyRefused() {
         val refused = KeyStatus(saved = true, check = KeyCheck.Refused, hint = "abcd")
-        shows(HomeVoiceLine.of(bill, noOpenAi, refused, PrepState(), installed), "Voice: Bill · OpenRouter refused the key (Settings › Voice)")
+        shows(HomeVoiceLine.of(bill, noOpenAi, refused, PrepState(), installed), "Voice: Custom · OpenRouter refused the key (Settings › Voice)")
     }
 
     @Test fun gptLiveKeepsTheServerStatus() {

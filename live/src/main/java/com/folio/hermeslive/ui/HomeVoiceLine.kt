@@ -41,12 +41,20 @@ object HomeVoiceLine {
         key: KeyStatus,
         prep: PrepState,
         models: List<SpeechModelStatus>,
+        xaiKey: KeyStatus = KeyStatus(),
     ): String? {
+        if (settings.voiceEngine == VoiceEngine.Grok) {
+            return "Voice: Grok Voice · " + when {
+                !xaiKey.saved -> "needs an xAI key (Settings › Voice)"
+                xaiKey.check == KeyCheck.Refused -> "xAI refused the key (Settings › Voice)"
+                else -> "ready"
+            }
+        }
         if (settings.voiceEngine != VoiceEngine.Cascade) return gptLive?.let { "Voice: ${voiceText(it)}" }
-        return "Voice: Bill · " + when (readiness(key, prep, models, settings)) {
+        return "Voice: Custom · " + when (readiness(key, prep, models, settings)) {
             BillReadiness.Ready -> "ready" + if (prep.phase == PrepPhase.Running) progress(prep, models).let { if (it.isEmpty()) "" else " ($it)" } else ""
             BillReadiness.Preparing -> "preparing" + progress(prep, models).let { if (it.isEmpty()) "…" else " ($it)" }
-            BillReadiness.NeedsModels -> "needs his speech models" +
+            BillReadiness.NeedsModels -> "needs its speech models" +
                 missing(settings, models).sumOf { (it.bytesTotal - it.bytesDone).coerceAtLeast(0) }.let { if (it > 0) " (about ${EngineStatus.megabytes(it)})" else "" } +
                 ", downloaded on Wi-Fi"
             BillReadiness.NeedsKey -> "needs an OpenRouter key (Settings › Voice)"

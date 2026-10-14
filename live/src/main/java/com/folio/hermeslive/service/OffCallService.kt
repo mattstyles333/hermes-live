@@ -36,7 +36,7 @@ import kotlinx.coroutines.launch
 class OffCallService : Service() {
     /** Seams for tests; the app's shell by default. */
     internal var hooksProvider: () -> OffCallHooks = { VoiceShell.of(this).offCallHooks }
-    internal var activeProvider: () -> Boolean = { VoiceShell.of(this).gate.active }
+    internal var activeProvider: () -> Boolean = { VoiceShell.of(this).gate.tasksActive }
     internal var telemetry: TelemetrySink = SafeTelemetry()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)

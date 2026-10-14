@@ -45,6 +45,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -62,10 +63,13 @@ import com.folio.hermeslive.call.ApprovalCard
 import com.folio.hermeslive.call.CallPhase
 import com.folio.hermeslive.call.CallSummary
 import com.folio.hermeslive.call.CallUiState
+import com.folio.hermeslive.call.ondemand.OnDemandUi
 import com.folio.hermeslive.call.Caption
 import com.folio.hermeslive.call.ClarifyCard
 import com.folio.hermeslive.call.RouteKind
 import com.folio.hermeslive.call.RouteOption
+import com.folio.hermeslive.ui.ondemand.DIMMED_ALPHA
+import com.folio.hermeslive.ui.ondemand.OnDemandIndicator
 import java.util.Locale
 
 /** Everything the call screen can ask for. Defaults do nothing (previews, tests). */
@@ -79,6 +83,8 @@ data class CallActions(
     val onSettings: () -> Unit = {},
     val onDismissSummary: () -> Unit = {},
     val onNewConversation: () -> Unit = {},
+    /** Meeting mode's button beside Talk; null hides it (meeting mode off). */
+    val onMeeting: (() -> Unit)? = null,
 )
 
 /**
@@ -92,6 +98,8 @@ fun CallScreen(
     modifier: Modifier = Modifier,
     elapsed: String? = null,
     voiceLine: String? = null,
+    /** On-demand sessions (GPT-Live): the indicator shows and the orb dims while the paid session is closed. */
+    session: OnDemandUi = OnDemandUi(),
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     Box(
@@ -108,7 +116,8 @@ fun CallScreen(
                 FullTranscript(state.captions, Modifier.weight(1f).fillMaxWidth()) { expanded = false }
             } else {
                 Spacer(Modifier.weight(0.6f))
-                Orb(orbMood(state), state.level, Modifier.size(248.dp).align(Alignment.CenterHorizontally))
+                Orb(orbMood(state), state.level, Modifier.size(248.dp).align(Alignment.CenterHorizontally).alpha(if (session.dimmed && state.inCall) DIMMED_ALPHA else 1f))
+                if (state.inCall) OnDemandIndicator(session, Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp))
                 StatusText(state, voiceLine)
                 Spacer(Modifier.weight(0.4f))
                 RecentCaptions(state.captions) { expanded = true }
@@ -463,7 +472,19 @@ private fun RoundControl(
 @Composable
 private fun IdleControls(state: CallUiState, actions: CallActions) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        RoundControl(GlyphKind.Talk, if (state.summary != null || state.error != null) "Talk again" else "Talk", 76.dp, PrintInk, VoidBlack, "talk", "Talk to Hermes", actions.onTalk)
+        val talk: @Composable () -> Unit = {
+            RoundControl(GlyphKind.Talk, if (state.summary != null || state.error != null) "Talk again" else "Talk", 76.dp, PrintInk, VoidBlack, "talk", "Talk to Hermes", actions.onTalk)
+        }
+        val meeting = actions.onMeeting
+        if (meeting == null) {
+            talk()
+        } else {
+            Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.Top) {
+                Spacer(Modifier.width(96.dp))
+                talk()
+                com.folio.hermeslive.ui.meeting.MeetingButton(meeting)
+            }
+        }
         Text(
             "New conversation",
             style = SmallStyle, color = PrintMute,

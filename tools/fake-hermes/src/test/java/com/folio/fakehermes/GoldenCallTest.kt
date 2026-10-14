@@ -672,7 +672,7 @@ class GoldenCallTest {
         assertEquals("the start line first, then the question", listOf("start.one", "\"Kestrel, right?\""), heard.take(2))
         call.until("Hermes has the job") { promptCount() == 1 }
         val prompt = prompts().single()
-        assertTrue(prompt, prompt.contains("Clarity: key_doubt (0.95)") && prompt.contains("Bill is checking \"Kestrel\""))
+        assertTrue(prompt, prompt.contains("Clarity: key_doubt (0.95)") && prompt.contains("The voice assistant is checking \"Kestrel\""))
         // Nobody answers: the job finishes as it was sent.
         call.until("the result spoken") { call.resultsSpoken() }
         assertEquals(TaskUiStatus.Done, call.task("t1").status)

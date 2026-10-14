@@ -26,6 +26,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.derivedStateOf
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.runtime.snapshotFlow
@@ -51,6 +53,7 @@ import com.folio.hermes.cascade.CascadeUiState
 import com.folio.hermes.cascade.DecisionRecord
 import com.folio.hermes.cascade.TaskTap
 import com.folio.hermeslive.ui.VoidBlack
+import com.folio.hermeslive.ui.ondemand.DIMMED_ALPHA
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -249,7 +252,7 @@ internal fun CascadeCallContent(
         modifier.fillMaxSize().background(VoidBlack).testTag("cascade-screen")
             .semantics { if (endRun != null) paneTitle = endRun.announcement },
     ) {
-        CascadeScene(ui, scene, motion, proximityNear, input, wake, animate && !proximityNear)
+        CascadeScene(ui, scene, motion, proximityNear, input, wake, animate && !proximityNear, Modifier.alpha(if (chrome.dimmed) DIMMED_ALPHA else 1f))
         if (proximityNear) return@Box
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val orbY = maxHeight * ORB_Y
@@ -257,7 +260,10 @@ internal fun CascadeCallContent(
             Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))) {
                 TopBar(chrome, now, sections.top, endedAfterMs = endRun?.summary?.durationMs, live = live)
                 Column(early) {
-                    JevStrip(sections.jev, memory.chipEpoch, motion, onAnchor = { jevAnchor[0] = it.x; jevAnchor[1] = it.y }) { memory.decisionsOpen = true }
+                    val strip = chrome.tools?.let { tools -> remember(tools) { mutableStateOf(JevModel(tools, inFlight = tools.any { it.choice == "…" }, latencyMs = null)) } } ?: sections.jev
+                    JevStrip(strip, memory.chipEpoch, motion, label = chrome.stripLabel, onAnchor = { jevAnchor[0] = it.x; jevAnchor[1] = it.y }) {
+                        if (chrome.tools == null) memory.decisionsOpen = true
+                    }
                     ConnectionBanner(sections.banner)
                     Flyouts(memory, motion)
                 }
@@ -369,7 +375,7 @@ private fun HoldTarget(modifier: Modifier, memory: ScreenMemory, intents: Cascad
                 }
             }
             .semantics {
-                contentDescription = if (holding.value || holdingNow) "Bill, listening while you hold" else "Bill. Hold to talk"
+                contentDescription = if (holding.value || holdingNow) "Listening while you hold" else "Hold to talk"
                 customActions = listOf(
                     if (holdingNow) CustomAccessibilityAction("Stop and send") { stop(); true }
                     else CustomAccessibilityAction("Start talking") { start(); true },
@@ -388,3 +394,5 @@ private suspend fun tick(now: MutableLongState, wall: MutableLongState, clock: (
         delay(1000 - (t % 1000).coerceIn(0, 999))
     }
 }
+
+/** The scene (the orb) while a realtime engine's session is closed to save cost (ondemand slice). */

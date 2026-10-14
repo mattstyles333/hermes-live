@@ -77,9 +77,20 @@ class VoiceShell(
         OpenRouter(openRouterConfig, key = key, client = client, telemetry = telemetry)
     },
     val dirs: CascadeDirs = CascadeDirs.of(context),
+    /** The xAI key for Grok Voice (null: none, so Grok stays off). */
+    val xaiKeys: OpenRouterKeyStore? = null,
+    xaiChecker: KeyChecker? = null,
+    /** Signed in to Hermes (GPT-Live's parallel agents need it before the task machinery opens). */
+    private val signedIn: () -> Boolean = { false },
 ) {
+    /** Checks an xAI key (`GET /v1/api-key`); tests pass a fake. */
+    val xaiChecker: KeyChecker = xaiChecker ?: XaiKeyChecker(client, telemetry = telemetry)
+
     val storage: CascadeStorage by lazy { CascadeStorage(dirs, telemetry) }
-    val gate = CascadeGate({ settings.settings.value }, { keys.status.value })
+    val gate = CascadeGate(
+        { settings.settings.value }, { keys.status.value }, { xaiKeys?.status?.value ?: KeyStatus() },
+        gptLiveAgents = { signedIn() && GptLivePrefs.of(context).agents.value },
+    )
     val speechModels: SpeechModels get() = host?.speechModels ?: SpeechModels.None
     val offCallHooks: OffCallHooks get() = host?.offCallHooks ?: OffCallHooks.None
 
@@ -112,7 +123,9 @@ class VoiceShell(
                 val s = cascadeSettings()
                 val openRouter = openRouters(keys::key)
                 val voice = BillVoice(openRouter.speech, storage.ttsCache(s.ttsCacheBytes), { s.voice }, { s.ttsModel })
-                RenderJob(PhraseRenderer(voice, s.renderConcurrency, telemetry), fingerprint(), warm = { openRouter.warm() })
+                val fp = fingerprint()
+                renderingFor = fp
+                RenderJob(PhraseRenderer(voice, s.renderConcurrency, telemetry), fp, warm = { openRouter.warm() })
             },
             prepared = object : VoicePrep.PreparedMarker {
                 override fun get(): String? = if (dirs.store.exists()) storage.store.get(PREPARED_KEY) else null
@@ -124,6 +137,31 @@ class VoiceShell(
     }
 
     @Volatile private var wasActive: Boolean? = null
+
+    /** The voices each engine offers (Settings › Voice pickers; ondemand slice). */
+    val catalog: VoiceCatalog by lazy { VoiceCatalog(client, java.io.File(context.cacheDir, "voices"), telemetry = telemetry) }
+
+    /** "Preview" in the voice pickers: one cached sample line through the engine's TTS. */
+    val preview: VoicePreview by lazy {
+        val player = com.folio.hermeslive.service.TrackBriefingPlayer()
+        VoicePreview(
+            cache = { storage.ttsCache(cascadeSettings().ttsCacheBytes) },
+            openRouterClip = { model, voice, text ->
+                if (!keys.status.value.usable) {
+                    null
+                } else {
+                    val v = BillVoice(openRouters(keys::key).speech, storage.ttsCache(cascadeSettings().ttsCacheBytes), { voice }, { model })
+                    (v.clip(text) as? com.folio.hermes.openrouter.OpenRouterResult.Ok)?.value
+                }
+            },
+            xaiKey = { xaiKeys?.takeIf { it.status.value.usable }?.key() },
+            xai = XaiTts(client, telemetry = telemetry),
+            play = { player.play(it) },
+        )
+    }
+
+    /** An OpenRouter key is saved and not refused (the Custom voice preview needs it). */
+    val canPreviewCustom: Boolean get() = keys.status.value.usable
 
     /** The speech-model ids the current settings want on the phone. */
     fun wantedModels(): Set<String> = SpeechModelChoice.wanted(settings.settings.value).map { it.id }.toSet()
@@ -146,11 +184,38 @@ class VoiceShell(
      */
     fun onSettingsChanged() {
         val active = gate.active
-        if (!active) shell.release()
+        if (!gate.tasksActive) shell.release()
         prep.refresh()
         val opened = active && wasActive != true
         wasActive = active
-        if (opened) autoPrepare()
+        if (opened && autoPrepare()) return
+        // The stock lines were rendered (or are being rendered) for another voice or model: render
+        // them in this one (also on mobile data, as long as no speech models are missing). Decided
+        // from the stored marker, so it holds after a restart too.
+        if (active && voiceChanged()) rerender()
+    }
+
+    /** The voice, model and bank version the running render is for (null: none running). */
+    @Volatile private var renderingFor: String? = null
+
+    /** The lines were prepared, or are being rendered, for a different voice, model or bank version than now. */
+    private fun voiceChanged(): Boolean {
+        val now = fingerprint()
+        if (prep.state.value.phase == PrepPhase.Running) return renderingFor != null && renderingFor != now
+        val marker = if (dirs.store.exists()) runCatching { storage.store.get(PREPARED_KEY) }.getOrNull() else null
+        return marker != null && marker != now
+    }
+
+    /**
+     * The voice or TTS model changed: render the stock lines again in it (only the missing ones;
+     * the old voice's stay cached), with progress in [prep]. Needs Custom on with a usable key;
+     * when speech models are also missing, only on Wi-Fi.
+     */
+    fun rerender(): Boolean {
+        if (!gate.active) return false
+        if (speechModels.wanted(wantedModels()).isNotEmpty() && !network.wifi()) return false
+        prep.cancel()
+        return prep.start()
     }
 
     /** Start "Prepare Bill's voice" if it is needed and the phone is on Wi-Fi. True if it started. */
@@ -184,6 +249,8 @@ class VoiceShell(
                     ),
                     client = g.client,
                     host = app as? CascadeHost,
+                    xaiKeys = XaiKeys.store(app),
+                    signedIn = { g.account.config() != null && g.account.currentAuth() != null },
                 ).also {
                     instance = it
                     it.settleSpeechModels()

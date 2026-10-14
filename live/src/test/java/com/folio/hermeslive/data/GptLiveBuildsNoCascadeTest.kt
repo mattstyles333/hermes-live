@@ -15,9 +15,11 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /**
- * R-Q-1 on the real app graph: a GPT-Live call (the default engine) constructs nothing
- * cascade-related: no Bill engine, no cascade runtime (actor, gateway, OpenRouter), no speech
- * models opened, no cascade or model files.
+ * R-Q-1 on the real app graph: a GPT-Live call (the default engine) while signed out constructs
+ * nothing cascade-related: no Bill engine, no cascade runtime (actor, gateway, OpenRouter), no
+ * speech models opened, no cascade or model files. GPT-Live's parallel agents are on by default
+ * but need a sign-in, so they build nothing here either (`GptLiveAgentsDefaultTest` covers the
+ * signed-in side, where a GPT-Live call does use the task runtime).
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -26,6 +28,7 @@ class GptLiveBuildsNoCascadeTest {
         val app = ApplicationProvider.getApplicationContext<LiveApp>()
         val g = app.graph
         assertFalse(VoiceShell.of(app).gate.active)
+        assertFalse("signed out: GPT-Live's agents stay shut", VoiceShell.of(app).gate.tasksActive)
         g.calls.start(CallRequest(entry = "test"))
         shadowOf(Looper.getMainLooper()).idle()
         assertTrue("the GPT-Live engine took the call", g.calls.active.value === g.engine)

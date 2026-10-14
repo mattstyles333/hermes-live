@@ -51,6 +51,12 @@ class CascadeApp(
     private val main = Handler(Looper.getMainLooper())
     private val running = MutableStateFlow(0)
 
+    /**
+     * A Grok call is live: Grok tells the user about finished tasks itself and approvals notify
+     * through the call service, so task notifications stay quiet (as during a Bill call).
+     */
+    @Volatile var grokLive: Boolean = false
+
     /** Voice tasks running (0 until a runtime exists). */
     val tasksRunning: StateFlow<Int> = running.asStateFlow()
 
@@ -93,6 +99,8 @@ class CascadeApp(
                 notify = { id, label, headline -> ResultNotifications.post(context, TaskResultNotice(id, label, headline)) },
                 learn = { heard, meant -> runCatching { shell.vocabulary.learn(heard, meant) } },
                 haptic = { main.post(onHaptic) },
+                // As in a Bill call: Grok says results, and approvals already notify through the call service.
+                quiet = { grokLive },
             ),
         )
         return CascadeAppRuntime(

@@ -169,7 +169,7 @@ class VoiceSettingsScreenTest {
         )
         var prep by mutableStateOf(PrepState(models = models))
         show { ui(KeyStatus(true, KeyCheck.Valid), prep = prep, metered = true) }
-        compose.onNodeWithText("Prepare his voice", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Prepare the voice before the first call", substring = true).assertIsDisplayed()
         compose.onNodeWithTag("model-zipformer").performScrollTo().assertTextContains("Streaming model: 50% of 70 MB")
         compose.onNodeWithTag("wifi-hint").performScrollTo().assertTextContains("mobile data", substring = true)
         compose.onNodeWithTag("prepare").performScrollTo().performClick()

@@ -48,8 +48,8 @@ android {
         applicationId = "com.folio.hermeslive"
         minSdk = 31
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.2.0"
+        versionCode = 6
+        versionName = "1.3.0"
         // Instrumented tests (S-C audio and STT, on the emulator). Long corpus benches run only
         // with the instrumentation argument bench=true (see src/androidTest/README.md).
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -198,7 +198,7 @@ tasks.withType<Test>().configureEach {
 
 // The screenshot renders are not tests: they leave Tier 0 (`test`) and run on their own when the
 // UI changes (`./gradlew :live:renderScreenshots`). `SmokeRenderTest` keeps one fast render in Tier 0.
-val screenshotRenders = listOf("*.ScreenshotRender", "*.CascadeScreenshotRender")
+val screenshotRenders = listOf("*.ScreenshotRender", "*.CascadeScreenshotRender", "*.MeetingScreenshotRender")
 tasks.withType<Test>().matching { it.name == "testDebugUnitTest" || it.name == "testReleaseUnitTest" || it.name == "testStagingUnitTest" }
     .configureEach { filter { screenshotRenders.forEach { excludeTestsMatching(it) } } }
 

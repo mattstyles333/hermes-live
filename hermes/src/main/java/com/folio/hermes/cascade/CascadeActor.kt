@@ -15,11 +15,16 @@ import com.folio.hermes.openrouter.OpenRouterResult
 import com.folio.hermes.telemetry.TelemetrySink
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -89,6 +94,9 @@ class CascadeActor(
     private val _ui = MutableStateFlow(UiProjection.project(_state.value))
     private var collectors: Job? = null
     private var hermesCollectors: Job? = null
+    private val apiSeq = AtomicLong()
+    private val apiReplies = ConcurrentHashMap<Long, CompletableDeferred<TaskReply>>()
+    private val _notices = MutableSharedFlow<TaskNotice>(extraBufferCapacity = NOTICE_BUFFER)
 
     @Volatile
     var killed: Boolean = false
@@ -105,6 +113,12 @@ class CascadeActor(
 
     /** True while Bill has something queued or playing (wait for this before closing the call). */
     val speaking: Boolean get() = _state.value.speaking
+
+    /**
+     * The task API's notices ([CascadeTasks.notices]): each result, approval or withdrawal a step
+     * adds to the off-call backlog (no Bill call open), after that step's durable writes. Hot.
+     */
+    val notices: SharedFlow<TaskNotice> = _notices
 
     init {
         actorScope.launch {
@@ -190,6 +204,20 @@ class CascadeActor(
         channel.trySend(event)
     }
 
+    /** The task API ([CascadeTasks]): post [command]; the deferred completes with its reply. */
+    internal fun command(command: TaskCommand): Deferred<TaskReply> {
+        val id = apiSeq.incrementAndGet()
+        val reply = CompletableDeferred<TaskReply>()
+        apiReplies[id] = reply
+        post(Event.TaskApi(id, command))
+        return reply
+    }
+
+    /** A reply the caller stopped waiting for. */
+    internal fun forget(reply: Deferred<TaskReply>) {
+        apiReplies.entries.removeIf { it.value === reply }
+    }
+
     // ── the loop ────────────────────────────────────────────────────────────────────────────
 
     private fun step(input: Event) {
@@ -213,6 +241,9 @@ class CascadeActor(
             }
             run(effect)
         }
+        // The task API's notices: what this step added to the off-call backlog, after its stored writes
+        // (not what a read-back brings: that backlog is old, and `status` shows it).
+        if (after.offCall !== before.offCall && event !is Event.Restore && event !is Event.Start) CascadeTasks.added(before.offCall, after.offCall).forEach { _notices.tryEmit(it) }
         if (event is Event.Stop) {
             cancelWork()
             collectors?.cancel()
@@ -295,6 +326,7 @@ class CascadeActor(
             is Effect.Emit -> bus.emit(effect.event)
             is Effect.EndCall -> onEndCall(effect.tasksRunning)
             is Effect.Notify, is Effect.Haptic, is Effect.LearnWord -> onAppEffect(effect)
+            is Effect.TaskApiReply -> apiReplies.remove(effect.requestId)?.complete(effect.reply)
         }
     }
 
@@ -320,6 +352,8 @@ class CascadeActor(
         is SttEvent.Revised -> Event.Revised(fast, text, material)
     }
 }
+
+private const val NOTICE_BUFFER = 64
 
 /** Durable effects run before any other effect of the same step (R-DUR-1). */
 val Effect.durable: Boolean get() = this is Effect.Persist || this is Effect.Append

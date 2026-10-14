@@ -89,7 +89,7 @@ internal fun CaptionView(cap: State<CaptionModel>, memory: ScreenMemory, onWord:
             if (line != null) {
                 Text(
                     line, style = CaptionStyle.copy(textAlign = TextAlign.Center, shadow = PrintShadow), color = Ember, maxLines = 4, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp).semantics { contentDescription = "Bill: $line" }.testTag("caption-bill"),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp).semantics { contentDescription = "Voice: $line" }.testTag("caption-bill"),
                 )
             }
         }

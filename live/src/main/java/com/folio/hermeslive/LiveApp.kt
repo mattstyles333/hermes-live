@@ -8,9 +8,19 @@ import com.folio.hermeslive.audio.AndroidCallEffects
 import com.folio.hermeslive.audio.CascadeAudioFactory
 import com.folio.hermeslive.call.CallEngine
 import com.folio.hermeslive.call.CallSwitch
+import com.folio.hermeslive.call.GptLiveAgentsFactory
+import com.folio.hermeslive.call.GptLiveOnDemand
+import com.folio.hermeslive.call.GptLiveOnDemandFactory
+import com.folio.hermeslive.call.SherpaPreRoll
+import com.folio.hermeslive.audio.CaptureSource
+import com.folio.hermeslive.audio.MicAudioSource
 import com.folio.hermeslive.cascade.CallSpeechFactory
 import com.folio.hermeslive.cascade.CascadeApp
+import com.folio.hermeslive.cascade.AndroidNetwork
 import com.folio.hermeslive.cascade.CascadeCallEngine
+import com.folio.hermeslive.grok.GrokAudioFactory
+import com.folio.hermeslive.grok.GrokCallEngine
+import com.folio.hermeslive.grok.GrokNetwork
 import com.folio.hermeslive.cascade.SttSpeechModels
 import com.folio.hermeslive.cascade.appRuntime
 import com.folio.hermeslive.data.CascadeFactory
@@ -20,6 +30,8 @@ import com.folio.hermeslive.data.VoiceShell
 import com.folio.hermeslive.service.OffCall
 import com.folio.hermeslive.service.OffCallHooks
 import com.folio.hermeslive.stt.ModelManager
+import com.folio.hermeslive.stt.SherpaEngines
+import com.folio.hermeslive.stt.SttEngineConfig
 import java.io.File
 import com.folio.hermeslive.call.HermesLinkFactory
 import com.folio.hermeslive.call.LiveTransportFactory
@@ -142,10 +154,46 @@ class LiveGraph(private val app: Context) {
             },
             cascadeActive = { VoiceShell.of(app).gate.active },
             modelsReady = { CallSpeechFactory.ready(modelManager, settings.settings.value) },
+            grok = {
+                val shell = VoiceShell.of(app)
+                val network = AndroidNetwork(app)
+                GrokCallEngine(
+                    scope = mainScope,
+                    settings = { settings.settings.value },
+                    runtime = { shell.shell.appRuntime() },
+                    key = { shell.xaiKeys?.key() },
+                    client = client,
+                    audioFactory = { GrokAudioFactory.Device },
+                    audio = AndroidCallAudio(app),
+                    effects = cascadeEffects,
+                    offCall = { running -> OffCall.afterHangUp(app, running) },
+                    network = object : GrokNetwork {
+                        override fun online(): Boolean = network.isOnline()
+                        override val changes = network.online
+                    },
+                    billMemo = { shell.gate.billAvailable && CallSpeechFactory.ready(modelManager, settings.settings.value) },
+                    onLive = { cascadeApp.grokLive = it },
+                    // Save cost: the phone's Silero detector (bundled asset) listens while the session is parked.
+                    vad = onDemandVad,
+                )
+            },
+            grokActive = { VoiceShell.of(app).gate.grokActive },
+            billAvailable = { VoiceShell.of(app).gate.billAvailable },
         )
     }
 
-    /** GPT-Live (today's call, unchanged). Use [calls]; this is its engine. */
+    private val gptLiveNetwork by lazy { AndroidNetwork(app) }
+
+    /** The phone's voice detector for on-demand sessions (Grok and GPT-Live): Silero from the APK's assets. */
+    private val onDemandVad: () -> com.folio.hermeslive.stt.VoiceDetector? = { SherpaEngines.vad(app.assets, SttEngineConfig()) }
+
+    /**
+     * GPT-Live. Use [calls]; this is its engine. Parallel agents (Settings, on by default) run
+     * its delegations as tasks on Bill's process runtime; built only while signed in. Save cost
+     * (Settings, experimental, off by default) closes the paid session while idle: the same
+     * bundled Silero detector as Grok's listens meanwhile (it needs no Custom speech models; those
+     * only give the held audio its on-device text, [SherpaPreRoll]).
+     */
     val engine: CallEngine by lazy {
         CallEngine(
             scope = mainScope,
@@ -155,6 +203,32 @@ class LiveGraph(private val app: Context) {
             audio = AndroidCallAudio(app),
             effects = AndroidCallEffects(app),
             memory = settings,
+            agentsFactory = GptLiveAgentsFactory.gated(
+                enabled = { VoiceShell.of(app).gate.gptLiveAgentsActive },
+                signedIn = { account.config() != null && account.currentAuth() != null },
+                runtime = { VoiceShell.of(app).shell.appRuntime() },
+            ),
+            offCall = { running -> OffCall.afterHangUp(app, running) },
+            // As in a Grok call: the voice says results, so task notifications stay quiet during the call.
+            onAgentsLive = { cascadeApp.grokLive = it },
+            onDemandFactory = GptLiveOnDemandFactory { engine ->
+                val live = settings.settings.value
+                val od = GptLiveOnDemandFactory.settings(live)
+                if (!od.enabled) {
+                    null
+                } else {
+                    GptLiveOnDemand(
+                        engine = engine,
+                        settings = od,
+                        vadFactory = onDemandVad,
+                        micFactory = { MicAudioSource(if (live.echoCancel) CaptureSource.VOICE_COMMUNICATION else CaptureSource.VOICE_RECOGNITION) },
+                        transcriber = SherpaPreRoll.of(modelManager, live),
+                        scope = mainScope,
+                        clock = System::currentTimeMillis,
+                        online = gptLiveNetwork::isOnline,
+                    )
+                }
+            },
         )
     }
 }
