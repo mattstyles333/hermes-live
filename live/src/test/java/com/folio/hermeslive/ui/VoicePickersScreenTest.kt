@@ -15,7 +15,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.folio.hermeslive.data.GptLivePrefs
 import com.folio.hermeslive.data.EngineStatus
 import com.folio.hermeslive.data.KeyCheck
 import com.folio.hermeslive.data.KeyStatus
@@ -78,14 +80,23 @@ class VoicePickersScreenTest {
         }
     }
 
-    @Test fun gptLiveHasTheSaveCostSwitchOnAndTheVoiceSlot() {
+    @Test fun gptLiveHasItsOptionsAndAnExperimentalSaveCostSwitchOff() {
+        val prefs = GptLivePrefs.of(ApplicationProvider.getApplicationContext())
         show()
-        compose.onNodeWithTag("gpt-live-voice").assertIsDisplayed()
-        compose.onNodeWithText("Save cost: close the voice session while agents work").assertIsDisplayed()
-        compose.onNodeWithTag("save-cost-switch").assertIsOn().performClick()
-        assertFalse(settings.gptLiveSaveCost)
+        // GPT-Live's options: parallel agents (on by default) and the server's voice, read-only.
+        compose.onNodeWithTag("gptlive-agents").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("gptlive-voice").performScrollTo().assertIsDisplayed()
+        assertTrue("parallel agents are on by default", prefs.agents.value)
+        compose.onNodeWithTag("gptlive-agents").performClick()
+        assertFalse("and can be switched off", prefs.agents.value)
+        compose.onNodeWithTag("gptlive-agents").performClick()
+        assertTrue(prefs.agents.value)
+        // Save cost for GPT-Live is experimental and off by default.
+        compose.onNodeWithText("Save cost (experimental): close the voice session while agents work").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("save-cost-switch").assertIsOff().performClick()
+        assertTrue(settings.gptLiveSaveCost)
         assertTrue("Grok's switch is its own", settings.grokSaveCost)
-        compose.onNodeWithTag("save-cost-switch").assertIsOff()
+        compose.onNodeWithTag("save-cost-switch").assertIsOn()
         assertTrue("GPT-Live loads no voice list", calls.none { it.startsWith("load") })
     }
 
@@ -97,9 +108,10 @@ class VoicePickersScreenTest {
         compose.onNodeWithTag("save-cost").assertDoesNotExist()
         compose.onNodeWithTag("engine").performClick()
         compose.onNodeWithText("Grok Voice: xAI's speech-to-speech voice, delegating to Hermes agents").assertIsDisplayed()
+        compose.onNodeWithText("Save cost: close the voice session while agents work").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("save-cost-switch").performScrollTo().assertIsOn().performClick()
         assertFalse(settings.grokSaveCost)
-        assertTrue(settings.gptLiveSaveCost)
+        assertFalse(settings.gptLiveSaveCost)
         compose.onNodeWithText("Bill", substring = true).assertDoesNotExist()
     }
 

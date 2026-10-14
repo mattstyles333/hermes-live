@@ -35,6 +35,7 @@ class FakeLink(var stored: String? = "stored-1") : HermesLink {
     val approvals = mutableListOf<Pair<String, ApprovalChoice>>()
     val clarifies = mutableListOf<Pair<String, Map<String, String?>>>()
     var closed = 0
+    override var reachable = true
 
     override suspend fun prepare(minValidityMs: Long) {
         prepared += minValidityMs

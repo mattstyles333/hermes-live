@@ -40,14 +40,18 @@ data class VoicePickerActions(
     val onPreviewGrok: (String) -> Unit = {},
 )
 
-/** The "Save cost" switch for a realtime engine (GPT-Live, Grok Voice). */
+/**
+ * The "Save cost" switch for a realtime engine (GPT-Live, Grok Voice). GPT-Live's is marked
+ * experimental and off by default: its on-demand path (the phone's own mic capture overlapping
+ * WebRTC while the session reopens) has not run on a phone yet. Grok's is on by default.
+ */
 @Composable
 fun SaveCostToggle(settings: LiveSettings, onChange: ((LiveSettings) -> LiveSettings) -> Unit) {
     val grok = settings.voiceEngine == VoiceEngine.Grok
     val on = if (grok) settings.grokSaveCost else settings.gptLiveSaveCost
     Row(Modifier.fillMaxWidth().padding(top = 10.dp).testTag("save-cost"), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text("Save cost: close the voice session while agents work", style = BodyStyle, color = PrintInk)
+            Text(saveCostTitle(grok), style = BodyStyle, color = PrintInk)
             Text(
                 "The call stays open and the phone listens. The paid voice session closes after a few quiet seconds and " +
                     "reopens when you speak or a result is ready; music can play in between.",
@@ -177,3 +181,7 @@ private fun SourceLine(source: VoiceSource?, loading: Boolean, from: String, onR
         if (!loading) Pill("Refresh", filled = false, tag = "voices-refresh", onClick = onRefresh)
     }
 }
+
+/** The switch's title: GPT-Live's on-demand sessions are experimental (never run on a phone). */
+fun saveCostTitle(grok: Boolean): String =
+    if (grok) "Save cost: close the voice session while agents work" else "Save cost (experimental): close the voice session while agents work"

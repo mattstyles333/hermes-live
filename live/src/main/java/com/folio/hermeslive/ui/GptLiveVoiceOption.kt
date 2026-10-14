@@ -1,18 +1,18 @@
 package com.folio.hermeslive.ui
 
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
 import com.folio.hermeslive.data.LiveSettings
 
 /**
- * Settings › Voice with GPT-Live chosen: the voice slot (ondemand slice). A placeholder: the
- * GPT-Live parallel-agents slice decides whether GPT-Live's voice can be chosen per session and
- * fills this in (a picker over [settings], saved through [onChange]). Until then it only says
- * where the voice comes from.
+ * Settings › Voice with GPT-Live chosen: GPT-Live's own options ([GptLiveOptions]): the
+ * parallel-agents switch (on by default, used only while signed in) and the voice, read-only
+ * (the Hermes server sets it). Neither lives in [LiveSettings], so [settings] and [onChange] are
+ * unused; the signature stays the engine blocks' shape.
  */
 @Composable
-fun GptLiveVoiceOption(settings: LiveSettings, onChange: ((LiveSettings) -> LiveSettings) -> Unit) {
-    Text("GPT-Live speaks in the voice your Hermes server sets.", style = SmallStyle, color = PrintMute, modifier = Modifier.testTag("gpt-live-voice"))
+fun GptLiveVoiceOption(
+    @Suppress("UNUSED_PARAMETER") settings: LiveSettings,
+    @Suppress("UNUSED_PARAMETER") onChange: ((LiveSettings) -> LiveSettings) -> Unit,
+) {
+    GptLiveOptions()
 }

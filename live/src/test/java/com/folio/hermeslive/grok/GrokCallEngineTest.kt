@@ -93,6 +93,7 @@ class GrokCallEngineTest {
         settings: LiveSettings = LiveSettings(grokVoice = "rex", grokModel = "grok-voice-3.0"),
         billMemo: Boolean = false,
         withVad: Boolean = false,
+        clock: () -> Long = System::currentTimeMillis,
     ) = GrokCallEngine(
         scope = scope,
         settings = { settings },
@@ -109,6 +110,7 @@ class GrokCallEngineTest {
         baseConfig = GrokConfig(url = server.url("/v1/realtime").toString().replaceFirst("http", "ws"), reconnectAttempts = 0),
         vad = { if (withVad) vad else null },
         onDemandTimings = { it.copy(idleCloseMs = 300) },
+        clock = clock,
     )
 
     private fun <T> onEngine(block: () -> T): T = runBlocking { kotlinx.coroutines.withContext(scope.coroutineContext) { block() } }
@@ -208,6 +210,45 @@ class GrokCallEngineTest {
         assertFalse(e.sessionUi.value.enabled)
         assertFalse(e.sessionUi.value.dimmed)
         onEngine { e.end() }
+    }
+
+    @Test fun quietForTheIdleTimeHangsUpAfterAWarningEvenWithTasksRunning() {
+        accept()
+        val now = java.util.concurrent.atomic.AtomicLong(1_000_000L)
+        val t0 = now.get()
+        val e = engine(LiveSettings(grokSaveCost = false), clock = { now.get() })
+        onEngine { e.start(CallRequest(entry = "test")) }
+        await(e.state) { it.phase == CallPhase.Live }
+        rt.running.value = 2
+        now.set(t0 + 150_000L)
+        await(e.state) { it.warning != null }
+        assertEquals("It has gone quiet. Hanging up in 30 seconds unless you speak.", e.state.value.warning)
+        assertTrue(Earcon.Warning in effects.earcons)
+        assertTrue("tasks running do not keep the call up, but the warning comes first", e.state.value.inCall)
+        now.set(t0 + 180_000L)
+        await(e.state) { !it.inCall }
+        assertEquals(CallPhase.Ended, e.state.value.phase)
+        assertEquals("the off-call service takes the running tasks", listOf(2), offCalls)
+        val reason = e.state.value.summary!!.reason
+        assertTrue(reason, reason.startsWith("Nobody spoke for a while"))
+        assertTrue(reason, reason.contains("Your tasks carry on"))
+    }
+
+    @Test fun theCallCapWarnsAMinuteBeforeAndHangsUp() {
+        accept()
+        val now = java.util.concurrent.atomic.AtomicLong(1_000_000L)
+        val t0 = now.get()
+        val e = engine(LiveSettings(grokSaveCost = false, idleTimeoutMinutes = 0, callCapMinutes = 10), clock = { now.get() })
+        onEngine { e.start(CallRequest(entry = "test")) }
+        await(e.state) { it.phase == CallPhase.Live }
+        now.set(t0 + 9 * 60_000L)
+        await(e.state) { it.warning != null }
+        assertEquals("This call ends in 1 minute (call time limit).", e.state.value.warning)
+        assertTrue(e.state.value.inCall)
+        now.set(t0 + 10 * 60_000L)
+        await(e.state) { !it.inCall }
+        assertTrue(e.state.value.summary!!.reason.startsWith("Call time limit reached."))
+        assertTrue("no tasks running: no off-call service", offCalls.isEmpty())
     }
 
     /** The mic at its real pace: 20 ms per read (a device fake, not a test wait). */

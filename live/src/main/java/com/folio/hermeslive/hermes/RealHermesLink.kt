@@ -3,6 +3,7 @@ package com.folio.hermeslive.hermes
 import com.folio.hermes.ApprovalChoice
 import com.folio.hermes.ApprovalRequest
 import com.folio.hermes.ClarifyRequest
+import com.folio.hermes.GatewayConnection
 import com.folio.hermes.HermesAuth
 import com.folio.hermes.HermesAuthException
 import com.folio.hermes.HermesConfig
@@ -58,6 +59,12 @@ class RealHermesLink(
         gateway.answerClarify(request, answers)
 
     override fun close() = gateway.disconnect()
+
+    override val reachable: Boolean
+        get() = when (gateway.connection.value) {
+            is GatewayConnection.Waiting, is GatewayConnection.Stopped -> false
+            GatewayConnection.Idle, is GatewayConnection.Connecting, is GatewayConnection.Ready -> true
+        }
 }
 
 /** The link used when signed out: fails before any request is made. */
@@ -73,4 +80,6 @@ object SignedOutLink : HermesLink {
     override suspend fun answerApproval(request: ApprovalRequest, choice: ApprovalChoice) = Unit
     override suspend fun answerClarify(request: ClarifyRequest, answers: Map<String, String?>) = Unit
     override fun close() = Unit
+
+    override val reachable: Boolean get() = false
 }

@@ -11,6 +11,8 @@ import com.folio.hermeslive.call.Caption
 import com.folio.hermeslive.call.GptLiveScreen
 import com.folio.hermeslive.call.ondemand.OnDemandUi
 import com.folio.hermeslive.call.ondemand.SessionView
+import com.folio.hermeslive.ui.ondemand.DIMMED_ALPHA
+import com.folio.hermeslive.ui.ondemand.sessionIndicatorText
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -33,12 +35,13 @@ class GptLiveUiTest {
         assertFalse(listening.bill.speaking)
     }
 
-    @Test fun thePillShowsOnlyWhileTheSessionIsNotConnected() {
-        assertNull("off", sessionLabel(OnDemandUi(enabled = false, view = SessionView.Listening)))
-        assertNull(sessionLabel(OnDemandUi(enabled = true, view = SessionView.Connected)))
-        assertEquals("Listening (on phone)", sessionLabel(OnDemandUi(enabled = true, view = SessionView.Listening)))
-        assertEquals("Connecting…", sessionLabel(OnDemandUi(enabled = true, view = SessionView.Connecting)))
+    @Test fun theSharedPillShowsOnlyWhileTheSessionIsClosedToSaveCost() {
+        assertNull("off", sessionIndicatorText(OnDemandUi(enabled = false, view = SessionView.Listening)))
+        assertNull(sessionIndicatorText(OnDemandUi(enabled = true, view = SessionView.Connected)))
+        assertEquals("Listening (on phone)", sessionIndicatorText(OnDemandUi(enabled = true, view = SessionView.Listening)))
+        assertNull("reopening: the orb is no longer dimmed", sessionIndicatorText(OnDemandUi(enabled = true, view = SessionView.Connecting)))
         assertTrue(OnDemandUi(enabled = true, view = SessionView.Listening).dimmed)
+        assertEquals(0.45f, DIMMED_ALPHA)
     }
 
     @Test fun theVoiceIsTheServersReadOnly() {

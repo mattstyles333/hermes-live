@@ -25,6 +25,9 @@ import com.folio.hermeslive.ui.Hairline
 import com.folio.hermeslive.ui.PrintMute
 import com.folio.hermeslive.ui.SmallStyle
 
+/** The orb's (or the scene's) alpha while the paid session is closed ([OnDemandUi.dimmed]). */
+const val DIMMED_ALPHA = 0.45f
+
 /** The indicator's words for [ui], or null when nothing shows (save cost off, or the session open). */
 fun sessionIndicatorText(ui: OnDemandUi): String? = SessionView.Listening.label.takeIf { ui.dimmed }
 

@@ -14,6 +14,7 @@ import com.folio.hermes.telemetry.Telemetry
 import com.folio.hermes.telemetry.TelemetrySink
 import com.folio.hermeslive.audio.Dbfs
 import com.folio.hermeslive.call.CallActivity
+import com.folio.hermeslive.call.CallLimits
 import com.folio.hermeslive.call.CallAudio
 import com.folio.hermeslive.call.CallEffects
 import com.folio.hermeslive.call.CallPhase
@@ -78,6 +79,12 @@ interface GrokNetwork {
  * 1.5 s pre-roll and resumes the session when the user speaks or a task notice waits. Off, or with
  * no voice detector, the socket stays open for the whole call as before.
  *
+ * Idle hang-up and call cap (1.3.0 integration; [CallLimits], the GPT-Live settings): after
+ * Settings › Hang up when quiet (3 min) with nobody speaking, Grok silent and no notice waiting,
+ * the call hangs up, with a visual warning and an earcon 30 s before (no spoken one: a parked
+ * session would have to reopen, at a cost, to say it). Running tasks do not keep the call up; the
+ * off-call service takes them over at hang-up. The call cap (30 min) warns 1 min before.
+ *
  * Runs on [scope]'s thread (Main), like the other engines.
  */
 class GrokCallEngine(
@@ -122,6 +129,7 @@ class GrokCallEngine(
     private var liveAtMs: Long? = null
     private var jobs = mutableListOf<Job>()
     private var onDemand: OnDemandController? = null
+    private var limits: CallLimits? = null
     private val _session = MutableStateFlow(OnDemandUi())
 
     /** The on-demand session state (the orb dims and an indicator shows while "Listening (on phone)"). */
@@ -221,6 +229,8 @@ class GrokCallEngine(
         ctl.start()
         startMic(audioIo, ctl)
         onLive(true)
+        // Idle hang-up and call cap (Settings, as GPT-Live's): counted from the call's start.
+        limits = CallLimits(callSettings.bridgeSettings(), clock())
         jobs += scope.launch {
             while (true) {
                 evaluate()
@@ -412,6 +422,28 @@ class GrokCallEngine(
         val music = policy.musicAllowed && !otherCall && audio.isMusicActive()
         val next = s.copy(activity = activity, level = level, musicInGap = music, tool = tool, approvals = r.approvals.value, clarify = r.clarify.value)
         if (next != s) _state.value = next
+        // Running tasks are not activity: the off-call service carries them after an idle hang-up.
+        val session = grok
+        val busy = userSpeaking || speaking || otherCall || (session != null && (!session.quiet() || session.hasPendingNotice()))
+        applyLimits(now, busy)
+    }
+
+    /** The idle hang-up and the call cap ([CallLimits]): a visual warning with an earcon first, then the hang-up. */
+    private fun applyLimits(now: Long, busy: Boolean) {
+        val l = limits ?: return
+        when (val step = l.tick(now, busy)) {
+            CallLimits.Step.None -> Unit
+            CallLimits.Step.IdleWarning -> {
+                effect(Earcon.Warning)
+                _state.update { it.copy(warning = l.idleWarning) }
+            }
+            CallLimits.Step.IdleWarningCleared -> _state.update { if (it.warning == l.idleWarning) it.copy(warning = null) else it }
+            CallLimits.Step.CapWarning -> {
+                effect(Earcon.Warning)
+                _state.update { it.copy(warning = CallLimits.CAP_WARNING) }
+            }
+            is CallLimits.Step.HangUp -> finish(step.reason)
+        }
     }
 
     private fun applyRoute() {
@@ -443,7 +475,12 @@ class GrokCallEngine(
         val summary = duration?.let {
             val cost = String.format(Locale.UK, "%.2f", it / 60_000.0 * GrokPricing.USD_PER_MINUTE)
             val tasks = if (running > 0) " Your tasks carry on and you'll get a notification." else ""
-            CallSummary(it, null, "Call ended. About \$$cost of Grok Voice.$tasks")
+            val lead = when (reason) {
+                CallLimits.REASON_IDLE -> "Nobody spoke for a while, so the call hung up."
+                CallLimits.REASON_CAP -> "Call time limit reached."
+                else -> "Call ended."
+            }
+            CallSummary(it, null, "$lead About \$$cost of Grok Voice.$tasks")
         }
         _state.value = CallUiState(phase = if (error != null && liveAtMs == null) CallPhase.Failed else CallPhase.Ended, summary = summary, error = error)
         effects.proximity(false)
@@ -453,6 +490,7 @@ class GrokCallEngine(
         )
         onDemand?.stop()
         onDemand = null
+        limits = null
         _session.value = _session.value.copy(view = SessionView.Connecting)
         grok?.stop()
         grok = null

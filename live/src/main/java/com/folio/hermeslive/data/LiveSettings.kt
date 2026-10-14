@@ -93,8 +93,12 @@ data class LiveSettings(
     // ── Settings › Voice › "Save cost: close the voice session while agents work" (ondemand slice) ──
     /** Grok Voice: drop the paid session while idle, reopen on speech or a result. */
     val grokSaveCost: Boolean = true,
-    /** GPT-Live: the same (the GPT-Live engine reads it once it supports on-demand sessions). */
-    val gptLiveSaveCost: Boolean = true,
+    /**
+     * GPT-Live: the same, experimental and **off** by default (hub decision, 1.3.0 integration):
+     * GPT-Live is the default engine and its on-demand path (a second mic capture overlapping
+     * WebRTC while the session reopens) has never run on a phone.
+     */
+    val gptLiveSaveCost: Boolean = false,
 ) {
     /** The same settings with every Voice field inside its range (what is saved and used). */
     fun normalized(): LiveSettings = copy(

@@ -71,6 +71,12 @@ interface HermesLink {
 
     /** Disconnect the gateway. */
     fun close()
+
+    /**
+     * Hermes looks reachable: the gateway is not backing off after a failure or stopped. GPT-Live's
+     * on-demand link reopens for a waiting result only then ([com.folio.hermeslive.call.ondemand.RealtimeLink.canOpen]).
+     */
+    val reachable: Boolean get() = true
 }
 
 /** Makes the [HermesLink] for a call, resuming [storedSessionId] when given. */

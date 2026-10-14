@@ -30,7 +30,8 @@ import java.time.ZoneId
  *
  * - **Gate:** Bill's speech models on the phone ([SherpaMeetingSpeech.ready]). Not the voice
  *   engine and not the OpenRouter key: meetings work offline and without Hermes. Sending the
- *   notes needs Bill (engine and key) and a signed-in Hermes; until then they wait on the phone.
+ *   notes needs the shared task API (Custom or Grok Voice with its key, or GPT-Live with
+ *   parallel agents) and a signed-in Hermes; until then they wait on the phone.
  * - **On start-up:** old transcripts are deleted per the retention setting, a meeting cut off by a
  *   kill is offered again, and anything held is tried again (and again whenever the network is back).
  */

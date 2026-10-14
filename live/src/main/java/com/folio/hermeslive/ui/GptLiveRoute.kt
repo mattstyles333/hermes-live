@@ -1,6 +1,11 @@
 package com.folio.hermeslive.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -25,6 +30,7 @@ import com.folio.hermeslive.ui.cascade.CascadeCallScreen
 import com.folio.hermeslive.ui.cascade.CascadeChrome
 import com.folio.hermeslive.ui.cascade.CascadeIntents
 import com.folio.hermeslive.ui.cascade.HapticIntent
+import com.folio.hermeslive.ui.ondemand.OnDemandIndicator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
@@ -69,15 +75,23 @@ fun GptLiveCallRoute(
                 engine = ENGINE_LABEL,
                 tools = emptyList(),
                 stripLabel = "AGENTS",
+                // The paid session is closed to save cost: the scene dims, as in a Grok call.
+                dimmed = session.dimmed && !ending,
             ),
             micLevel = { if (call.activity == com.folio.hermeslive.call.CallActivity.UserSpeaking) call.level else 0f },
             approvals = approvalsSlot(approvals, clarify, engine::answerApproval, engine::answerClarify),
             ended = if (ending) callEndOf(call) else null,
         )
         if (call.inCall && !ending) {
-            GptLiveSessionIndicator(
-                session,
-                Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 96.dp),
+            OnDemandIndicator(session, Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 96.dp))
+        }
+        // The idle hang-up or call cap is near (GPT-Live also says it).
+        val warning = call.warning
+        if (call.inCall && !ending && warning != null) {
+            Text(
+                warning, style = BodyStyle, color = PrintInk,
+                modifier = Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 132.dp, start = 18.dp, end = 18.dp)
+                    .fillMaxWidth().background(Hairline, RoundedCornerShape(14.dp)).padding(14.dp).testTag("gptlive-warning"),
             )
         }
     }

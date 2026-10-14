@@ -80,6 +80,8 @@ class VoiceShell(
     /** The xAI key for Grok Voice (null: none, so Grok stays off). */
     val xaiKeys: OpenRouterKeyStore? = null,
     xaiChecker: KeyChecker? = null,
+    /** Signed in to Hermes (GPT-Live's parallel agents need it before the task machinery opens). */
+    private val signedIn: () -> Boolean = { false },
 ) {
     /** Checks an xAI key (`GET /v1/api-key`); tests pass a fake. */
     val xaiChecker: KeyChecker = xaiChecker ?: XaiKeyChecker(client, telemetry = telemetry)
@@ -87,7 +89,7 @@ class VoiceShell(
     val storage: CascadeStorage by lazy { CascadeStorage(dirs, telemetry) }
     val gate = CascadeGate(
         { settings.settings.value }, { keys.status.value }, { xaiKeys?.status?.value ?: KeyStatus() },
-        gptLiveAgents = { GptLivePrefs.of(context).agents.value },
+        gptLiveAgents = { signedIn() && GptLivePrefs.of(context).agents.value },
     )
     val speechModels: SpeechModels get() = host?.speechModels ?: SpeechModels.None
     val offCallHooks: OffCallHooks get() = host?.offCallHooks ?: OffCallHooks.None
@@ -248,6 +250,7 @@ class VoiceShell(
                     client = g.client,
                     host = app as? CascadeHost,
                     xaiKeys = XaiKeys.store(app),
+                    signedIn = { g.account.config() != null && g.account.currentAuth() != null },
                 ).also {
                     instance = it
                     it.settleSpeechModels()

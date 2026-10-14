@@ -174,7 +174,7 @@ class LiveGraph(private val app: Context) {
                     billMemo = { shell.gate.billAvailable && CallSpeechFactory.ready(modelManager, settings.settings.value) },
                     onLive = { cascadeApp.grokLive = it },
                     // Save cost: the phone's Silero detector (bundled asset) listens while the session is parked.
-                    vad = { SherpaEngines.vad(app.assets, SttEngineConfig()) },
+                    vad = onDemandVad,
                 )
             },
             grokActive = { VoiceShell.of(app).gate.grokActive },
@@ -182,9 +182,17 @@ class LiveGraph(private val app: Context) {
         )
     }
 
+    private val gptLiveNetwork by lazy { AndroidNetwork(app) }
+
+    /** The phone's voice detector for on-demand sessions (Grok and GPT-Live): Silero from the APK's assets. */
+    private val onDemandVad: () -> com.folio.hermeslive.stt.VoiceDetector? = { SherpaEngines.vad(app.assets, SttEngineConfig()) }
+
     /**
-     * GPT-Live. Use [calls]; this is its engine. Parallel agents (Settings, off by default) run
-     * its delegations as tasks on Bill's process runtime; built only while signed in.
+     * GPT-Live. Use [calls]; this is its engine. Parallel agents (Settings, on by default) run
+     * its delegations as tasks on Bill's process runtime; built only while signed in. Save cost
+     * (Settings, experimental, off by default) closes the paid session while idle: the same
+     * bundled Silero detector as Grok's listens meanwhile (it needs no Custom speech models; those
+     * only give the held audio its on-device text, [SherpaPreRoll]).
      */
     val engine: CallEngine by lazy {
         CallEngine(
@@ -212,11 +220,12 @@ class LiveGraph(private val app: Context) {
                     GptLiveOnDemand(
                         engine = engine,
                         settings = od,
-                        vadFactory = { SherpaEngines.vad(app.assets, SttEngineConfig()) },
+                        vadFactory = onDemandVad,
                         micFactory = { MicAudioSource(if (live.echoCancel) CaptureSource.VOICE_COMMUNICATION else CaptureSource.VOICE_RECOGNITION) },
                         transcriber = SherpaPreRoll.of(modelManager, live),
                         scope = mainScope,
                         clock = System::currentTimeMillis,
+                        online = gptLiveNetwork::isOnline,
                     )
                 }
             },

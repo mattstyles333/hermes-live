@@ -68,6 +68,8 @@ import com.folio.hermeslive.call.Caption
 import com.folio.hermeslive.call.ClarifyCard
 import com.folio.hermeslive.call.RouteKind
 import com.folio.hermeslive.call.RouteOption
+import com.folio.hermeslive.ui.ondemand.DIMMED_ALPHA
+import com.folio.hermeslive.ui.ondemand.OnDemandIndicator
 import java.util.Locale
 
 /** Everything the call screen can ask for. Defaults do nothing (previews, tests). */
@@ -115,7 +117,7 @@ fun CallScreen(
             } else {
                 Spacer(Modifier.weight(0.6f))
                 Orb(orbMood(state), state.level, Modifier.size(248.dp).align(Alignment.CenterHorizontally).alpha(if (session.dimmed && state.inCall) DIMMED_ALPHA else 1f))
-                if (state.inCall) GptLiveSessionIndicator(session, Modifier.align(Alignment.CenterHorizontally))
+                if (state.inCall) OnDemandIndicator(session, Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp))
                 StatusText(state, voiceLine)
                 Spacer(Modifier.weight(0.4f))
                 RecentCaptions(state.captions) { expanded = true }

@@ -353,4 +353,88 @@ class GptLiveAgentsTest {
         runCurrent()
         assertFalse(r.state.inCall)
     }
+
+    @Test fun aWaitingResultReopensOnlyWhileOnlineAndHermesIsReachableButSpeechAlwaysTries() = runTest {
+        val vad = FakeVad()
+        var online = false
+        var od: GptLiveOnDemand? = null
+        val r = Rig(this, onDemand = { engine ->
+            GptLiveOnDemand(
+                engine = engine,
+                settings = OnDemandSettings(enabled = true, idleCloseMs = 8_000),
+                vadFactory = { vad },
+                micFactory = { null },
+                transcriber = null,
+                scope = backgroundScope,
+                clock = { testScheduler.currentTime },
+                online = { online },
+                io = Dispatchers.Unconfined,
+                telemetry = TelemetrySink.None,
+            ).also { od = it }
+        })
+        online = true
+        live(r)
+        // A task already running (started earlier); the session closes while it works.
+        r.tasks.start("Check stock of RB2140", "Check stock RB2140", "k1")
+        runCurrent()
+        advanceTimeBy(8_500)
+        r.t.closedBy("client_closed", 9.0)
+        advanceTimeBy(300)
+        assertEquals(SessionView.Listening, r.engine.onDemandUi.value.view)
+        assertEquals(1, r.transports.size)
+        // Offline: the result waits; no reopen loop.
+        online = false
+        r.tasks.finish("t1", "Four in Leeds.")
+        advanceTimeBy(5_000)
+        assertTrue(r.engine.pendingResults.value > 0)
+        assertEquals("offline: a waiting result does not reopen", 1, r.transports.size)
+        // Online but Hermes unreachable (the gateway backing off): still waits.
+        online = true
+        r.link.reachable = false
+        advanceTimeBy(5_000)
+        assertEquals("Hermes unreachable: no reopen", 1, r.transports.size)
+        // Speech always tries, even while Hermes looks unreachable.
+        vad.speaking = true
+        repeat(40) { od!!.controller.onMic(ShortArray(320) { 100 }, 320) }
+        runCurrent()
+        assertEquals("speech reopens", 2, r.transports.size)
+    }
+
+    @Test fun aWaitingResultReopensOnceOnlineAndReachable() = runTest {
+        var online = false
+        val r = Rig(this, onDemand = { engine ->
+            GptLiveOnDemand(
+                engine = engine,
+                settings = OnDemandSettings(enabled = true, idleCloseMs = 8_000),
+                vadFactory = { FakeVad() },
+                micFactory = { null },
+                transcriber = null,
+                scope = backgroundScope,
+                clock = { testScheduler.currentTime },
+                online = { online },
+                io = Dispatchers.Unconfined,
+                telemetry = TelemetrySink.None,
+            )
+        })
+        online = true
+        live(r)
+        // A task already running (started earlier); the session closes while it works.
+        r.tasks.start("Check stock of RB2140", "Check stock RB2140", "k1")
+        runCurrent()
+        advanceTimeBy(8_500)
+        r.t.closedBy("client_closed", 9.0)
+        advanceTimeBy(300)
+        online = false
+        r.tasks.finish("t1", "Four in Leeds.")
+        advanceTimeBy(5_000)
+        assertEquals(1, r.transports.size)
+        online = true
+        advanceTimeBy(5_000)
+        assertEquals("back online with Hermes reachable: the result reopens the session", 2, r.transports.size)
+    }
+
+    @Test fun theLinksReachabilityFollowsTheGateway() {
+        assertFalse("signed out: never reachable", com.folio.hermeslive.hermes.SignedOutLink.reachable)
+        assertTrue(FakeLink().reachable)
+    }
 }

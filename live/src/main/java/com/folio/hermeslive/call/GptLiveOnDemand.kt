@@ -14,6 +14,7 @@ import com.folio.hermeslive.call.ondemand.OpenReason
 import com.folio.hermeslive.call.ondemand.OpenRequest
 import com.folio.hermeslive.call.ondemand.RealtimeLink
 import com.folio.hermeslive.data.LiveSettings
+import com.folio.hermeslive.data.VoiceEngine
 import com.folio.hermeslive.stt.VoiceDetector
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -55,6 +56,8 @@ class GptLiveOnDemand(
     private val transcriber: PreRollTranscriber?,
     private val scope: CoroutineScope,
     private val clock: () -> Long,
+    /** The phone is online (validated internet). With [CallEngine]'s Hermes reachability: [RealtimeLink.canOpen]. */
+    private val online: () -> Boolean = { true },
     private val io: CoroutineDispatcher = Dispatchers.IO,
     telemetry: TelemetrySink = TelemetrySink.Default,
 ) {
@@ -168,6 +171,9 @@ class GptLiveOnDemand(
             }
         }
 
+        /** A waiting result reopens only while online and Hermes is reachable (as Grok's link does with the network); speech always tries. */
+        override fun canOpen(): Boolean = online() && engine.hermesReachable
+
         override fun isIdle(): Boolean = engine.voiceIdle()
 
         override fun hasPendingNotice(): Boolean = engine.pendingResults.value > 0
@@ -221,10 +227,7 @@ fun interface GptLiveOnDemandFactory {
     companion object {
         val Off = GptLiveOnDemandFactory { null }
 
-        /**
-         * GPT-Live's on-demand settings. Off on this branch: the hub's merge maps this onto the
-         * ondemand slice's `LiveSettings.gptLiveSaveCost` / `onDemandSettings(engine)`.
-         */
-        fun settings(@Suppress("UNUSED_PARAMETER") live: LiveSettings): OnDemandSettings = OnDemandSettings(enabled = false)
+        /** GPT-Live's on-demand settings: Settings › Voice › Save cost (experimental), `LiveSettings.gptLiveSaveCost`, off by default. */
+        fun settings(live: LiveSettings): OnDemandSettings = live.onDemandSettings(VoiceEngine.GptLive)
     }
 }

@@ -726,6 +726,10 @@ class CallEngine(
         onDemand?.sessionFailed()
     }
 
+    /** Hermes looks reachable (the call's gateway is not backing off or stopped); false with no call. */
+    internal val hermesReachable: Boolean
+        get() = link?.reachable ?: false
+
     /** The first session is still connecting (the on-demand link's first open waits for it). */
     internal val connecting: Boolean
         get() = _state.value.inCall && !dormant && !_sessionOpen.value && (reopening || bridge == null || bridge?.status?.value == BridgeStatus.Connecting)

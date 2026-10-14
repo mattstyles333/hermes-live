@@ -53,6 +53,7 @@ import com.folio.hermes.cascade.CascadeUiState
 import com.folio.hermes.cascade.DecisionRecord
 import com.folio.hermes.cascade.TaskTap
 import com.folio.hermeslive.ui.VoidBlack
+import com.folio.hermeslive.ui.ondemand.DIMMED_ALPHA
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -395,4 +396,3 @@ private suspend fun tick(now: MutableLongState, wall: MutableLongState, clock: (
 }
 
 /** The scene (the orb) while a realtime engine's session is closed to save cost (ondemand slice). */
-private const val DIMMED_ALPHA = 0.45f

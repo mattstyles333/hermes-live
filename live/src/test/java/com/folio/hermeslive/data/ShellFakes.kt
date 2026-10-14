@@ -100,6 +100,9 @@ class TestShell(context: Context, name: String, scope: CoroutineScope, val sink:
     /** Grok's xAI key (its own box and prefs) and a checker that never leaves the test. */
     val xaiKeys = OpenRouterKeyStore(context.getSharedPreferences("$name-xai", Context.MODE_PRIVATE), SoftwareSecretBox(), sink, item = "xai_key")
     var xaiAnswer: KeyCheckResult = KeyCheckResult.Valid
+
+    /** Signed in to Hermes (GPT-Live's parallel agents need it); signed out by default. */
+    var signedIn = false
     val xaiChecks = AtomicInteger()
     private val config = OpenRouterConfig(baseUrl = "https://openrouter.example/api/v1", retryBackoffMs = 1)
     val shell = VoiceShell(
@@ -119,5 +122,6 @@ class TestShell(context: Context, name: String, scope: CoroutineScope, val sink:
         dirs = CascadeDirs(java.io.File(context.noBackupFilesDir, "cascade-$name"), java.io.File(context.cacheDir, "share-$name")),
         xaiKeys = xaiKeys,
         xaiChecker = KeyChecker { xaiChecks.incrementAndGet(); xaiAnswer },
+        signedIn = { signedIn },
     )
 }

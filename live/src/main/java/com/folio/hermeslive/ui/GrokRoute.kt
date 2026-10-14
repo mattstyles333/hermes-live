@@ -93,13 +93,16 @@ fun GrokCallRoute(
             OnDemandIndicator(session, Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 96.dp))
         }
         val notice = call.notice
-        if (!ending && call.inCall && (call.offerBillMemo || (notice != null && call.phase != com.folio.hermeslive.call.CallPhase.Live))) {
+        val warning = call.warning
+        if (!ending && call.inCall && (warning != null || call.offerBillMemo || (notice != null && call.phase != com.folio.hermeslive.call.CallPhase.Live))) {
             Column(
                 Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 132.dp, start = 18.dp, end = 18.dp)
                     .fillMaxWidth().background(Hairline, RoundedCornerShape(14.dp)).padding(14.dp).testTag("grok-offline"),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                notice?.let { Text(it, style = BodyStyle, color = PrintInk) }
+                // The idle hang-up or call cap is near (the earcon has played).
+                warning?.let { Text(it, style = BodyStyle, color = PrintInk, modifier = Modifier.testTag("grok-warning")) }
+                notice?.takeIf { call.offerBillMemo || call.phase != com.folio.hermeslive.call.CallPhase.Live }?.let { Text(it, style = BodyStyle, color = PrintInk) }
                 if (call.offerBillMemo) {
                     Text("The Custom engine can take notes offline and send them when you're back.", style = SmallStyle, color = PrintMute)
                     Pill("Continue offline (memo)", filled = true, tag = "grok-use-bill", onClick = onUseBill)
