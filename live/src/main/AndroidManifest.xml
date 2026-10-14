@@ -15,6 +15,9 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Cascade (spec v2 R-CONV-3): off-call keep-alive (no mic) and "Hear it" playback. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -83,6 +86,23 @@
             android:name=".service.CallActionReceiver"
             android:exported="false" />
 
+        <!-- Cascade, after hang-up: keeps the Hermes gateway open while voice tasks finish.
+             No microphone. specialUse: see AGENTS.md "Off-call service". -->
+        <service
+            android:name=".service.OffCallService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the user's connection to their own agent server open after a voice call ends, so tasks the user started can finish and report back; it shows how many are running, never uses the microphone, and stops when they finish or after 30 minutes." />
+        </service>
+
+        <!-- Cascade "Hear it": Bill reads a finished task's result (media playback, lock screen). No microphone. -->
+        <service
+            android:name=".service.BriefingService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
         <service
             android:name=".service.CallTileService"
             android:exported="true"
@@ -96,6 +116,13 @@
                 android:name="android.service.quicksettings.TOGGLEABLE_TILE"
                 android:value="true" />
         </service>
+
+        <!-- Settings > Voice > Decision log > Share: the one export file, read-only, by URI grant. -->
+        <provider
+            android:name=".data.DecisionLogProvider"
+            android:authorities="${applicationId}.share"
+            android:exported="false"
+            android:grantUriPermissions="true" />
 
         <!-- Folio reads the session here; call() checks the permission itself. -->
         <provider

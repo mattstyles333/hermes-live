@@ -31,7 +31,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class ConnectionProvider : ContentProvider() {
     /** Seams for tests; the app wiring is the default. */
     internal var connection: suspend (Context, Boolean) -> Connection = ::liveConnection
-    internal var inCall: (Context) -> Boolean = { it.graph.engine.state.value.inCall }
+    internal var inCall: (Context) -> Boolean = { it.graph.calls.state.value.inCall }
 
     override fun onCreate(): Boolean = true
 

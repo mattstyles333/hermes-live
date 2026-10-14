@@ -10,7 +10,7 @@ import com.folio.hermeslive.graph
 /** Notification actions: Mute, End, and approval answers. Not exported. */
 class CallActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val engine = context.graph.engine
+        val engine = context.graph.calls
         when (intent.action) {
             ACTION_MUTE -> engine.toggleMute()
             ACTION_END -> engine.end()

@@ -24,7 +24,25 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.withResumed
 import com.folio.hermes.telemetry.FlushResult
 import com.folio.hermes.telemetry.Telemetry
+import com.folio.hermeslive.call.CallPlan
 import com.folio.hermeslive.call.CallRequest
+import com.folio.hermeslive.call.CallUiState
+import com.folio.hermeslive.cascade.CascadeAppRuntime
+import com.folio.hermeslive.cascade.CascadeCallEngine
+import com.folio.hermeslive.cascade.CascadeSignOut
+import com.folio.hermeslive.cascade.appRuntime
+import com.folio.hermeslive.data.VoiceShell
+import com.folio.hermeslive.data.KeyStatus
+import com.folio.hermeslive.data.PrepState
+import com.folio.hermeslive.data.VoiceEngine
+import com.folio.hermeslive.service.MemoEntry
+import com.folio.hermeslive.service.ResultNotifications
+import com.folio.hermeslive.ui.CascadeCallRoute
+import com.folio.hermeslive.ui.PreparingBill
+import androidx.compose.runtime.remember
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import com.folio.hermeslive.call.SessionMemory
 import com.folio.hermeslive.data.AccountState
 import com.folio.hermeslive.data.SignInResult
@@ -37,7 +55,7 @@ import com.folio.hermeslive.ui.SettingsScreen
 import com.folio.hermeslive.ui.SignInScreen
 import com.folio.hermeslive.ui.SignInUi
 import com.folio.hermeslive.ui.clock
-import com.folio.hermeslive.ui.voiceText
+import com.folio.hermeslive.ui.HomeVoiceLine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -51,6 +69,12 @@ class LiveActivity : ComponentActivity() {
     private var signIn by mutableStateOf(SignInUi())
     private var micRefused by mutableStateOf(false)
     private var diagnosticsStatus by mutableStateOf<String?>(null)
+
+    /** A call waiting for "Preparing Bill…" (spec v2 §14 item 10). */
+    private var preparing by mutableStateOf<CallRequest?>(null)
+
+    /** Bill's screen with no call, on a result notification's Open (§14 item 9). */
+    private var viewingTask by mutableStateOf<String?>(null)
 
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         val request = pendingStart ?: return@registerForActivityResult
@@ -79,10 +103,12 @@ class LiveActivity : ComponentActivity() {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
         }
+        if (intent?.action == MemoEntry.ACTION_MEMO) MemoEntry.reportUsed(this)
+        launch.openTaskId?.let(::openTask)
         val request = launch.request ?: return
         lifecycleScope.launch {
             graph.ready.await()
-            val engine = graph.engine
+            val engine = graph.calls
             if (engine.state.value.inCall) {
                 request.prompt?.let(engine::submitText)
                 return@launch
@@ -96,8 +122,27 @@ class LiveActivity : ComponentActivity() {
         }
     }
 
+    /** A result notification's Open: Bill's screen on the stored tasks, no call (the off-call restore). */
+    private fun openTask(taskId: String) {
+        ResultNotifications.cancel(this, taskId)
+        lifecycleScope.launch {
+            graph.ready.await()
+            val shell = VoiceShell.of(this@LiveActivity)
+            val rt = withContext(Dispatchers.Default) { shell.shell.appRuntime() } ?: return@launch
+            rt.core.restore()
+            viewingTask = taskId
+        }
+    }
+
     private fun requestStart(request: CallRequest) {
         micRefused = false
+        if (graph.calls.plan(request) == CallPlan.PreparingBill) {
+            preparing = request
+            VoiceShell.of(this).autoPrepare()
+            return
+        }
+        preparing = null
+        viewingTask = null
         val missing = buildList {
             if (!hasMic()) add(Manifest.permission.RECORD_AUDIO)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -121,10 +166,11 @@ class LiveActivity : ComponentActivity() {
 
     private fun hasMic() = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     private fun observeWindowFlags() {
         lifecycleScope.launch {
             var wasInCall = false
-            graph.engine.state.collect { state ->
+            graph.calls.active.flatMapLatest { it?.state ?: flowOf(CallUiState()) }.collect { state ->
                 val keepOn = state.inCall && graph.settings.settings.value.keepScreenOn
                 if (keepOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 if (wasInCall && !state.inCall) {
@@ -140,10 +186,21 @@ class LiveActivity : ComponentActivity() {
     @Composable
     private fun Root() {
         val g = graph
-        val call by g.engine.state.collectAsStateWithLifecycle()
+        val active by g.calls.active.collectAsStateWithLifecycle()
+        val call by (active ?: g.calls).state.collectAsStateWithLifecycle()
         val account by g.account.state.collectAsStateWithLifecycle()
         val settings by g.settings.settings.collectAsStateWithLifecycle()
         val voice by g.account.voiceStatus.collectAsStateWithLifecycle()
+        // The idle screen's voice line follows the chosen engine: Bill's readiness, not GPT-Live's status.
+        val voiceLine = if (settings.voiceEngine == VoiceEngine.Cascade) {
+            val shell = remember { VoiceShell.of(this@LiveActivity) }
+            val key by shell.keys.status.collectAsStateWithLifecycle()
+            val prep by shell.prep.state.collectAsStateWithLifecycle()
+            val models by shell.speechModels.status.collectAsStateWithLifecycle()
+            HomeVoiceLine.of(settings, voice, key, prep, models)
+        } else {
+            HomeVoiceLine.of(settings, voice, KeyStatus(), PrepState(), emptyList())
+        }
         val scope = rememberCoroutineScope()
         val elapsed by produceState<String?>(null, call.startedAtMs, call.inCall) {
             val started = call.startedAtMs
@@ -168,8 +225,11 @@ class LiveActivity : ComponentActivity() {
                     onBack = { showSettings = false },
                     onChange = { change -> g.settings.update(change) },
                     onSignOut = {
-                        g.engine.end()
-                        scope.launch { g.account.signOut() }
+                        g.calls.end()
+                        scope.launch {
+                            g.account.signOut()
+                            CascadeSignOut.apply(VoiceShell.of(this@LiveActivity))
+                        }
                         showSettings = false
                     },
                     onResetConversation = { g.settings.save(SessionMemory.Empty) },
@@ -191,6 +251,8 @@ class LiveActivity : ComponentActivity() {
                         when (val result = g.account.signIn(url, user, password)) {
                             is SignInResult.Ok -> {
                                 signIn = SignInUi()
+                                // Bill's runtime is built for one account: the next call builds it for this one.
+                                VoiceShell.of(this@LiveActivity).shell.release()
                                 afterSignIn?.let { pending ->
                                     afterSignIn = null
                                     requestStart(pending)
@@ -202,24 +264,58 @@ class LiveActivity : ComponentActivity() {
                 },
                 onSettings = { showSettings = true },
             )
+            preparing != null && !call.inCall -> {
+                val shell = remember { VoiceShell.of(this@LiveActivity) }
+                val prep by shell.prep.state.collectAsStateWithLifecycle()
+                val pending = preparing!!
+                LaunchedEffect(prep.phase, prep.models) {
+                    if (g.calls.plan(pending) is CallPlan.Ready) requestStart(pending)
+                }
+                PreparingBill(
+                    prep = prep,
+                    wifi = shell.network.wifi(),
+                    onDownload = { shell.prep.start() },
+                    onUseGptLive = { requestStart(pending.copy(forceGptLive = true)) },
+                    onCancel = { preparing = null },
+                )
+            }
+            (active is CascadeCallEngine && call.inCall && (active as CascadeCallEngine).session != null) || (viewingTask != null && !call.inCall) -> {
+                val engine = g.calls.bill() as? CascadeCallEngine
+                val rt = engine?.session ?: (VoiceShell.of(this@LiveActivity).shell.existing() as? CascadeAppRuntime)
+                if (engine == null || rt == null) {
+                    LaunchedEffect(Unit) { viewingTask = null }
+                } else {
+                    val shell = remember { VoiceShell.of(this@LiveActivity) }
+                    BackHandler(enabled = viewingTask != null && !call.inCall) { viewingTask = null }
+                    CascadeCallRoute(
+                        engine = engine,
+                        runtime = rt,
+                        pauseMs = settings.pauseMs,
+                        viewer = !call.inCall,
+                        decisions = { runCatching { shell.decisionLog.records().asReversed() }.getOrDefault(emptyList()) },
+                        onHaptic = { if (settings.haptics) g.haptic() },
+                        onClose = { viewingTask = null },
+                    )
+                }
+            }
             else -> CallScreen(
                 state = if (micRefused && !call.inCall) call.copy(error = "Hermes Live needs the microphone. Allow it in Settings › Apps.") else call,
                 elapsed = elapsed,
-                voiceLine = voice?.let { "Voice: ${voiceText(it)}" },
+                voiceLine = voiceLine,
                 actions = CallActions(
                     onTalk = {
-                        g.engine.dismissSummary()
+                        g.calls.dismissSummary()
                         requestStart(CallRequest())
                     },
-                    onEnd = g.engine::end,
-                    onMute = g.engine::toggleMute,
-                    onRoute = g.engine::selectRoute,
-                    onApprove = g.engine::answerApproval,
-                    onClarify = g.engine::answerClarify,
+                    onEnd = g.calls::end,
+                    onMute = g.calls::toggleMute,
+                    onRoute = g.calls::selectRoute,
+                    onApprove = g.calls::answerApproval,
+                    onClarify = g.calls::answerClarify,
                     onSettings = { showSettings = true },
-                    onDismissSummary = g.engine::dismissSummary,
+                    onDismissSummary = g.calls::dismissSummary,
                     onNewConversation = {
-                        g.engine.dismissSummary()
+                        g.calls.dismissSummary()
                         requestStart(CallRequest(newConversation = true))
                     },
                 ),

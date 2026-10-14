@@ -116,12 +116,17 @@ class HermesConversation(
      * keeps reading; if the turn finished during the gap the turn fails. It never hangs: an error
      * before the turn starts, a failed re-bind, or [HermesConfig.turnInactivityTimeoutMs] of
      * silence fails it.
+     *
+     * [queued] sends `prompt.submit {queued: true}`: on a busy session the text runs after the
+     * current turn instead of redirecting it ([SubmitStatus.Queued]; this flow then skips the
+     * running turn's completion and streams the queued one).
      */
     fun turn(
         text: String,
         surface: PromptSurface? = null,
         voiceContext: String? = null,
         interruptFirst: Boolean = false,
+        queued: Boolean = false,
     ): Flow<TurnUpdate> = channelFlow {
         val inbox = Channel<Any>(Channel.UNLIMITED)
         val collector = launch(start = CoroutineStart.UNDISPATCHED) { gateway.events.collect { inbox.send(it) } }
@@ -135,7 +140,7 @@ class HermesConversation(
                 inbox.send(Dropped)
             }
             watcher = watch()
-            val (usedSid, result) = submit(sid, text, surface, voiceContext)
+            val (usedSid, result) = submit(sid, text, surface, voiceContext, queued)
             sid = usedSid
             send(TurnUpdate.Accepted(sid, result.status))
             if (result.status == SubmitStatus.VoiceStopped) {
@@ -240,20 +245,27 @@ class HermesConversation(
         text: String,
         surface: PromptSurface?,
         voiceContext: String?,
+        queued: Boolean,
     ): Pair<String, PromptSubmitResult> = try {
-        sid to submitBusyAware(sid, text, surface, voiceContext)
+        sid to submitBusyAware(sid, text, surface, voiceContext, queued)
     } catch (e: HermesRpcException) {
         if (!e.isSessionNotFound) throw e
         runtimeId = null
         val fresh = ensureSession()
-        fresh to submitBusyAware(fresh, text, surface, voiceContext)
+        fresh to submitBusyAware(fresh, text, surface, voiceContext, queued)
     }
 
-    private suspend fun submitBusyAware(sid: String, text: String, surface: PromptSurface?, voiceContext: String?): PromptSubmitResult {
+    private suspend fun submitBusyAware(
+        sid: String,
+        text: String,
+        surface: PromptSurface?,
+        voiceContext: String?,
+        queued: Boolean,
+    ): PromptSubmitResult {
         val deadline = System.nanoTime() + config.busyRetryWindowMs * 1_000_000
         while (true) {
             try {
-                return gateway.submitPrompt(sid, text, surface, voiceContext)
+                return gateway.submitPrompt(sid, text, surface, voiceContext, queued)
             } catch (e: HermesRpcException) {
                 if (!e.isSessionBusy || System.nanoTime() > deadline) throw e
                 delay(config.busyRetryIntervalMs)

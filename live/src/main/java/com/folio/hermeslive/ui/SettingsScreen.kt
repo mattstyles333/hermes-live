@@ -36,12 +36,34 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import android.content.ClipboardManager
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInspectionMode
 import com.folio.hermes.live.VoiceLiveStatus
+import com.folio.hermeslive.data.EngineState
+import com.folio.hermeslive.data.EngineStatus
+import com.folio.hermeslive.data.KeyCheck
+import com.folio.hermeslive.data.ModelState
+import com.folio.hermeslive.data.PrepPhase
+import com.folio.hermeslive.data.VoiceEngine
+import com.folio.hermeslive.data.VoiceSettingsController
+import com.folio.hermeslive.data.VoiceShell
+import com.folio.hermeslive.data.VoiceUi
+import com.folio.hermeslive.service.MemoEntry
+import kotlinx.coroutines.launch
 import com.folio.hermes.telemetry.DiagnosticsEndpoint
 import com.folio.hermeslive.call.FallbackRoute
 import com.folio.hermeslive.data.AccountState
@@ -70,6 +92,8 @@ fun SettingsScreen(
     diagnosticsBuiltIn: Boolean = false,
     /** Result of the last "Send test event": "✓ Sent (HTTP 200)", "Failed: HTTP 503", "Off"… */
     diagnosticsStatus: String? = null,
+    /** Settings › Voice (the cascade). The app's shell by default; null hides the section. */
+    voiceSettings: VoiceSettingsController? = rememberVoiceSettings(),
 ) {
     Column(modifier.fillMaxSize().background(VoidBlack).windowInsetsPadding(WindowInsets.safeDrawing)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -100,6 +124,7 @@ fun SettingsScreen(
                     Text("Removes the session, the saved password and the conversation from this phone.", style = SmallStyle, color = PrintMute, modifier = Modifier.padding(top = 6.dp))
                 }
             }
+            voiceSettings?.let { VoiceSettingsWired(it) }
             Section("Calls") {
                 Toggle("Start talking when opened", "Opening Hermes Live starts a call.", settings.startOnOpen, "start-on-open") { v -> actions.onChange { it.copy(startOnOpen = v) } }
                 Toggle("Keep the screen on", "During a call.", settings.keepScreenOn, "keep-screen-on") { v -> actions.onChange { it.copy(keepScreenOn = v) } }
@@ -238,5 +263,266 @@ private fun Choice(title: String, value: String, tag: String, onClick: () -> Uni
     Column(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick).padding(vertical = 8.dp).testTag(tag)) {
         Text(title, style = BodyStyle, color = PrintInk)
         Text(value, style = SmallStyle, color = Ember)
+    }
+}
+
+// ── Settings › Voice (spec v2: engine, key, pause, tasks, voice, vocabulary, decision log, Prepare) ──
+
+/** The app's Voice settings, or null in previews and when the app shell is not there. */
+@Composable
+fun rememberVoiceSettings(): VoiceSettingsController? {
+    if (LocalInspectionMode.current) return null
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    return remember { runCatching { VoiceSettingsController(VoiceShell.of(context), scope) }.getOrNull() }
+}
+
+/** What Settings › Voice can do. */
+data class VoiceActions(
+    val onChange: ((LiveSettings) -> LiveSettings) -> Unit = {},
+    val onPasteKey: () -> Unit = {},
+    val onCheckKey: () -> Unit = {},
+    val onRemoveKey: () -> Unit = {},
+    val onPrepare: () -> Unit = {},
+    val onCancelPrepare: () -> Unit = {},
+    val onShareLog: () -> Unit = {},
+    val onClearLog: () -> Unit = {},
+    val onForgetCorrection: (String) -> Unit = {},
+)
+
+/** [VoiceSettingsSection] on the controller: clipboard, share sheet and the memo shortcut. */
+@Composable
+private fun VoiceSettingsWired(controller: VoiceSettingsController) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val ui by controller.ui.collectAsState()
+    LaunchedEffect(Unit) { controller.refresh() }
+    LaunchedEffect(ui.cascadeActive) { MemoEntry.syncShortcut(context, ui.cascadeActive) }
+    VoiceSettingsSection(
+        ui,
+        VoiceActions(
+            onChange = controller::update,
+            onPasteKey = {
+                val clipboard = context.getSystemService(ClipboardManager::class.java)
+                val text = clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)
+                // A pasted key should not sit on the clipboard once it is sealed.
+                controller.pasteKey(text) { runCatching { clipboard?.clearPrimaryClip() } }
+            },
+            onCheckKey = controller::recheckKey,
+            onRemoveKey = controller::removeKey,
+            onPrepare = controller::prepare,
+            onCancelPrepare = controller::cancelPrepare,
+            onShareLog = { scope.launch { controller.shareDecisionLog()?.let { runCatching { context.startActivity(it) } } } },
+            onClearLog = controller::clearDecisionLog,
+            onForgetCorrection = controller::forgetCorrection,
+        ),
+    )
+}
+
+@Composable
+fun VoiceSettingsSection(ui: VoiceUi, actions: VoiceActions) {
+    val s = ui.settings
+    val cascade = s.voiceEngine == VoiceEngine.Cascade
+    Section("Voice") {
+        Line("Engine", ui.engine.text, Modifier.testTag("engine-status"))
+        Choice(
+            "Voice engine",
+            if (cascade) "Bill: on-phone speech, Jev and Hermes agents (OpenRouter)" else "GPT-Live, through Hermes (default)",
+            "engine",
+        ) { actions.onChange { it.copy(voiceEngine = if (it.voiceEngine == VoiceEngine.Cascade) VoiceEngine.GptLive else VoiceEngine.Cascade) } }
+
+        KeyBlock(ui, actions)
+
+        if (cascade) {
+            PauseSlider(s.pauseMs) { v -> actions.onChange { it.copy(pauseMs = v) } }
+            Choice("Tasks at once", "${s.maxTasks} (more wait their turn)", "max-tasks") {
+                actions.onChange { it.copy(maxTasks = if (it.maxTasks >= LiveSettings.MAX_TASKS) LiveSettings.MIN_TASKS else it.maxTasks + 1) }
+            }
+            TextSetting("Voice", s.billVoice, "bill-voice", valid = { it.isNotBlank() && it.none(Char::isWhitespace) }) { v -> actions.onChange { it.copy(billVoice = v) } }
+            TextSetting("Speech model", s.ttsModel, "tts-model", valid = ::isModelId) { v -> actions.onChange { it.copy(ttsModel = v) } }
+            Text("Changing the voice or model means preparing Bill's voice again.", style = SmallStyle, color = PrintMute)
+            Toggle("Small listening noises", "Bill says \"mm-hm\" while you talk. Off by default: it can talk over you.", s.backchannel, "backchannel") { v ->
+                actions.onChange { it.copy(backchannel = v) }
+            }
+            Toggle("Hold to talk", "Hold the orb or the headset button while you speak, instead of Bill waiting for a pause.", s.holdToTalk, "hold-to-talk") { v ->
+                actions.onChange { it.copy(holdToTalk = v) }
+            }
+            Toggle("Call audio processing", "Use the phone's echo canceller on the mic (recommended on the speaker).", s.echoCancel, "echo-cancel") { v ->
+                actions.onChange { it.copy(echoCancel = v) }
+            }
+            Toggle("High accuracy", "A larger second-pass speech model: better words, a much bigger download.", s.highAccuracySpeech, "high-accuracy") { v ->
+                actions.onChange { it.copy(highAccuracySpeech = v) }
+            }
+            VocabularyBlock(ui, actions)
+            DecisionLogBlock(ui, actions)
+            PrepareBlock(ui, actions)
+        }
+        ui.message?.let { Text(it, style = SmallStyle, color = Ember, modifier = Modifier.padding(top = 6.dp).testTag("voice-message")) }
+    }
+}
+
+@Composable
+private fun KeyBlock(ui: VoiceUi, actions: VoiceActions) {
+    var confirmRemove by remember { mutableStateOf(false) }
+    val key = ui.key
+    val state = when {
+        !key.saved -> "Not saved"
+        else -> "Saved" + (key.hint?.let { " · ends …$it" } ?: "") + " · " + when (key.check) {
+            KeyCheck.Valid -> "checked"
+            KeyCheck.Refused -> "refused by OpenRouter"
+            KeyCheck.Unchecked -> "not checked yet"
+        }
+    }
+    Line("OpenRouter key", state, Modifier.testTag("key-status"))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Pill(if (key.saved) "Replace from clipboard" else "Paste from clipboard", filled = !key.saved, tag = "key-paste") { if (!ui.keyBusy) actions.onPasteKey() }
+        if (key.saved) {
+            Pill("Check", filled = false, tag = "key-check") { if (!ui.keyBusy) actions.onCheckKey() }
+            Pill(if (confirmRemove) "Tap to remove" else "Remove", filled = false, tag = "key-remove") {
+                if (confirmRemove) actions.onRemoveKey()
+                confirmRemove = !confirmRemove
+            }
+        }
+    }
+    ui.keyMessage?.let { Text(it, style = SmallStyle, color = if (key.check == KeyCheck.Refused) EndRed else PrintMute, modifier = Modifier.padding(top = 6.dp).testTag("key-message")) }
+    Text(
+        "Your own OpenRouter key, sealed on this phone with the Android Keystore. It is only sent to OpenRouter, never logged.",
+        style = SmallStyle, color = PrintMute, modifier = Modifier.padding(top = 6.dp),
+    )
+}
+
+@Composable
+private fun PauseSlider(pauseMs: Int, onDone: (Int) -> Unit) {
+    var value by remember(pauseMs) { mutableFloatStateOf(pauseMs.toFloat()) }
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Text("Pause before Jev decides", style = BodyStyle, color = PrintInk)
+        Text("%.1f s of quiet before Bill treats what you said as finished.".format(value / 1000f), style = SmallStyle, color = Ember)
+        Slider(
+            value = value,
+            onValueChange = { value = it },
+            onValueChangeFinished = { onDone(((value / 100f).toInt() * 100)) },
+            valueRange = LiveSettings.MIN_PAUSE_MS.toFloat()..LiveSettings.MAX_PAUSE_MS.toFloat(),
+            steps = (LiveSettings.MAX_PAUSE_MS - LiveSettings.MIN_PAUSE_MS) / 100 - 1,
+            colors = SliderDefaults.colors(thumbColor = PrintInk, activeTrackColor = PrintInk, inactiveTrackColor = Hairline),
+            modifier = Modifier.testTag("pause"),
+        )
+    }
+}
+
+@Composable
+private fun TextSetting(label: String, value: String, tag: String, valid: (String) -> Boolean, onSave: (String) -> Unit) {
+    var text by remember(value) { mutableStateOf(value) }
+    OutlinedTextField(
+        value = text,
+        onValueChange = { v ->
+            text = v
+            // Saved only once it is usable, so leaving mid-edit keeps the last good value.
+            if (valid(v.trim())) onSave(v.trim())
+        },
+        isError = !valid(text.trim()),
+        label = { Text(label) },
+        singleLine = true, colors = fieldColors(), textStyle = BodyStyle,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done, autoCorrectEnabled = false),
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp).testTag(tag),
+    )
+}
+
+/** An OpenRouter model id: `vendor/model`, no spaces. */
+fun isModelId(s: String): Boolean = Regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$").matches(s)
+
+@Composable
+private fun VocabularyBlock(ui: VoiceUi, actions: VoiceActions) {
+    var text by remember { mutableStateOf(ui.settings.vocabulary.joinToString("\n")) }
+    Text("Vocabulary", style = BodyStyle, color = PrintInk, modifier = Modifier.padding(top = 12.dp))
+    Text("Names and words Bill should hear right. One per line.", style = SmallStyle, color = PrintMute)
+    OutlinedTextField(
+        value = text,
+        onValueChange = { v ->
+            text = v
+            actions.onChange { it.copy(vocabulary = LiveSettings.cleanVocabulary(listOf(v))) }
+        },
+        minLines = 3, maxLines = 8, colors = fieldColors(), textStyle = BodyStyle,
+        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp).testTag("vocabulary"),
+    )
+    if (ui.corrections.isNotEmpty()) {
+        Text("Learned from your calls", style = SmallStyle, color = PrintMute, modifier = Modifier.padding(top = 8.dp))
+        ui.corrections.forEach { c ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "“${c.heard}” → ${c.meant}" + if (c.count > 1) "  ×${c.count}" else "",
+                    style = BodyStyle, color = PrintInk, modifier = Modifier.weight(1f),
+                )
+                Pill("Forget", filled = false, tag = "forget-${c.heard}") { actions.onForgetCorrection(c.heard) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DecisionLogBlock(ui: VoiceUi, actions: VoiceActions) {
+    Toggle(
+        "Decision log",
+        "Keeps each turn's decision (what you said, what Jev chose, timings) on this phone only, for tuning. Last 1,000 turns or 14 days.",
+        ui.settings.decisionLog, "decision-log",
+    ) { v -> actions.onChange { it.copy(decisionLog = v) } }
+    ui.decisionTurns?.let { Text(if (it == 1) "1 turn kept" else "$it turns kept", style = SmallStyle, color = PrintMute, modifier = Modifier.testTag("log-count")) }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+        Pill("Share", filled = false, tag = "log-share", onClick = actions.onShareLog)
+        Pill("Clear", filled = false, tag = "log-clear", onClick = actions.onClearLog)
+    }
+}
+
+@Composable
+private fun PrepareBlock(ui: VoiceUi, actions: VoiceActions) {
+    val prep = ui.prep
+    val p = prep.phrases
+    Text("Prepare Bill's voice", style = BodyStyle, color = PrintInk, modifier = Modifier.padding(top = 12.dp))
+    Text(
+        when (prep.phase) {
+            PrepPhase.Idle -> if (prep.ready) "Ready." else "Records Bill's stock lines once and downloads the speech models."
+            PrepPhase.Running -> "Preparing…"
+            PrepPhase.Done -> "Ready."
+            PrepPhase.Cancelled -> "Paused. Resume carries on where it stopped."
+            PrepPhase.Failed -> "Not finished: some lines or models failed. Try again."
+        },
+        style = SmallStyle, color = PrintMute, modifier = Modifier.testTag("prepare-status"),
+    )
+    if (p.total > 0) {
+        Text("Lines: ${p.done} of ${p.total}" + if (p.failed > 0) " (${p.failed} failed)" else "", style = SmallStyle, color = PrintMute, modifier = Modifier.padding(top = 4.dp).testTag("prepare-lines"))
+        LinearProgressIndicator(progress = { (p.done.toFloat() / p.total).coerceIn(0f, 1f) }, color = Ember, trackColor = Hairline, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
+    }
+    prep.models.forEach { m ->
+        val size = if (m.bytesTotal > 0) " of ${EngineStatus.megabytes(m.bytesTotal)}" else ""
+        val state = when (m.state) {
+            ModelState.Ready -> "ready"
+            ModelState.Missing -> "to download$size"
+            ModelState.Downloading -> "${(m.fraction * 100).toInt()}%$size"
+            ModelState.Paused -> "paused at ${(m.fraction * 100).toInt()}%$size"
+            ModelState.Verifying -> "checking"
+            ModelState.Failed -> "failed"
+        }
+        Text("${m.label}: $state", style = SmallStyle, color = PrintMute, modifier = Modifier.padding(top = 4.dp).testTag("model-${m.id}"))
+        if (m.state == ModelState.Downloading) {
+            LinearProgressIndicator(progress = { m.fraction }, color = Ember, trackColor = Hairline, modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
+        }
+    }
+    if (ui.metered && prep.bytesToFetch > 0) {
+        Text(
+            "You're on mobile data. About ${EngineStatus.megabytes(prep.bytesToFetch)} to download: Wi-Fi recommended.",
+            style = SmallStyle, color = Ember, modifier = Modifier.padding(top = 6.dp).testTag("wifi-hint"),
+        )
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+        if (prep.phase == PrepPhase.Running) {
+            Pill("Cancel", filled = false, tag = "prepare-cancel", onClick = actions.onCancelPrepare)
+        } else if (ui.cascadeActive) {
+            val label = when {
+                prep.phase == PrepPhase.Cancelled || prep.phase == PrepPhase.Failed -> "Resume"
+                prep.ready && ui.engine.state == EngineState.Ready -> "Prepare again"
+                else -> "Prepare"
+            }
+            Pill(label, filled = ui.engine.state == EngineState.NeedsVoice, tag = "prepare", onClick = actions.onPrepare)
+        }
     }
 }

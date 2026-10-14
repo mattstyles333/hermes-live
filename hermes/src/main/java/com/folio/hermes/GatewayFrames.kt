@@ -138,5 +138,20 @@ internal object GatewayFrames {
         }
     }
 
+    /**
+     * `config.get {key: "busy"}` → the busy mode. The reply shape was not verified against the
+     * server, so this accepts a bare string, `{value}`, `{busy}`, `{mode}` or
+     * `{display: {busy_input_mode}}`; anything else is null.
+     */
+    fun busyMode(result: JsonElement?): BusyMode? {
+        val raw = when (result) {
+            is JsonPrimitive -> result.takeIf { it.isString }?.content
+            is JsonObject -> result.string("value") ?: result.string("busy") ?: result.string("mode")
+                ?: result.string("busy_input_mode") ?: result.obj("display")?.string("busy_input_mode")
+            else -> null
+        }
+        return BusyMode.entries.firstOrNull { it.wire == raw?.trim()?.lowercase() }
+    }
+
     private fun JsonElement.idText(): String = (this as? JsonPrimitive)?.content ?: toString()
 }

@@ -2,6 +2,8 @@ package com.folio.hermeslive
 
 import android.content.Intent
 import com.folio.hermeslive.call.CallRequest
+import com.folio.hermeslive.service.MemoEntry
+import com.folio.hermeslive.service.ResultNotifications
 
 /**
  * How Hermes Live is opened, read from the intent (contract names are final).
@@ -13,6 +15,8 @@ import com.folio.hermeslive.call.CallRequest
  * | shortcuts TALK / TALK_MUTED / NEW_CONVERSATION | starts a call (muted / fresh conversation) |
  * | `ASSIST`, `VOICE_COMMAND` (headset long press), the QS tile | starts a call, over the lock screen |
  * | `SEND` text/plain (share sheet) | starts a call with the shared text as the first request |
+ * | `action.MEMO` (Memo shortcut), or the tile with `extra.MEMO` (offline) | starts a Bill call in memo mode (R-OFF-2) |
+ * | `action.OPEN_TASK` + `extra.TASK_ID` (a result notification's Open) | opens Bill's screen on that task, no call |
  */
 object LiveIntents {
     const val ACTION_CALL = "com.folio.hermeslive.action.CALL"
@@ -23,8 +27,16 @@ object LiveIntents {
     const val ACTION_NEW_CONVERSATION = "com.folio.hermeslive.action.NEW_CONVERSATION"
     const val ACTION_TILE = "com.folio.hermeslive.action.TILE"
 
-    /** [request]: the call to start (null: just open). [onlyIfStartOnOpen]: obey the setting. [wake]: show over the lock screen. */
-    data class Launch(val request: CallRequest?, val onlyIfStartOnOpen: Boolean = false, val wake: Boolean = false)
+    /**
+     * [request]: the call to start (null: just open). [onlyIfStartOnOpen]: obey the setting.
+     * [wake]: show over the lock screen. [openTaskId]: show Bill's screen on this task (no call).
+     */
+    data class Launch(
+        val request: CallRequest?,
+        val onlyIfStartOnOpen: Boolean = false,
+        val wake: Boolean = false,
+        val openTaskId: String? = null,
+    )
 
     fun parse(intent: Intent?): Launch {
         val action = intent?.action ?: return Launch(null)
@@ -36,7 +48,9 @@ object LiveIntents {
             ACTION_NEW_CONVERSATION -> Launch(CallRequest(newConversation = true, entry = "shortcut"))
             Intent.ACTION_ASSIST -> Launch(CallRequest(entry = "assist"), wake = true)
             Intent.ACTION_VOICE_COMMAND -> Launch(CallRequest(entry = "headset"), wake = true)
-            ACTION_TILE -> Launch(CallRequest(entry = "tile"), wake = true)
+            ACTION_TILE -> Launch(CallRequest(entry = "tile", memo = MemoEntry.isMemo(intent)), wake = true)
+            MemoEntry.ACTION_MEMO -> Launch(CallRequest(entry = "memo", memo = true))
+            ResultNotifications.ACTION_OPEN_TASK -> Launch(null, openTaskId = intent.getStringExtra(ResultNotifications.EXTRA_TASK_ID)?.ifBlank { null })
             Intent.ACTION_SEND -> {
                 val text = listOfNotNull(intent.getStringExtra(Intent.EXTRA_SUBJECT), intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString())
                     .joinToString("\n").trim().take(MAX_SHARED_CHARS)

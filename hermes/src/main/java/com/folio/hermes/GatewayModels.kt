@@ -47,6 +47,18 @@ enum class PromptSurface(val wire: String) {
     VoiceLive("voice-live"),
 }
 
+/** The server's `display.busy_input_mode`: what a `prompt.submit` to a busy session does. */
+enum class BusyMode(val wire: String) {
+    /** Redirect the live turn (the server default). */
+    Interrupt("interrupt"),
+
+    /** Run after the live turn. */
+    Queue("queue"),
+
+    /** Inject into the live turn as a steer. */
+    Steer("steer"),
+}
+
 /** Options for `session.create`. Unset fields are omitted so the server's own defaults apply. */
 data class SessionOptions(
     /** Shown in the dashboard's session list. */
@@ -73,7 +85,17 @@ data class ResumedSession(
     val status: String,
     val messageCount: Int,
     val openRequests: Int,
+    /** The transcript as the server shows it; empty unless asked for (`omit_messages: false`). */
+    val messages: List<SessionMessage> = emptyList(),
+    /** User text the server holds but has not stored as a message yet: the live turn's (`inflight`) and the next queued one (`queued`). */
+    val pendingUserText: List<String> = emptyList(),
 )
+
+/** One transcript row from `session.resume` (`messages[]`: `role` and `text`; tool rows have no text). */
+data class SessionMessage(val role: String, val text: String)
+
+/** `session.resume` answered 4007: the server has no such stored session (never prompted, or deleted). */
+val HermesRpcException.isUnknownSession: Boolean get() = code == 4007
 
 /** What `prompt.submit` did with the text. */
 enum class SubmitStatus {

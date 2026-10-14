@@ -287,7 +287,7 @@ private fun CardFrame(content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
-private fun ApprovalCardView(card: ApprovalCard, onApprove: (String, ApprovalChoice) -> Unit, more: Int) {
+internal fun ApprovalCardView(card: ApprovalCard, onApprove: (String, ApprovalChoice) -> Unit, more: Int) {
     val request = card.request
     CardFrame {
         Text("HERMES ASKS FIRST", style = LabelStyle, color = Ember)
@@ -322,7 +322,7 @@ private fun choiceLabel(choice: ApprovalChoice) = when (choice) {
 }
 
 @Composable
-private fun ClarifyCardView(card: ClarifyCard, onClarify: (String, Map<String, String?>) -> Unit) {
+internal fun ClarifyCardView(card: ClarifyCard, onClarify: (String, Map<String, String?>) -> Unit) {
     val question = card.request.questions.firstOrNull() ?: return
     var typed by remember(card.id) { mutableStateOf("") }
     CardFrame {

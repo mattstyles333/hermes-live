@@ -2,6 +2,7 @@ package com.folio.hermes
 
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -80,10 +81,15 @@ class HermesGatewayTest {
         assertFalse(gateway.isRunning("s1"))
         gateway.submitPrompt("s1", "hi")
         assertTrue(gateway.isRunning("s1"))
+        // The gateway sets the running flag before it emits the event, so the event is the sync point.
+        val completed = async(start = CoroutineStart.UNDISPATCHED) { gateway.events.filterIsInstance<GatewayEvent.MessageComplete>().first() }
         socket.event("message.complete", "s1", """{"text":"done"}""")
-        withTimeout(2_000) { while (gateway.isRunning("s1")) kotlinx.coroutines.delay(5) }
+        completed.await()
+        assertFalse(gateway.isRunning("s1"))
+        val started = async(start = CoroutineStart.UNDISPATCHED) { gateway.events.filterIsInstance<GatewayEvent.MessageStart>().first() }
         socket.event("message.start", "s1")
-        withTimeout(2_000) { while (!gateway.isRunning("s1")) kotlinx.coroutines.delay(5) }
+        started.await()
+        assertTrue(gateway.isRunning("s1"))
     }
 
     @Test fun expiredBearerRefreshesOnceForTheTicket() = test {
@@ -124,6 +130,28 @@ class HermesGatewayTest {
         gateway.connection.first { it is GatewayConnection.Ready && it.generation > first.generation }
     }
 
+    /**
+     * A call made the moment a drop fails the previous one waits for the next connection; it
+     * does not fail at once on the old Ready state. Unconfined forces the window a busy CI runner
+     * hit by chance: the second call runs inside the drop's own cleanup, before the connection
+     * loop has moved off Ready.
+     */
+    @Test fun aCallMadeAsADropFailsTheLastOneWaitsForTheNextConnection() = test {
+        val first = gateway.awaitReady()
+        val socket = fake.nextSocket()
+        val next = async(Dispatchers.Unconfined) {
+            val lost = runCatching { gateway.call("session.list", JsonObject(emptyMap())) }
+            lost.exceptionOrNull() to gateway.call(FakeHermesServer.FENCE, JsonObject(emptyMap()))
+        }
+        socket.nextCall("session.list")
+        socket.ws.close(1001, "going away")
+        val (lost, answer) = next.await()
+        assertTrue(lost.toString(), lost is GatewayUnavailableException)
+        assertEquals(JsonObject(emptyMap()), answer)
+        val now = gateway.connection.value as GatewayConnection.Ready
+        assertTrue("answered on the new connection", now.generation > first.generation)
+    }
+
     @Test fun refusedHandshakesStopAfterTheLimit() = test {
         fake.refuseUpgrade = true
         val stopped = gateway.run {
@@ -137,9 +165,9 @@ class HermesGatewayTest {
     @Test fun eventsAreTyped() = test {
         gateway.awaitReady()
         val socket = fake.nextSocket()
-        val collected = async { gateway.events.filterIsInstance<GatewayEvent.MessageComplete>().first() }
-        val start = async { gateway.events.filterIsInstance<GatewayEvent.ToolStart>().first() }
-        kotlinx.coroutines.delay(100)
+        // UNDISPATCHED: both collectors are subscribed before the server sends anything.
+        val collected = async(start = CoroutineStart.UNDISPATCHED) { gateway.events.filterIsInstance<GatewayEvent.MessageComplete>().first() }
+        val start = async(start = CoroutineStart.UNDISPATCHED) { gateway.events.filterIsInstance<GatewayEvent.ToolStart>().first() }
         socket.event("tool.start", "s1", """{"tool_id":"call_1","name":"web_search","context":"weather","args":{"q":"x"}}""")
         socket.event("message.complete", "s1", """{"text":{"rich":true},"status":"interrupted","usage":{},"response_transformed":true}""")
         assertEquals(GatewayEvent.ToolStart("s1", "call_1", "web_search", "weather"), start.await())
@@ -152,8 +180,7 @@ class HermesGatewayTest {
     @Test fun approvalIsSurfacedAndAnsweredByResponseFrame() = test {
         gateway.awaitReady()
         val socket = fake.nextSocket()
-        val event = async { gateway.events.filterIsInstance<GatewayEvent.ApprovalRequested>().first() }
-        kotlinx.coroutines.delay(100)
+        val event = async(start = CoroutineStart.UNDISPATCHED) { gateway.events.filterIsInstance<GatewayEvent.ApprovalRequested>().first() }
         socket.send(
             """{"jsonrpc":"2.0","id":"srq-0123456789ab","method":"approval","params":{"session_id":"s1","request_id":"apr-1",""" +
                 """"command":"rm -rf ***","description":"Delete build output","choices":["once","session","always","deny"],"tool_name":"terminal"}}""",
@@ -162,8 +189,8 @@ class HermesGatewayTest {
         assertEquals("srq-0123456789ab", request.id)
         assertEquals("apr-1", request.requestId)
         assertEquals(listOf(ApprovalChoice.Once, ApprovalChoice.Session, ApprovalChoice.Always, ApprovalChoice.Deny), request.choices)
-        // Nothing is sent until the user answers.
-        kotlinx.coroutines.delay(200)
+        // Nothing is sent until the user answers: after a fence round trip, anything sent before it has arrived.
+        gateway.fence()
         assertTrue(socket.frames.none { it.string("id") == "srq-0123456789ab" })
         gateway.answerApproval(request, ApprovalChoice.Deny)
         val reply = socket.nextResponse("srq-0123456789ab")
@@ -174,8 +201,7 @@ class HermesGatewayTest {
     @Test fun clarifyAnswersCarryQuestionIds() = test {
         gateway.awaitReady()
         val socket = fake.nextSocket()
-        val event = async { gateway.events.filterIsInstance<GatewayEvent.ClarifyRequested>().first() }
-        kotlinx.coroutines.delay(100)
+        val event = async(start = CoroutineStart.UNDISPATCHED) { gateway.events.filterIsInstance<GatewayEvent.ClarifyRequested>().first() }
         socket.send(
             """{"jsonrpc":"2.0","id":"srq-c1","method":"clarify","params":{"session_id":"s1","questions":[""" +
                 """{"qid":"q1","question":"Which repo?","choices":["a","b"],"multi_select":false},{"qid":"q2","question":"Why?"}]}}""",
@@ -225,8 +251,7 @@ class HermesGatewayTest {
         assertEquals(CreatedSession("ab12cd34", "20261012_101010_abcdef", "m1"), created)
         assertEquals("""{"title":"Folio"}""", socket.nextCall("session.create")["params"].toString())
 
-        val redelivered = async { gateway.events.filterIsInstance<GatewayEvent.ApprovalRequested>().first() }
-        kotlinx.coroutines.delay(100)
+        val redelivered = async(start = CoroutineStart.UNDISPATCHED) { gateway.events.filterIsInstance<GatewayEvent.ApprovalRequested>().first() }
         val resumed = gateway.resumeSession(created.storedSessionId)
         assertEquals("ef56", resumed.sessionId)
         assertTrue(resumed.running)

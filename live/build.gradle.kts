@@ -48,8 +48,11 @@ android {
         applicationId = "com.folio.hermeslive"
         minSdk = 31
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.0.2"
+        versionCode = 4
+        versionName = "1.1.0"
+        // Instrumented tests (S-C audio and STT, on the emulator). Long corpus benches run only
+        // with the instrumentation argument bench=true (see src/androidTest/README.md).
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -76,8 +79,9 @@ android {
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
+                "proguard-sherpa.pro",
             )
-            // The S23 is arm64; the release APK carries only that WebRTC build.
+            // The S23 is arm64; the release APK carries only that WebRTC and sherpa-onnx build.
             ndk { abiFilters += "arm64-v8a" }
         }
         debug {
@@ -87,6 +91,27 @@ android {
             // x86_64 for the emulator.
             ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         }
+        // Release-like (R8, shrink, the release keep rules) but debug-signed, with x86_64, beside
+        // the debug app (`.staging`): proves R8 + sherpa's JNI + the cascade on the emulator.
+        // Never shipped; no diagnostics; its BuildHooks only add the fake Hermes address.
+        create("staging") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".staging"
+            versionNameSuffix = "-staging"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            buildConfigField("String", "DIAGNOSTICS_URL", "\"\"")
+            ndk {
+                abiFilters.clear()
+                abiFilters += listOf("arm64-v8a", "x86_64")
+            }
+        }
+    }
+
+    sourceSets {
+        // src/hooks: the corpus audio source and the capturing output (test input, never in release).
+        getByName("debug").kotlin.srcDir("src/hooks/java")
+        getByName("staging").kotlin.srcDir("src/hooks/java")
     }
 
     compileOptions {
@@ -102,6 +127,11 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            // sherpa-onnx's C and C++ API libraries: only libsherpa-onnx-jni.so (+ onnxruntime) is
+            // loaded from Kotlin, and it does not link them (readelf NEEDED, v1.13.8).
+            excludes += listOf("**/libsherpa-onnx-c-api.so", "**/libsherpa-onnx-cxx-api.so")
         }
     }
 
@@ -129,20 +159,60 @@ dependencies {
     // WebRTC for the GPT-Live peer connection (Google's libwebrtc, prebuilt by Stream). Inline:
     // only :live uses it, and Folio builds :hermes against its own copy of the catalog.
     implementation("io.getstream:stream-webrtc-android:1.3.10")
+    // On-device speech-to-text (S-C: Silero VAD, streaming Zipformer, offline Parakeet) and the
+    // tar.bz2 model archives ModelManager unpacks. Inline, like WebRTC: only :live uses them.
+    implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:v1.13.8")
+    implementation("org.apache.commons:commons-compress:1.28.0")
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
     testImplementation(platform(libs.androidx.compose.bom))
     testImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test:rules:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
 }
 
 afterEvaluate {
+    // A plain Boolean, so the configuration cache stores no script object.
+    val signable = canSignRelease
     tasks.named("assembleRelease").configure {
         doFirst {
-            check(canSignRelease) {
+            check(signable) {
                 "Release builds must be signed. Copy keystore.properties.example to keystore.properties, or set FOLIO_STORE_FILE, FOLIO_STORE_PASSWORD, and FOLIO_KEY_PASSWORD."
             }
         }
     }
+}
+
+// Unit tests in parallel JVMs (test-shape plan): half the cores, at most 8. forkEvery stays unset,
+// so Robolectric reuses its sandbox within a fork.
+tasks.withType<Test>().configureEach {
+    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 8)
+    maxHeapSize = "1g"
+}
+
+// The screenshot renders are not tests: they leave Tier 0 (`test`) and run on their own when the
+// UI changes (`./gradlew :live:renderScreenshots`). `SmokeRenderTest` keeps one fast render in Tier 0.
+val screenshotRenders = listOf("*.ScreenshotRender", "*.CascadeScreenshotRender")
+tasks.withType<Test>().matching { it.name == "testDebugUnitTest" || it.name == "testReleaseUnitTest" || it.name == "testStagingUnitTest" }
+    .configureEach { filter { screenshotRenders.forEach { excludeTestsMatching(it) } } }
+
+tasks.register<Test>("renderScreenshots") {
+    description = "Renders the screens to PNGs (build/screenshots; CASCADE_SCREENSHOTS_DIR for the committed cascade copies)."
+    group = "verification"
+    // The unit tests' own classes and classpath (their build dependencies, not the test task itself).
+    val unit = tasks.named<Test>("testDebugUnitTest").get()
+    testClassesDirs = unit.testClassesDirs
+    classpath = unit.classpath
+    filter { screenshotRenders.forEach { includeTestsMatching(it) } }
+    // Robolectric reads the merged resources and manifest from the same config as the unit tests.
+    jvmArgumentProviders.addAll(unit.jvmArgumentProviders)
+    systemProperties(unit.systemProperties)
+    maxHeapSize = "2g"
+    outputs.upToDateWhen { false }
 }

@@ -73,6 +73,9 @@ class HermesGateway(
     @Volatile
     private var live: Conn? = null
 
+    @Volatile
+    private var busyModeCache: Pair<Long, BusyMode?>? = null
+
     /** Connection state. */
     val connection: StateFlow<GatewayConnection> = _connection.asStateFlow()
 
@@ -114,27 +117,34 @@ class HermesGateway(
      * [HermesAuthException.SignInRequired] when there is no session, or
      * [GatewayUnavailableException] when it does not get ready within [timeoutMs].
      */
-    suspend fun awaitReady(timeoutMs: Long = config.connectTimeoutMs): GatewayConnection.Ready {
-        (_connection.value as? GatewayConnection.Ready)?.let { if (live != null) return it }
+    suspend fun awaitReady(timeoutMs: Long = config.connectTimeoutMs): GatewayConnection.Ready = awaitLive(timeoutMs).readyState!!
+
+    /**
+     * The open connection, once [connection] is Ready for it. A dropped socket clears [live]
+     * before its waiting calls fail, while [connection] still says Ready until the loop moves on:
+     * that stale Ready is not ready, so a call made in that moment waits for the next connection.
+     */
+    private suspend fun awaitLive(timeoutMs: Long): Conn {
+        liveFor(_connection.value)?.let { return it }
         connect()
+        var conn: Conn? = null
         val state = withTimeoutOrNull(timeoutMs) {
-            _connection.first { it is GatewayConnection.Ready || it is GatewayConnection.Stopped }
+            _connection.first { state ->
+                conn = liveFor(state)
+                conn != null || state is GatewayConnection.Stopped
+            }
         } ?: throw GatewayUnavailableException("Hermes did not answer in time.")
-        return when (state) {
-            is GatewayConnection.Ready -> state
-            is GatewayConnection.Stopped ->
-                if (state.signInRequired) throw HermesAuthException.SignInRequired(state.reason)
-                else throw GatewayUnavailableException(state.reason)
-            else -> throw GatewayUnavailableException("Hermes is not connected.")
-        }
+        conn?.let { return it }
+        if (state is GatewayConnection.Stopped && state.signInRequired) throw HermesAuthException.SignInRequired(state.reason)
+        throw GatewayUnavailableException((state as? GatewayConnection.Stopped)?.reason ?: "Hermes is not connected.")
     }
 
+    /** [live] when [state] is its Ready state; null for any other state, or a Ready the socket has left. */
+    private fun liveFor(state: GatewayConnection): Conn? = live?.takeIf { it.readyState == state }
+
     /** Raw JSON-RPC call. Returns `result`; throws [HermesRpcException] for an `error` reply. */
-    suspend fun call(method: String, params: JsonObject, timeoutMs: Long = config.rpcTimeoutMs): JsonElement {
-        awaitReady()
-        val conn = live ?: throw GatewayUnavailableException("Hermes is not connected.")
-        return rawCall(conn, method, params, timeoutMs)
-    }
+    suspend fun call(method: String, params: JsonObject, timeoutMs: Long = config.rpcTimeoutMs): JsonElement =
+        rawCall(awaitLive(config.connectTimeoutMs), method, params, timeoutMs)
 
     /** `session.create`. Keep [CreatedSession.storedSessionId] to resume later. */
     suspend fun createSession(options: SessionOptions = SessionOptions()): CreatedSession {
@@ -155,12 +165,14 @@ class HermesGateway(
     /**
      * `session.resume {session_id: stored, omit_messages: true}`: bind a stored session to this
      * socket (returns the live runtime id, possibly new). Unanswered approval/clarify requests in
-     * the reply are re-delivered on [events].
+     * the reply are re-delivered on [events]. With [withMessages] the transcript comes too
+     * ([ResumedSession.messages], images as `[image]`), to read how the last turn ended.
      */
-    suspend fun resumeSession(storedSessionId: String, profile: String? = null): ResumedSession {
+    suspend fun resumeSession(storedSessionId: String, profile: String? = null, withMessages: Boolean = false): ResumedSession {
         val params = buildJsonObject {
             put("session_id", storedSessionId)
-            put("omit_messages", true)
+            put("omit_messages", !withMessages)
+            if (withMessages) put("inline_images", false)
             profile?.let { put("profile", it) }
         }
         val result = call("session.resume", params).jsonObject
@@ -174,18 +186,24 @@ class HermesGateway(
             status = result.string("status") ?: "idle",
             messageCount = result.long("message_count")?.toInt() ?: 0,
             openRequests = open.size,
+            messages = (result["messages"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+                .mapNotNull { m -> m.string("role")?.let { SessionMessage(it, m.string("text").orEmpty()) } },
+            pendingUserText = listOfNotNull(result.obj("inflight")?.string("user"), result.obj("queued")?.string("user")).filter { it.isNotBlank() },
         )
     }
 
     /**
      * `prompt.submit`. [surface] [PromptSurface.VoiceLive] marks a GPT-Live delegation and
      * [voiceContext] (the recent spoken exchange, ≤6000 chars) rides the model input only.
+     * [queued] sends `queued: true`: on a busy session the text runs after the current turn and
+     * never becomes a live correction, whatever the server's busy mode (omitted when false).
      */
     suspend fun submitPrompt(
         sessionId: String,
         text: String,
         surface: PromptSurface? = null,
         voiceContext: String? = null,
+        queued: Boolean = false,
     ): PromptSubmitResult {
         val params = buildJsonObject {
             put("session_id", sessionId)
@@ -194,9 +212,28 @@ class HermesGateway(
                 put("surface", surface.wire)
                 if (!voiceContext.isNullOrEmpty()) put("voice_context", voiceContext.take(6_000))
             }
+            if (queued) put("queued", true)
         }
         val result = call("prompt.submit", params, config.promptSubmitTimeoutMs).jsonObject
         return PromptSubmitResult(GatewayFrames.submitStatus(result), result)
+    }
+
+    /**
+     * The server's `display.busy_input_mode` (`interrupt`, `queue` or `steer`), read with
+     * `config.get {key: "busy"}`. Read-only: this client never changes server config. Null when
+     * the server does not say (older server, error, or a reply shape this client does not know);
+     * callers then treat a redirect as interrupt-then-submit. Cached per connection.
+     */
+    suspend fun busyMode(): BusyMode? {
+        val ready = awaitReady()
+        busyModeCache?.let { (gen, mode) -> if (gen == ready.generation) return mode }
+        val mode = try {
+            GatewayFrames.busyMode(call("config.get", buildJsonObject { put("key", "busy") }))
+        } catch (e: HermesRpcException) {
+            null
+        }
+        busyModeCache = ready.generation to mode
+        return mode
     }
 
     /** `session.interrupt`. Returns the server's status (`interrupted`, or `not_interrupted`). */
@@ -224,8 +261,7 @@ class HermesGateway(
     suspend fun cancelClarify(request: ClarifyRequest) = respond(request.id, JsonObject(emptyMap()))
 
     private suspend fun respond(id: String, result: JsonObject) {
-        awaitReady()
-        val conn = live ?: throw GatewayUnavailableException("Hermes is not connected.")
+        val conn = awaitLive(config.connectTimeoutMs)
         if (!conn.ws.send(GatewayFrames.result(JsonPrimitive(id), result))) {
             throw GatewayUnavailableException("Hermes connection closed before the answer was sent.")
         }
@@ -259,6 +295,9 @@ class HermesGateway(
         val ready = CompletableDeferred<String>()
         val closed = CompletableDeferred<Closed>()
         val lastInbound = AtomicLong(System.nanoTime())
+
+        /** Set once, before this connection is published as [live] and [connection] says Ready. */
+        @Volatile var readyState: GatewayConnection.Ready? = null
     }
 
     private data class Closed(val reason: String, val handshakeCode: Int?)
@@ -362,8 +401,10 @@ class HermesGateway(
                 // An older server without the method still works; it just cannot send approvals here.
                 if (e.code != GatewayFrames.METHOD_NOT_FOUND) throw e
             }
+            val ready = GatewayConnection.Ready(generation.incrementAndGet(), epoch)
+            conn.readyState = ready
             live = conn
-            _connection.value = GatewayConnection.Ready(generation.incrementAndGet(), epoch)
+            _connection.value = ready
             val heartbeat = scope.launch { heartbeat(conn) }
             val closed = try {
                 conn.closed.await()
