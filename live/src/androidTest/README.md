@@ -81,7 +81,7 @@ Other emulator classes (run one at a time with `am instrument -e class …`, nev
 `connectedDebugAndroidTest`, which runs S-C's model suite):
 - `service.OffCallBackgroundStartTest` with `-e offcall true` (instrumented; the process may get
   the shell's exemptions). The probe without instrumentation:
-  `am start -n com.folio.hermeslive/.lab.SttLabActivity --ez probe_hold true`, Home, screen off,
+  `am start -n com.folio.hermeslive/.probe.ProbeActivity --ez probe_hold true`, Home, screen off,
   wait 15 s, `am broadcast -n com.folio.hermeslive/.probe.ProbeReceiver -a com.folio.hermeslive.probe.OFFCALL`,
   then logcat `OFFCALL_PROBE`.
 - Staging (R8): `adb shell am start -n com.folio.hermeslive.staging/com.folio.hermeslive.smoke.StagingSmokeActivity --es wav e01-sarah.wav`

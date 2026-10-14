@@ -40,3 +40,9 @@ tasks.withType<Test>().configureEach {
     inputs.file(serverDir.file("fake_hermes.py")).withPropertyName("fakeHermesMain")
     systemProperty("fakehermes.dir", serverDir.asFile.absolutePath)
 }
+
+// Unit tests in parallel JVMs (test-shape plan): half the cores, at most 8.
+tasks.withType<Test>().configureEach {
+    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 8)
+    maxHeapSize = "1g"
+}

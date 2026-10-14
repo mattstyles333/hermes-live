@@ -1,7 +1,7 @@
 package com.folio.hermeslive.stt
 
 import com.folio.hermeslive.audio.AudioSource
-import com.folio.hermeslive.lab.WavPcm
+import com.folio.hermeslive.hooks.WavPcm
 import java.io.File
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.TimeUnit

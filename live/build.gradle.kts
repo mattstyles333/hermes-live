@@ -178,11 +178,41 @@ dependencies {
 }
 
 afterEvaluate {
+    // A plain Boolean, so the configuration cache stores no script object.
+    val signable = canSignRelease
     tasks.named("assembleRelease").configure {
         doFirst {
-            check(canSignRelease) {
+            check(signable) {
                 "Release builds must be signed. Copy keystore.properties.example to keystore.properties, or set FOLIO_STORE_FILE, FOLIO_STORE_PASSWORD, and FOLIO_KEY_PASSWORD."
             }
         }
     }
+}
+
+// Unit tests in parallel JVMs (test-shape plan): half the cores, at most 8. forkEvery stays unset,
+// so Robolectric reuses its sandbox within a fork.
+tasks.withType<Test>().configureEach {
+    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 8)
+    maxHeapSize = "1g"
+}
+
+// The screenshot renders are not tests: they leave Tier 0 (`test`) and run on their own when the
+// UI changes (`./gradlew :live:renderScreenshots`). `SmokeRenderTest` keeps one fast render in Tier 0.
+val screenshotRenders = listOf("*.ScreenshotRender", "*.CascadeScreenshotRender")
+tasks.withType<Test>().matching { it.name == "testDebugUnitTest" || it.name == "testReleaseUnitTest" || it.name == "testStagingUnitTest" }
+    .configureEach { filter { screenshotRenders.forEach { excludeTestsMatching(it) } } }
+
+tasks.register<Test>("renderScreenshots") {
+    description = "Renders the screens to PNGs (build/screenshots; CASCADE_SCREENSHOTS_DIR for the committed cascade copies)."
+    group = "verification"
+    // The unit tests' own classes and classpath (their build dependencies, not the test task itself).
+    val unit = tasks.named<Test>("testDebugUnitTest").get()
+    testClassesDirs = unit.testClassesDirs
+    classpath = unit.classpath
+    filter { screenshotRenders.forEach { includeTestsMatching(it) } }
+    // Robolectric reads the merged resources and manifest from the same config as the unit tests.
+    jvmArgumentProviders.addAll(unit.jvmArgumentProviders)
+    systemProperties(unit.systemProperties)
+    maxHeapSize = "2g"
+    outputs.upToDateWhen { false }
 }

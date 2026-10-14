@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Debug builds only (spike S-C0): the STT Lab. Release builds don't merge this file. -->
+<!-- Debug builds only: test probes and seams. Release builds don't merge this file. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
@@ -33,17 +33,10 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Debug probe: whether the off-call service may start after hang-up." />
         </service>
+        <!-- Off-call start probe: the visible activity the microphone service starts from. No launcher entry. -->
         <activity
-            android:name=".lab.SttLabActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
+            android:name=".probe.ProbeActivity"
             android:exported="true"
-            android:label="@string/stt_lab_label"
-            android:taskAffinity="com.folio.hermeslive.lab"
-            android:windowSoftInputMode="adjustResize">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+            android:taskAffinity="com.folio.hermeslive.probe" />
     </application>
 </manifest>
