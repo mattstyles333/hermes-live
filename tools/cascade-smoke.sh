@@ -5,6 +5,8 @@
 #
 #   OPENROUTER_API_KEY=… tools/cascade-smoke.sh [out-dir]
 #   DRY_RUN=1 tools/cascade-smoke.sh [out-dir]    # no key, no OpenRouter request: plumbing only
+#   SKIP_BUILD=1 …                                 # use the APKs already built (tools/release-check.sh)
+#   FAKE_HERMES_PORT=… …                           # the fake Hermes's port (default 18119; started here if not up)
 #
 # Keeps the debug app installed (install -r: the speech models stay). Writes bill.json (timings,
 # no transcripts), the fake's prompt count, a mid-task screenshot and a 45 s screen recording
@@ -34,7 +36,7 @@ else
   echo "Using the fake Hermes already on :$PORT (not reset; its prompt counts include earlier runs)." >&2
 fi
 
-(cd "$ROOT" && ./gradlew -q :live:assembleDebug :live:assembleDebugAndroidTest)
+if [[ -z ${SKIP_BUILD:-} ]]; then (cd "$ROOT" && ./gradlew -q :live:assembleDebug :live:assembleDebugAndroidTest); fi
 "${ADB[@]}" install -r -t "$ROOT/live/build/outputs/apk/debug/live-debug.apk" >/dev/null
 "${ADB[@]}" install -r -t "$ROOT/live/build/outputs/apk/androidTest/debug/live-debug-androidTest.apk" >/dev/null
 
@@ -42,7 +44,7 @@ fi
 rec=$!
 set +e
 "${ADB[@]}" shell am instrument -w -e class com.folio.hermeslive.smoke.BillSmokeTest \
-  "${KEYARGS[@]}" com.folio.hermeslive.test/androidx.test.runner.AndroidJUnitRunner >"$OUT/instrument.txt" 2>&1
+  -e hermesUrl "http://10.0.2.2:$PORT" "${KEYARGS[@]}" com.folio.hermeslive.test/androidx.test.runner.AndroidJUnitRunner >"$OUT/instrument.txt" 2>&1
 status=$?
 set -e
 wait $rec 2>/dev/null || true
