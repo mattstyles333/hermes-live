@@ -146,6 +146,8 @@ class CascadeCore private constructor(
             "start.one", "start.lookup", "start.big", "start.parallel", "start.carry_on",
             "ack.do", "ack.understood", "ack.neutral", "status.working", "status.summary",
             "update.queued", "result.back", "result.found", "wait.signal", "cancel.one", "error.offline",
+            // The goodbye plays to the end at hang-up (End button too): it must be a cache hit.
+            "end.bye", "end.bye_tasks",
         )
 
         /** The cascade env: CEO routing on the durable seams, sharing one [memo] (the default `:live` env). */

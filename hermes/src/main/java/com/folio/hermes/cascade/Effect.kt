@@ -1,5 +1,7 @@
 package com.folio.hermes.cascade
 
+import com.folio.hermes.openrouter.CleanupInput
+
 /** A named timer. [seq] makes it unique per owner (a pause, a turn): a fired timer whose seq is stale is dropped. */
 data class Timer(val name: String, val seq: Long)
 
@@ -93,6 +95,12 @@ sealed interface Effect {
     // ── speech-to-text ──────────────────────────────────────────────────────────────────────
     /** Run the accurate pass for committed turn [turnId] (R-STT-2). Result: [Event.AccurateFinal]. */
     data class AccuratePass(val turnId: String) : Effect
+
+    /**
+     * Clean up committed turn [turnId]'s transcript ([input], text only), within
+     * `cleanupWaitMs`. Result: [Event.Cleaned]. Additive (cleanup slice).
+     */
+    data class Cleanup(val turnId: String, val input: CleanupInput) : Effect
 
     /** Forget the audio held for turn [turnId]'s accurate pass (it was ignored or never answered; `SpeechToText.drop`). */
     data class DropSpeech(val turnId: String) : Effect

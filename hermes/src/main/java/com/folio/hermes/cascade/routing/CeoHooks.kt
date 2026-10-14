@@ -25,6 +25,7 @@ import com.folio.hermes.cascade.TurnEvent
 import com.folio.hermes.cascade.Tx
 import com.folio.hermes.cascade.WriterJob
 import com.folio.hermes.cascade.WriterOwner
+import com.folio.hermes.cascade.cleanup.TranscriptCleanup
 import com.folio.hermes.cascade.writer.BriefTemplate
 import com.folio.hermes.cascade.writer.CeoPrompts
 import com.folio.hermes.cascade.writer.Repair
@@ -115,14 +116,24 @@ class CeoHooks(private val memo: MemoRouting, private val summaries: BackgroundS
      * already have played.
      */
     override fun accurate(tx: Tx, event: Event.AccurateFinal) {
-        val t = event.transcript ?: return
-        keep(tx, event.turnId, t)
-        val text = t.text.trim().takeIf { t.pass == TranscriptPass.Accurate && it.isNotEmpty() }
-        val update = { a: ActionState ->
-            if (a.turnId != event.turnId) a else a.copy(transcript = t, text = text?.takeIf { AccurateSpan.same(a.text, it) } ?: a.text)
+        // The fast pass's text, before the accurate one replaces it: the cleanup's second recogniser.
+        val fast = tx.s.actions.waiting.firstOrNull { it.turnId == event.turnId }?.text
+        val t = event.transcript
+        if (t != null) {
+            keep(tx, event.turnId, t)
+            val text = t.text.trim().takeIf { t.pass == TranscriptPass.Accurate && it.isNotEmpty() }
+            val update = { a: ActionState ->
+                if (a.turnId != event.turnId) a else a.copy(transcript = t, text = text?.takeIf { AccurateSpan.same(a.text, it) } ?: a.text)
+            }
+            tx.s = tx.s.copy(actions = tx.s.actions.copy(active = tx.s.actions.active?.let(update), waiting = tx.s.actions.waiting.map(update)))
         }
-        tx.s = tx.s.copy(actions = tx.s.actions.copy(active = tx.s.actions.active?.let(update), waiting = tx.s.actions.waiting.map(update)))
+        // The cleanup slice: the turn also waits for its cleanup (the stock line has already played).
+        if (fast != null) TranscriptCleanup.start(tx, event.turnId, fast)
     }
+
+    override fun cleaned(tx: Tx, event: Event.Cleaned) = TranscriptCleanup.cleaned(tx, event)
+
+    override fun jevAnswered(tx: Tx, event: Event.JevAnswered): Boolean = TranscriptCleanup.jevAnswered(tx, event)
 
     override fun taskUpdated(tx: Tx, event: Event.TaskUpdated) {
         Confirmations.taskUpdated(tx, event)

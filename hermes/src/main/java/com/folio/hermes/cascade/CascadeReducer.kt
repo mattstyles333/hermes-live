@@ -72,6 +72,8 @@ class CascadeReducer(val env: CascadeEnv) {
                 // Fast text when the pass gave nothing: the turn goes on either way.
                 openGate(event.turnId, ACCURATE_GATE)
             }
+            // The hook opens its own gate (it may re-ask Jev first).
+            is Event.Cleaned -> env.handlers.hooks.cleaned(this, event)
             is Event.UserSpeech -> cutIn(event.continuousMs)
             is Event.HoldToTalk -> {
                 s = s.copy(transcript = s.transcript.copy(holdToTalk = event.pressed))
@@ -96,7 +98,11 @@ class CascadeReducer(val env: CascadeEnv) {
             is Event.ResumeChosen -> chooseResume(event.choice)
             is Event.TimerFired -> timer(event.timer)
             is Event.JevAnswered ->
-                if (s.flush?.jevSeq == event.seq) flushAnswered(event.result) else turn(TurnRules.answered(s.turn, event.seq, event.result, event.atMs, ask))
+                when {
+                    s.flush?.jevSeq == event.seq -> flushAnswered(event.result)
+                    env.handlers.hooks.jevAnswered(this, event) -> Unit
+                    else -> turn(TurnRules.answered(s.turn, event.seq, event.result, event.atMs, ask))
+                }
             is Event.WriterSentence -> sentence(event.seq, event.text)
             is Event.WriterFinished -> s.writers[event.seq]?.let { writerEnded(it, event.failure) }
             is Event.WriterWrote ->

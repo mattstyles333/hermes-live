@@ -72,6 +72,12 @@ data class LiveSettings(
     val speechRecognition: SpeechRecognition = SpeechRecognition.OnDevice,
     /** The cloud model (a listed one, or a custom OpenRouter id). Used only with [SpeechRecognition.Cloud]. */
     val cloudSttModel: String = CloudSttModels.DEFAULT.id,
+    /**
+     * Clean up transcripts (hub decision 2026-10-14): each committed turn's text goes to the
+     * cleanup model (text only) while online. On device only by default: not when cloud speech
+     * recognition already wrote the words.
+     */
+    val transcriptCleanup: TranscriptCleanupMode = TranscriptCleanupMode.OnDeviceOnly,
 ) {
     /** The same settings with every Voice field inside its range (what is saved and used). */
     fun normalized(): LiveSettings = copy(
@@ -102,6 +108,11 @@ data class LiveSettings(
             accuratePassWaitMs = if (SpeechModelChoice.accurate(n).bytes > SpeechModelChoice.FALLBACK_ACCURATE.bytes) HIGH_ACCURACY_WAIT_MS else base.accuratePassWaitMs,
             // On device: null, so no audio request is ever made.
             cloudSttModel = if (n.speechRecognition == SpeechRecognition.Cloud) n.cloudSttModel else null,
+            cleanup = when (n.transcriptCleanup) {
+                TranscriptCleanupMode.OnDeviceOnly -> n.speechRecognition == SpeechRecognition.OnDevice
+                TranscriptCleanupMode.Always -> true
+                TranscriptCleanupMode.Off -> false
+            },
         )
     }
 
@@ -175,6 +186,23 @@ enum class SpeechRecognition(val wire: String) {
 
     companion object {
         fun parse(wire: String?): SpeechRecognition = entries.firstOrNull { it.wire == wire } ?: OnDevice
+    }
+}
+
+/** When Bill's transcripts are cleaned up (Settings › Voice › Clean up transcripts). [wire] is what is saved. */
+enum class TranscriptCleanupMode(val wire: String) {
+    /** Only when the phone wrote the words (the default): cloud speech recognition needs no cleanup. */
+    OnDeviceOnly("device"),
+
+    /** Every turn, also with cloud speech recognition. */
+    Always("always"),
+
+    /** Never: the words go as heard. */
+    Off("off"),
+    ;
+
+    companion object {
+        fun parse(wire: String?): TranscriptCleanupMode = entries.firstOrNull { it.wire == wire } ?: OnDeviceOnly
     }
 }
 

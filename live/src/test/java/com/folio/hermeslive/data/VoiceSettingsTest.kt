@@ -32,8 +32,8 @@ class VoiceSettingsTest {
     }
 
     @Test fun defaultsMapOntoTheSpecDefaults() {
-        // Parakeet 0.6B by default (the bench): the longer accurate-pass wait; everything else the spec defaults.
-        assertEquals(CascadeSettings(accuratePassWaitMs = 2_500L), LiveSettings().cascadeSettings())
+        // Parakeet 0.6B by default (the bench): the longer accurate-pass wait; on device, so transcript cleanup on; everything else the spec defaults.
+        assertEquals(CascadeSettings(accuratePassWaitMs = 2_500L, cleanup = true), LiveSettings().cascadeSettings())
     }
 
     @Test fun everyVoiceFieldMapsOntoCascadeSettings() {
@@ -149,5 +149,24 @@ class VoiceSettingsTest {
         assertEquals(SpeechRecognition.Cloud, read.speechRecognition)
         assertEquals("x-ai/grok-stt-1.0", read.cloudSttModel)
         assertEquals(SpeechRecognition.OnDevice, SpeechRecognition.parse("bogus"))
+    }
+
+    // ── Transcript cleanup (final slice) ────────────────────────────────────────────────────
+
+    @Test fun cleanupIsOnDeviceOnlyByDefaultAndTheLibraryIsDark() {
+        assertFalse("the library never cleans up unless asked", CascadeSettings().cleanup)
+        assertEquals(TranscriptCleanupMode.OnDeviceOnly, LiveSettings().transcriptCleanup)
+        assertTrue(LiveSettings().cascadeSettings().cleanup)
+        assertFalse("cloud speech recognition wrote the words", LiveSettings(speechRecognition = SpeechRecognition.Cloud).cascadeSettings().cleanup)
+        assertTrue(LiveSettings(speechRecognition = SpeechRecognition.Cloud, transcriptCleanup = TranscriptCleanupMode.Always).cascadeSettings().cleanup)
+        assertFalse(LiveSettings(transcriptCleanup = TranscriptCleanupMode.Off).cascadeSettings().cleanup)
+        assertEquals(1_500L, LiveSettings().cascadeSettings().cleanupWaitMs)
+    }
+
+    @Test fun cleanupIsSavedAndReadBack() {
+        val prefs = context.getSharedPreferences("voice-cleanup-test", Context.MODE_PRIVATE)
+        SettingsStore(prefs).update { it.copy(transcriptCleanup = TranscriptCleanupMode.Off) }
+        assertEquals(TranscriptCleanupMode.Off, SettingsStore(prefs).settings.value.transcriptCleanup)
+        assertEquals(TranscriptCleanupMode.OnDeviceOnly, TranscriptCleanupMode.parse("bogus"))
     }
 }

@@ -124,6 +124,15 @@ interface TurnHooks {
     /** The accurate pass for a turn came back (R-STT-2). Default: nothing waits for it. */
     fun accurate(tx: Tx, event: Event.AccurateFinal) = Unit
 
+    /** A transcript cleanup came back (the cleanup slice). Default: nothing asked for one. */
+    fun cleaned(tx: Tx, event: Event.Cleaned) = Unit
+
+    /**
+     * A Jev answer that is not the turn-taking's or the outbox flush's: true if this hook owned
+     * its seq (the cleanup's re-ask). Checked before the turn-taking sees it. Default: none.
+     */
+    fun jevAnswered(tx: Tx, event: Event.JevAnswered): Boolean = false
+
     /** An approval, clarify or withdrawal from a task (tap only; R-TASK-6). */
     fun taskRequest(tx: Tx, request: TaskRequest) {
         when (request.update) {
