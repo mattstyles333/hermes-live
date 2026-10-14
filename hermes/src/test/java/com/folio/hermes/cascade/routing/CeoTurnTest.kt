@@ -11,6 +11,7 @@ import com.folio.hermes.cascade.Word
 import com.folio.hermes.cascade.answer
 import com.folio.hermes.cascade.budget.CappedJevStateBudget.Companion.size
 import com.folio.hermes.cascade.conversation.ConversationPolicy
+import com.folio.hermes.cascade.writer.Briefs
 import com.folio.hermes.cascade.routing.CeoHarness.Companion.brief
 import com.folio.hermes.cascade.routing.CeoHarness.Companion.briefs
 import com.folio.hermes.openrouter.FailureKind
@@ -25,7 +26,23 @@ class CeoTurnTest {
     private fun newTask(clarity: String = "clear", conf: Double = 0.9) =
         arrayOf("action" to answer("new_task"), "line" to answer("start.one"), "split" to answer("one"), "clarity" to answer(clarity, conf))
 
-    @Test fun keyDoubtAsksOneQuestionThenProceedsWithNotesAfterTheWait() {
+    /** The writer's answer for the doubted turn: one brief, and the word it doubts with Bill's question. */
+    private fun doubted(word: String = "Sapphire", question: String = "Sapphire, right?") =
+        """{"briefs":[${brief("Email Sapphire about forty units.", "supplier email", "emailing Sapphire about forty units")}],""" +
+            """"repaired":"","notes":"","doubt":{"word":"$word","question":"$question"}}"""
+
+    /** A key-doubted new task started, accepted, and everything said so far played. */
+    private fun startDoubted(h: CeoHarness, conf: Double = 0.9): Effect.SubmitTask {
+        h.turn("email Sapphire about forty units", 0, *newTask("key_doubt", conf))
+        h.write(doubted())
+        val submit = h.submits().single()
+        h.accept(submit)
+        h.drain()
+        return submit
+    }
+
+    /** Hub decision 2026-10-14: a key doubt never blocks. The task starts at once; then Bill asks. */
+    @Test fun keyDoubtStartsTheTaskAtOnceThenAsksOneQuestion() {
         val h = CeoHarness()
         h.at(0, Event.SpeechStarted)
         h.at(0, Event.Final("email Sapphire about forty units", listOf(Word("email"), Word("Sapphire", 0.2, listOf("Safilo")), Word("about"), Word("forty"), Word("units"))))
@@ -34,53 +51,106 @@ class CeoTurnTest {
         h.at(600, Event.JevAnswered(call.seq, OpenRouterResult.Ok(mapOf("turn" to answer("done")) + newTask("key_doubt")), 600))
         val commit = h.at(1_000, Event.TimerFired(Timer(com.folio.hermes.cascade.TurnRules.COMMIT, h.s.turn.pauseSeq)))
         assertTrue(CascadeEvent.ClarityDoubt("u1", "key_doubt") in commit.filterIsInstance<Effect.Emit>().map { it.event })
-        assertTrue("the start line waits for the question", commit.none { it is Effect.FetchClip && it.piece.slot == "start.one" })
-        val question = commit.filterIsInstance<Effect.StreamWriter>().single()
-        assertTrue("[Sapphire|Safilo]" in question.prompt)
-        assertTrue(commit.none { it is Effect.Write || it is Effect.SubmitTask })
-        val wait = h.stream("Safilo or Sapphire?").filterIsInstance<Effect.StartTimer>().single { it.timer.name == KeyDoubt.TIMER }
-        assertEquals(8_000L, wait.delayMs)
-        assertTrue(h.effects.none { it is Effect.Write })
-        // Nobody answers: after 8 s the start line plays and the brief goes ahead with notes.
-        h.at(9_000, Event.TimerFired(wait.timer))
-        h.drain()
-        assertEquals(listOf("Safilo or Sapphire?"), h.said().take(1))
-        assertEquals("start.one", h.slotsSaid().last())
-        h.write(briefs(brief("Email Sapphire about forty units.", "supplier email", "emailing Sapphire about forty units")))
+        val write = commit.filterIsInstance<Effect.Write>().single()
+        assertTrue("the brief writer names the doubted word", Briefs.DOUBT in write.prompt)
+        assertTrue("no question before the task", commit.none { it is Effect.StreamWriter })
+        assertTrue("no wait", h.effects.filterIsInstance<Effect.StartTimer>().none { it.timer.name == KeyDoubt.MARK })
+
+        h.write(doubted())
         val text = h.submits().single().text
         assertTrue("As heard: email [Sapphire|Safilo] about forty units" in text)
         assertTrue("Clarity: key_doubt (0.90)" in text)
-        assertTrue("no answer, so going with what was heard" in text)
+        assertTrue(text, "Bill is checking \"Sapphire\" with the user" in text)
+        h.drain()
+        assertEquals("the start line, then the question", "start.one", h.slotsSaid().first())
+        assertEquals("Sapphire, right?", h.said()[1])
+        assertTrue(h.s.marks[KeyDoubt.MARK].orEmpty().isNotEmpty())
     }
 
-    @Test fun anAnswerDuringTheWaitIsFoldedInAtOnce() {
+    @Test fun aCorrectionRedirectsTheTask() {
         val h = CeoHarness()
-        h.turn("email Sapphire about forty units", 0, *newTask("key_doubt"))
-        val wait = h.stream("Safilo or Sapphire?").filterIsInstance<Effect.StartTimer>().single { it.timer.name == KeyDoubt.TIMER }
-        val answerTurn = h.turn("Safilo", 3_000, "action" to answer("reply"), "line" to answer("ack.yes"))
-        assertTrue("the timer fires now", Effect.StartTimer(wait.timer, 0) in answerTurn)
-        val go = h.at(4_000, Event.TimerFired(wait.timer))
-        val write = go.filterIsInstance<Effect.Write>().single()
-        assertTrue("the user answered: \"Safilo\"" in write.prompt)
-        h.write(briefs(brief("Email Safilo about forty units.", "supplier email", "emailing Safilo"), repaired = "email Safilo about forty units"))
-        assertEquals(1, h.submits().size)
-        assertTrue("the user answered \"Safilo\"" in h.submits().single().text)
-        // The answer turn itself did nothing: no reply writer, no second task.
-        assertTrue(h.effects.filterIsInstance<Effect.StreamWriter>().size == 1)
+        startDoubted(h)
+        val fx = h.turn("No, Safilo.", 3_000, "action" to answer("reply"), "line" to answer("ack.no"))
+        val busy = fx.filterIsInstance<Effect.ReadBusyMode>().single()
+        h.on(Event.BusyModeRead(busy.seq, null))
+        assertEquals(2, h.submits().size)
+        val update = h.submits().last()
+        assertEquals("t1", update.taskId)
+        assertFalse("a redirect, not a queued note", update.queued)
+        assertTrue(update.text, "Correction: I asked the user \"Sapphire, right?\" about \"Sapphire\"" in update.text && "\"No, Safilo.\"" in update.text)
+        assertEquals(listOf("t1"), h.s.tasks.tasks.map { it.id })
+        assertTrue(h.s.marks[KeyDoubt.MARK].isNullOrEmpty())
     }
 
-    @Test fun anUnrelatedTurnDuringTheWaitIsItsOwnTask() {
+    @Test fun aConfirmationChangesNothing() {
         val h = CeoHarness()
-        h.turn("email Sapphire about forty units", 0, *newTask("key_doubt"))
-        val wait = h.stream("Safilo or Sapphire?").filterIsInstance<Effect.StartTimer>().single { it.timer.name == KeyDoubt.TIMER }
-        val other = h.turn("also check how many RB2140 frames we have", 3_000, *newTask())
-        assertTrue("the doubted work goes ahead now, unanswered", Effect.StartTimer(wait.timer, 0) in other)
-        h.at(3_100, Event.TimerFired(wait.timer))
-        h.write(briefs(brief("Email Sapphire about forty units.", "supplier email", "emailing Sapphire")))
-        assertTrue("no answer, so going with what was heard" in h.submits().single().text)
+        startDoubted(h)
+        val fx = h.turn("Yes, that's right.", 3_000, "action" to answer("update_task"), "task" to answer("t1"), "update_mode" to answer("redirect"))
+        h.drain()
+        assertEquals("nothing more reaches Hermes", 1, h.submits().size)
+        assertTrue(fx.none { it is Effect.ReadBusyMode || it is Effect.Write || it is Effect.StreamWriter })
+        assertEquals(KeyDoubt.CONFIRMED_SLOT, h.slotsSaid().last())
+        assertTrue(h.s.marks[KeyDoubt.MARK].isNullOrEmpty())
+        // The word itself is a yes too.
+        val h2 = CeoHarness()
+        startDoubted(h2)
+        h2.turn("Sapphire, yeah.", 3_000, "action" to answer("reply"))
+        assertEquals(1, h2.submits().size)
+    }
+
+    @Test fun noAnswerLeavesTheTaskRunningUnchanged() {
+        val h = CeoHarness()
+        startDoubted(h)
+        // Nothing is waiting: no timer, and the task runs on.
+        assertTrue(h.effects.filterIsInstance<Effect.StartTimer>().none { it.timer.name == KeyDoubt.MARK })
+        // A later turn, past the answer window, is its own request.
+        h.turn("check how many RB2140 frames we have", 20_000, *newTask())
         h.write(briefs(brief("Check RB2140 frames.", "stock check", "checking RB2140 frames")))
+        assertEquals(listOf("t1", "t2"), h.submits().map { it.taskId })
         assertEquals(listOf("supplier email", "stock check"), h.s.tasks.tasks.map { it.label })
-        assertFalse("also check" in h.submits().first().text)
+        assertTrue(h.s.marks[KeyDoubt.MARK].isNullOrEmpty())
+    }
+
+    @Test fun aNewRequestRightAfterTheQuestionIsNotAnAnswer() {
+        val h = CeoHarness()
+        startDoubted(h)
+        h.turn("also check how many RB2140 frames we have in the Leeds shop", 3_000, *newTask())
+        h.write(briefs(brief("Check RB2140 frames.", "stock check", "checking RB2140 frames")))
+        assertEquals(listOf("t1", "t2"), h.submits().map { it.taskId })
+        assertTrue(h.submits().none { it.text.startsWith("Correction") })
+    }
+
+    @Test fun noQuestionBelowTheAskFloorOrForAKnownWord() {
+        // Jev's key_doubt at 0.58: notes only.
+        val low = CeoHarness()
+        low.turn("email Sapphire about forty units", 0, *newTask("key_doubt", 0.58))
+        assertFalse(Briefs.DOUBT in low.effects.filterIsInstance<Effect.Write>().single().prompt)
+        low.write(doubted())
+        low.drain()
+        assertTrue("Clarity: key_doubt (0.58)" in low.submits().single().text)
+        assertFalse("Sapphire, right?" in low.said())
+        // In the user's vocabulary: notes only.
+        val vocab = CeoHarness(CascadeSettings(vocabulary = listOf("Sapphire")))
+        startDoubted(vocab)
+        assertFalse("Sapphire, right?" in vocab.said())
+        assertTrue(vocab.s.marks[KeyDoubt.MARK].isNullOrEmpty())
+        // The label of an earlier task: notes only. (This turn's own new label does not count.)
+        val labelled = CeoHarness()
+        labelled.turn("check the Sapphire order", 0, *newTask())
+        labelled.write(briefs(brief("Check the Sapphire order.", "Sapphire order check", "checking it")))
+        labelled.turn("email Sapphire about forty units", 5_000, *newTask("key_doubt"))
+        labelled.write(doubted())
+        labelled.drain()
+        assertEquals(2, labelled.submits().size)
+        assertFalse("Sapphire, right?" in labelled.said())
+    }
+
+    @Test fun scrapThatAfterTheQuestionCancelsTheNewTask() {
+        val h = CeoHarness()
+        startDoubted(h)
+        val fx = h.turn("scrap that", 3_000, "action" to answer("cancel_task"), "task" to answer("none"))
+        assertTrue(Effect.InterruptTask("t1") in fx)
+        assertEquals(1, h.submits().size)
     }
 
     @Test fun writerFixesRepairOnlyDoubtedWords() {
@@ -96,17 +166,6 @@ class CeoTurnTest {
         // "forty" was heard with confidence, so the whole repair is refused and the verbatim text stands.
         assertTrue("Transcript: email Sapphire about forty units" in text)
         assertTrue("repair not applied" in text)
-    }
-
-    @Test fun scrapThatDuringTheWaitDropsIt() {
-        val h = CeoHarness()
-        h.turn("email Sapphire", 0, *newTask("key_doubt"))
-        val wait = h.stream("Safilo or Sapphire?").filterIsInstance<Effect.StartTimer>().single { it.timer.name == KeyDoubt.TIMER }
-        h.turn("scrap that", 3_000, "action" to answer("cancel_task"), "task" to answer("none"))
-        h.at(3_100, Event.TimerFired(wait.timer))
-        h.drain()
-        assertTrue(h.submits().isEmpty())
-        assertTrue("cancel.drop" in h.slotsSaid())
     }
 
     @Test fun garbledSaysClarifyAgainAndMinorDoubtProceedsWithNotes() {

@@ -139,25 +139,25 @@ class CeoActorTest {
         assertEquals("and copy in Tom", rig.hermes.submits.last().text)
     }
 
-    @Test fun keyDoubtAsksThenProceedsAfterTheWait() = rigTest { rig ->
+    @Test fun keyDoubtStartsTheTaskThenAsks() = rigTest { rig ->
         rig.openRouter.jevScripts += FakeOpenRouter.JevScript(
             100,
             ok("action" to answer("new_task"), "line" to answer("start.one"), "clarity" to answer("key_doubt", 0.8)),
         )
-        rig.openRouter.writes = { _, _ -> listOf("Safilo or Sapphire?") }
-        rig.openRouter.plan = { OpenRouterResult.Ok(briefs(brief("Email Sapphire.", "supplier email", "emailing Sapphire"))) }
+        rig.openRouter.plan = {
+            OpenRouterResult.Ok(
+                """{"briefs":[${brief("Email Sapphire.", "supplier email", "emailing Sapphire")}],"doubt":{"word":"Sapphire","question":"Safilo or Sapphire?"}}""",
+            )
+        }
         rig.say("email Sapphire")
         advanceTimeBy(3_000)
         runCurrent()
-        assertTrue(rig.openRouter.clips.contains("Safilo or Sapphire?"))
-        assertTrue("nothing starts while Bill waits for an answer", rig.hermes.submits.isEmpty())
-        assertTrue(rig.events.any { it.second == CascadeEvent.ClarityDoubt("u1", "key_doubt") })
-        advanceTimeBy(5_000)
-        runCurrent()
-        assertTrue(rig.hermes.submits.isEmpty())
-        advanceUntilIdle()
         val submit = rig.hermes.submits.single()
-        assertTrue("no answer, so going with what was heard" in submit.text)
+        assertTrue("the task starts without waiting for an answer", "Clarity: key_doubt (0.80)" in submit.text)
+        assertTrue(rig.openRouter.clips.contains("Safilo or Sapphire?"))
+        assertTrue(rig.events.any { it.second == CascadeEvent.ClarityDoubt("u1", "key_doubt") })
+        advanceUntilIdle()
+        assertEquals("nobody answers: nothing more is sent", 1, rig.hermes.submits.size)
         assertTrue(rig.openRouter.planPrompts.single().contains("Transcript: \"email Sapphire\""))
     }
 

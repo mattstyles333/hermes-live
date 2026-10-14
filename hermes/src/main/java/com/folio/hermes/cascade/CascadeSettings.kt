@@ -34,6 +34,13 @@ data class CascadeSettings(
      * 0 false "done" at 0.60 against 1 at 0.55; 4.6% of true "done" wait for the 2.5 s re-ask).
      */
     val turnDoneFloor: Double = 0.60,
+    /**
+     * A sure goodbye ends the turn (hub decision 2026-10-14): `turn = done` below [turnDoneFloor]
+     * still counts as done when `action = end_call` is at or above this. Only with `turn = done`:
+     * a goodbye Jev judged `ignore` (said to someone else) never hangs up. Short "cheers, bye"
+     * turns no longer wait for the re-ask.
+     */
+    val endCallDoneFloor: Double = 0.85,
     /** Below this, `task` asks which one (unless there is exactly one candidate). R-RT-3. */
     val taskFloor: Double = 0.5,
     /** `ignore` is accepted at or above this. R-RT-3. */
@@ -101,8 +108,15 @@ data class CascadeSettings(
      * F1 on the S-C corpus bench (`hermes-cascade-stt-bench-2026-10-13.md`).
      */
     val uncertainBelow: Double = 0.45,
-    /** After a `key_doubt` question, proceed with notes when the user says nothing for this long. R-STT-5. */
-    val keyDoubtWaitMs: Long = 8_000L,
+    /**
+     * R-STT-5 (hub decision 2026-10-14: a key doubt never blocks). The task starts at once; Bill
+     * then asks one short question. The user's next committed turn counts as its answer only
+     * within this long of the question (wall clock): a correction redirects the task, a yes does
+     * nothing more. Was the 8 s wait before the task started.
+     */
+    val keyDoubtWaitMs: Long = 12_000L,
+    /** Bill asks the key-doubt question only when Jev's `key_doubt` confidence is at least this; below it the notes go to the agent silently. */
+    val keyDoubtAskFloor: Double = 0.6,
     /** User vocabulary for hotwords and writer repair (Settings). R-STT-6, R-STT-7. */
     val vocabulary: List<String> = emptyList(),
     /** Hold-to-talk: commit on release, no pause ring. R-STT-8. */

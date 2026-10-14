@@ -11,7 +11,7 @@ import org.junit.Test
 /**
  * R-Q-3 / R-SPK-2 on the pure reducer, CEO routing, accurate pass on: the stock line plays at
  * commit, while the accurate pass is out; what needs the exact words waits for it and uses them;
- * the §0 ordering stays (a key doubt asks first; a turn behind another action waits its turn).
+ * the §0 ordering stays (a turn behind another action waits its turn; a key doubt no longer holds the line back).
  * The whole call against the fake Hermes is `GoldenCallTest` 1b.
  */
 class FastLineTest {
@@ -80,14 +80,16 @@ class FastLineTest {
         assertTrue(brief.prompt, brief.prompt.contains("Transcript: \"book the Leeds room for Friday at ten\""))
     }
 
-    @Test fun aKeyDoubtAsksFirstSoNoLineAtCommit() {
+    /** A key doubt never blocks (hub decision 2026-10-14): the start line plays at commit and the brief follows the pass. */
+    @Test fun aKeyDoubtStillPlaysTheLineAtCommit() {
         val r = run()
         val commit = r.turn(0, "email Sapphire about forty frames", *newTask, "clarity" to answer("key_doubt", 0.9))
-        assertEquals(emptyList<String>(), lines(commit))
+        assertEquals(listOf("start.one"), lines(commit))
         assertTrue(commit.none { it is Effect.StreamWriter })
         val run = r.at(1_200, Event.AccurateFinal("u1", null))
-        assertTrue("the doubt question is the writer's, after the pass", run.any { it is Effect.StreamWriter })
-        assertEquals(emptyList<String>(), lines(r.effects))
+        val brief = run.filterIsInstance<Effect.Write>().single { it.system == Briefs.SYSTEM }
+        assertTrue("the writer names the doubted word with the brief", Briefs.DOUBT in brief.prompt)
+        assertTrue("no question before the task", run.none { it is Effect.StreamWriter })
     }
 
     @Test fun aTurnBehindAnotherActionKeepsItsPlace() {

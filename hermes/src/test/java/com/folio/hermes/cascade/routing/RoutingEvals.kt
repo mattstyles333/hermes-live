@@ -65,8 +65,9 @@ object RoutingEvals {
 
     /**
      * What the app would actually do with [answers] for [case] (spec v2 §14 item 16): the turn
-     * verdict after `turnDoneFloor` and the ignore floor, then `CeoRouter.decide` (the action
-     * floor, R-RT-5 lines, the single-candidate task rule). Returns the effective choice per
+     * verdict after `turnDoneFloor`, the sure-goodbye rule and the ignore floor, then
+     * `CeoRouter.decide` (the action floor, R-RT-5 lines, the single-candidate task rule) and
+     * `CeoRouter.withWords` ("stop everything" cancels all). Returns the effective choice per
      * question: `turn` (`done`/`keep_listening`/`ignore`), `action` (the route; any clarifying
      * route is `clarify`), `task` (the routed task id, or `none`).
      */
@@ -76,7 +77,9 @@ object RoutingEvals {
             TurnVerdict.Ignore -> CascadeBrain.IGNORE
             TurnVerdict.KeepListening -> "keep_listening"
         }
-        val decision = CeoRouter.decide(state(case, settings), answers, bank)
+        val state = state(case, settings)
+        val words = listOf(case.pending, case.heard).filter { it.isNotBlank() }.joinToString(" ")
+        val decision = CeoRouter.withWords(state, answers, words, CeoRouter.decide(state, answers, bank))
         val action = when (val r = decision.route) {
             Route.Clarify, Route.AskRepeat -> "clarify"
             else -> r.wire

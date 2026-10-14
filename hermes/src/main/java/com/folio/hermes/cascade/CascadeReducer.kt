@@ -117,6 +117,7 @@ class CascadeReducer(val env: CascadeEnv) {
             }
             is Event.TaskInterrupted -> {
                 tasks(s.tasks.interrupted(event.taskId, event.ok))
+                env.handlers.hooks.taskInterrupted(this, event)
                 resume("interrupt:${event.taskId}", ActionResult.Interrupted(event.taskId, event.ok))
             }
             is Event.TaskSessionBound -> s = s.copy(tasks = s.tasks.bound(event.taskId, event.storedSessionId))
@@ -341,8 +342,8 @@ class CascadeReducer(val env: CascadeEnv) {
 
     /**
      * R-STT-2: with [CascadeSettings.accuratePass] on, committed turn [turnId] waits for its
-     * accurate pass (the actor bounds the wait). A turn absorbed into another action (a key-doubt
-     * answer) drops its audio instead: that action already has its transcript.
+     * accurate pass (the actor bounds the wait). A hook that hands back another turn's action
+     * drops this turn's audio instead: that action already has its transcript.
      */
     private fun Tx.accuratePass(turnId: String, action: ActionState): ActionState {
         if (!s.settings.accuratePass) return action
@@ -358,8 +359,8 @@ class CascadeReducer(val env: CascadeEnv) {
      * R-Q-3, R-SPK-2: the stock line plays at commit, from the cache, while the accurate pass is
      * still out (Jev decided from the fast text). Only when nothing is ahead of [a] and the
      * accurate pass is its only gate, and only if its handler plays the line first (R-RT-5, §0:
-     * an update, a key doubt or a memo plays none first). Everything that needs the exact words
-     * (the writer's brief and repair, the submit, the doubt question) still waits for the gate;
+     * an update or a memo plays none first; a key doubt no longer holds it back). Everything that
+     * needs the exact words (the writer's brief and repair, the submit, the doubt question) still waits for the gate;
      * [begin] reuses the reply, and [Tx.play] never plays a turn's line twice.
      */
     private fun Tx.lineFirst(a: ActionState): ActionState {

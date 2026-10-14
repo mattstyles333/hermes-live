@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.folio.hermes.cascade.CascadeEvent
 import com.folio.hermes.cascade.TaskUiStatus
+import com.folio.hermes.cascade.routing.KeyDoubt
 import com.folio.hermes.openrouter.OpenRouter
 import com.folio.hermes.openrouter.SpeechAudio
 import com.folio.hermes.openrouter.SpeechDelivery
@@ -195,7 +196,7 @@ class BillSmokeTest {
             val task = card()!!
             val played = out.played
             val started = at { it is CascadeEvent.TaskStarted && it.id == taskId }!!
-            // The first stock line after speech end (a key doubt's question, the writer's words, plays before it by design).
+            // The first stock line after speech end (the start line; a key doubt's question follows the task start).
             val lineAt = synchronized(events) { events.firstOrNull { (t, e) -> e is CascadeEvent.LinePlayed && t >= speechEnd }?.first }
             val finished = at { it is CascadeEvent.TaskFinished && it.id == taskId }!!
             result
@@ -211,8 +212,11 @@ class BillSmokeTest {
                 .put("speech_end_to_commit_ms", at { it is CascadeEvent.TurnCommitted }!! - speechEnd)
                 .put("speech_end_to_stock_line_ms", lineAt?.let { it - speechEnd })
                 .put("speech_end_to_first_audio_ms", played.firstOrNull()?.let { it.startedAtMs - speechEnd })
-                // Jev's `clarity` when it doubted the words (a choice id, not content): `key_doubt` asks a question first.
+                // Jev's `clarity` when it doubted the words (a choice id, not content). Since 2026-10-14 a
+                // `key_doubt` never blocks: the task starts at once and Bill asks his question after it.
                 .put("clarity_doubt", synchronized(events) { events.firstNotNullOfOrNull { (it.second as? CascadeEvent.ClarityDoubt)?.clarity } })
+                // Bill's key-doubt question is waiting for an answer (nobody answers in the smoke).
+                .put("key_doubt_asked", actor.state.value.marks[KeyDoubt.MARK].orEmpty().isNotEmpty())
                 .put("jev_latency_ms", actor.ui.value.jev.latencyMs)
                 .put("speech_end_to_task_started_ms", started - speechEnd)
                 .put("clip_end_to_commit_ms", at { it is CascadeEvent.TurnCommitted }!! - clipEnd)

@@ -20,15 +20,24 @@ import com.folio.hermes.openrouter.JevAnswer
  * - `enough = line_only` skips the writer only with a stock line and confidence ≥ 0.7.
  */
 object Router {
-    /** R-RT-3: `done` needs `turnDoneFloor` (0.60, §14 item 16); `ignore` is accepted from 0.4; anything else keeps listening. */
+    /**
+     * R-RT-3: `done` needs `turnDoneFloor` (0.60, §14 item 16), or a sure goodbye (`end_call` at
+     * `endCallDoneFloor`, 0.85) with `turn = done` at any confidence; `ignore` is accepted from
+     * 0.4; anything else keeps listening.
+     */
     fun verdict(answers: Map<String, JevAnswer>, settings: CascadeSettings): TurnVerdict {
         val turn = answers[CascadeBrain.TURN] ?: return TurnVerdict.KeepListening
         return when {
             turn.choice == CascadeBrain.DONE && turn.confidence >= settings.turnDoneFloor -> TurnVerdict.Done
+            turn.choice == CascadeBrain.DONE && sureGoodbye(answers, settings) -> TurnVerdict.Done
             turn.choice == CascadeBrain.IGNORE && turn.confidence >= settings.ignoreFloor -> TurnVerdict.Ignore
             else -> TurnVerdict.KeepListening
         }
     }
+
+    /** `action = end_call` at or above `endCallDoneFloor` (hub decision 2026-10-14). */
+    fun sureGoodbye(answers: Map<String, JevAnswer>, settings: CascadeSettings): Boolean =
+        answers[CascadeBrain.ACTION]?.let { it.choice == CascadeBrain.END_CALL && it.confidence >= settings.endCallDoneFloor } == true
 
     /** The stock slot Jev picked, if it is sure and the slot is one it may pick. */
     fun slot(answers: Map<String, JevAnswer>, bank: PhraseBank, settings: CascadeSettings): String? {

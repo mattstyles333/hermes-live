@@ -1,110 +1,192 @@
 package com.folio.hermes.cascade.routing
 
 import com.folio.hermes.cascade.ActionState
+import com.folio.hermes.cascade.AppLines
 import com.folio.hermes.cascade.Decision
 import com.folio.hermes.cascade.Route
+import com.folio.hermes.cascade.TaskState
 import com.folio.hermes.cascade.Tx
-import com.folio.hermes.cascade.writer.Repair
-import com.folio.hermes.cascade.writer.WriterPrompts
+import com.folio.hermes.cascade.UpdateMode
+import com.folio.hermes.cascade.writer.BriefTemplate
+import com.folio.hermes.cascade.writer.WrittenDoubt
 
 /**
- * R-STT-5 `key_doubt`: a name, number or date the action depends on looks misheard. Bill asks one
- * targeted question (the writer, e.g. "Safilo or Sapphire?"), waits `keyDoubtWaitMs` for an
- * answer, then proceeds, with the answer or with notes for the agent.
+ * R-STT-5 `key_doubt` never blocks (hub decision 2026-10-14): a name, number or date the work
+ * depends on may be misheard, but the task starts at once with the Transcript / As heard /
+ * Clarity / Notes block (whose brief already says to ask before any external action that depends
+ * on an uncertain word). Then Bill asks one short question ("Kestrel, right?"):
+ * - only when Jev's `key_doubt` is at `keyDoubtAskFloor` (0.6) and the word the writer names
+ *   ([WrittenDoubt]) is not in the user's vocabulary or an earlier task's label; otherwise the
+ *   notes go to the agent silently;
+ * - the user's next committed turn, within `keyDoubtWaitMs` of the question, is its answer
+ *   ([answer]): a correction becomes a redirect `update_task` to the task (seconds old, so the
+ *   R-RT-7 window holds), a confirmation becomes nothing more than "Got it." (a queued note
+ *   would make Hermes answer it as a second result), and no answer leaves the task as it is.
  *
- * The action waits on a slice timer; the user's next committed turn, if it sounds like an answer
- * ([answerLike]), is folded into the waiting action and fires the timer at once ([absorb]).
- * "Scrap that" drops the waiting action; any other turn lets it go ahead unanswered and then runs
- * on its own.
+ * The question waits in [State.marks] (durable, wall clock), one at a time, and the next
+ * committed turn clears it whether or not it was the answer.
  */
 object KeyDoubt {
-    const val TIMER = "key_doubt"
-    const val STATE = "doubt"
-    const val ANSWER = "doubt_answer"
-    const val ASKED = "asked"
-    const val UNANSWERED = "unanswered"
-    const val DROPPED = "dropped"
+    /** The marks key for the question waiting for its answer. */
+    const val MARK = "key_doubt"
 
-    /** True if [a] should ask before acting: Jev is sure of `key_doubt` and this is not offline dictation. */
-    fun needed(tx: Tx, a: ActionState): Boolean {
-        val clarity = a.record.answers[CascadeBrain.CLARITY] ?: return false
-        return clarity.choice == CascadeBrain.KEY_DOUBT && clarity.confidence >= tx.s.settings.confidenceFloor &&
-            a.data[STATE] == null && !MemoRouting.isMemo(tx, a.turnId)
-    }
+    /** On the answering turn: the question and the word it was about. */
+    const val QUESTION = "doubt_question"
+    const val WORD = "doubt_word"
 
-    /** Ask the question into the action's reply; resumes as `Written`. */
-    fun ask(tx: Tx): Next {
-        val a = tx.action
-        tx.updateAction { it.copy(data = it.data + (STATE to ASKED)) }
-        val t = BriefPlanner.transcript(tx, a)
-        return tx.write(WriterPrompts.spoken(null, 1), prompt(a.text, Repair.marked(t), tx.s.settings.vocabulary), null)
-    }
-
-    fun prompt(text: String, marked: String, vocabulary: List<String>): String = buildString {
-        append("The user just said: \"").append(text).append("\"\n")
-        if (marked != text) append("Speech-to-text was unsure of the words in brackets: \"").append(marked).append("\"\n")
-        if (vocabulary.isNotEmpty()) append("Names they use: ").append(vocabulary.joinToString(", ")).append('\n')
-        append("A name, number or date that matters may be misheard. Ask ONE short question to check just that, ")
-        append("e.g. \"Safilo or Sapphire?\" or \"Forty, or fourteen?\". Nothing else.")
-    }
-
-    /** After the question: wait for the answer (or go on at once if the question never played). */
-    fun afterQuestion(tx: Tx, spoke: Boolean): Next? {
-        if (!spoke) {
-            tx.updateAction { it.copy(data = it.data + (STATE to UNANSWERED)) }
-            return null
-        }
-        return tx.waitTimer(TIMER, tx.s.settings.keyDoubtWaitMs)
-    }
-
-    /** The wait ended: with the user's answer (folded in by [absorb]), dropped, or unanswered. */
-    fun waited(tx: Tx) {
-        if (tx.action.data[STATE] == ASKED) tx.updateAction { it.copy(data = it.data + (STATE to UNANSWERED)) }
-    }
-
-    /**
-     * A turn was committed while an action waits on its key-doubt question: the turn is the answer.
-     * Returns the action to queue instead (a silent no-op), or null if nothing waits.
-     */
-    fun absorb(tx: Tx, next: ActionState): ActionState? {
-        val active = tx.s.actions.active ?: return null
-        if (active.waitingOn?.startsWith("timer:$TIMER:") != true) return null
-        val route = next.decision.route
-        val update = if (route is Route.CancelTask || (route == Route.Clarify && next.decision.slot == "cancel.which")) {
-            DROPPED to ""
-        } else if (route == Route.EndCall) {
-            return null
-        } else if (!answerLike(active, next)) {
-            // Something else ("also check the stock"): the doubted work goes ahead unanswered, and
-            // this turn is carried out on its own after it.
-            tx.fireWaitingTimer(TIMER)
-            return null
-        } else {
-            ANSWER to next.text
-        }
-        tx.updateAction {
-            it.copy(data = it.data + if (update.first == DROPPED) mapOf(STATE to DROPPED) else mapOf(ANSWER to update.second, STATE to "answered"))
-        }
-        tx.fireWaitingTimer(TIMER)
-        return next.copy(decision = Decision(Route.Reply, null, writer = false), data = next.data + (ABSORBED to active.turnId))
-    }
-
-    /**
-     * An answer to "Safilo or Sapphire?": a reply or clarify turn, a short turn (≤ [SHORT_ANSWER]
-     * words), or one naming a doubted word or one of its alternatives.
-     */
-    fun answerLike(waiting: ActionState, next: ActionState): Boolean {
-        val route = next.decision.route
-        if (route == Route.Reply || route == Route.Clarify || route == Route.AskRepeat) return true
-        val words = next.text.split(Regex("\\s+")).filter { it.isNotEmpty() }
-        if (words.size <= SHORT_ANSWER) return true
-        val said = words.map { w -> w.lowercase().filter { it.isLetterOrDigit() } }.toSet()
-        val doubted = waiting.transcript?.uncertain.orEmpty().flatMap { listOf(it.text) + it.alternatives }
-        return doubted.any { d -> d.lowercase().filter { it.isLetterOrDigit() } in said }
-    }
-
-    const val SHORT_ANSWER = 4
-
-    /** Marks a turn folded into another as its answer (its own action does nothing). */
+    /** Marks a turn taken as the answer to a question (a confirmation does nothing more). */
     const val ABSORBED = "absorbed_by"
+
+    /** What Bill says to a confirmation and (after `Accepted`) to a correction: stock lines, no writer. */
+    const val CONFIRMED_SLOT = "ack.understood"
+    const val CORRECTED_SLOT = "update.redirect"
+
+    /** A turn of at most this many words may be an answer even without "yes", "no" or the word itself. */
+    const val SHORT_ANSWER = 5
+
+    /** Jev is sure enough of `key_doubt` to ask (and this is not offline dictation). */
+    fun sure(tx: Tx, a: ActionState): Boolean {
+        val clarity = a.record.answers[CascadeBrain.CLARITY] ?: return false
+        return clarity.choice == CascadeBrain.KEY_DOUBT && clarity.confidence >= tx.s.settings.keyDoubtAskFloor &&
+            !MemoRouting.isMemo(tx, a.turnId)
+    }
+
+    /**
+     * The doubt to ask about once [a]'s tasks start, or null (and why, in telemetry: never the
+     * word). [doubt] is the writer's; the vocabulary and the labels of tasks from earlier turns
+     * count as known words.
+     */
+    fun toAsk(tx: Tx, a: ActionState, doubt: WrittenDoubt?): WrittenDoubt? {
+        val clarity = a.record.answers[CascadeBrain.CLARITY]
+        if (clarity?.choice != CascadeBrain.KEY_DOUBT || MemoRouting.isMemo(tx, a.turnId)) return null
+        val labels = tx.s.tasks.tasks.filter { it.turnId != a.turnId }.map { it.label }
+        val why = when {
+            !sure(tx, a) -> "low_confidence"
+            doubt == null -> "no_word"
+            known(doubt.word, tx.s.settings.vocabulary + labels) -> "known_word"
+            else -> null
+        }
+        tx.report("cascade.key_doubt", mapOf("event" to if (why == null) "ask" else "silent", "why" to (why ?: "asked")))
+        return if (why == null) doubt else null
+    }
+
+    /** The line the brief's notes carry when Bill will ask. */
+    fun note(d: WrittenDoubt): String = "Bill is checking \"${d.word}\" with the user; a correction may follow."
+
+    /** Ask [d] into [a]'s reply, after the start line, and wait (durably) for the answer to one of [taskIds]. */
+    fun ask(tx: Tx, a: ActionState, d: WrittenDoubt, taskIds: List<String>) {
+        if (taskIds.isEmpty()) return
+        val taskId = taskIds.firstOrNull { id ->
+            tx.s.tasks[id]?.brief?.substringBefore(BriefTemplate.REPORT_BACK)?.contains(d.word, ignoreCase = true) == true
+        } ?: taskIds.first()
+        val question = question(d)
+        if (tx.add(a.utteranceId, question)) tx.updateAction { it.copy(pieces = it.pieces + 1) }
+        clear(tx)
+        tx.mark(MARK, Pending(a.turnId, tx.s.wallMs, taskId, d.word, question).encode())
+    }
+
+    /** The writer's question, kept short; "<word>, right?" when it gave none. */
+    fun question(d: WrittenDoubt): String {
+        val words = d.question.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (words.isEmpty() || words.size > 10) return "${d.word}, right?"
+        val q = words.joinToString(" ")
+        return if (q.endsWith("?")) q else q.trimEnd('.', '!', ',') + "?"
+    }
+
+    /**
+     * A turn was committed: if a question waits (and is still fresh), take [next] as its answer.
+     * Cancels, goodbyes, status and read-outs are never answers; a turn is one when it leads with
+     * yes or no, names the doubted word, or is a short reply.
+     */
+    fun answer(tx: Tx, next: ActionState): ActionState {
+        val p = pending(tx) ?: return next
+        clear(tx)
+        if (p.turnId == next.turnId || tx.s.wallMs - p.askedAt > tx.s.settings.keyDoubtWaitMs) return next
+        val task = tx.s.tasks[p.taskId]?.takeIf { it.state == TaskState.Running } ?: return next
+        if (!answerLike(p, next)) return next
+        val confirmed = confirms(p.word, next.text)
+        // "Yes, and also email Bob": a yes with a new request after it is that request.
+        if (!confirmed && tokens(next.text).first() in YES && next.decision.route == Route.NewTask) return next
+        val data = next.data + (QUESTION to p.question) + (WORD to p.word) + (ABSORBED to p.turnId)
+        return if (confirmed) {
+            tx.report("cascade.key_doubt", mapOf("event" to "confirmed"))
+            next.copy(decision = Decision(Route.Reply, CONFIRMED_SLOT, writer = false), data = data, record = next.record.copy(route = Route.Reply.wire))
+        } else {
+            tx.report("cascade.key_doubt", mapOf("event" to "corrected"))
+            val route = Route.UpdateTask(task.id, UpdateMode.Redirect)
+            next.copy(decision = Decision(route, CORRECTED_SLOT, writer = false), data = data, record = next.record.copy(route = route.wire))
+        }
+    }
+
+    /** The update text for a correction: what Bill asked and what the user said. */
+    fun correction(a: ActionState): String? {
+        val question = a.data[QUESTION] ?: return null
+        return "Correction: I asked the user \"$question\" about \"${a.data[WORD].orEmpty()}\" in the request, and they answered: \"${a.text}\". " +
+            "Use their answer for that word."
+    }
+
+    fun answerLike(p: Pending, next: ActionState): Boolean {
+        val route = next.decision.route
+        if (route is Route.CancelTask || route == Route.EndCall || route == Route.AskRepeat || route is Route.Status || route is Route.ReadResult) return false
+        if (route == Route.Clarify && next.decision.slot == AppLines.WHICH_CANCEL) return false
+        val words = tokens(next.text)
+        if (words.isEmpty()) return false
+        if (words.first() in YES || words.first() in NO) return true
+        if (tokens(p.word).let { w -> w.isNotEmpty() && words.containsAll(w) }) return true
+        val replyLike = route == Route.Reply || route == Route.Clarify || (route is Route.UpdateTask && route.taskId == p.taskId)
+        return replyLike && words.size <= SHORT_ANSWER
+    }
+
+    /** "Yes", "that's right", "Kestrel, yeah": only yes words, filler and the doubted word itself. */
+    fun confirms(word: String, text: String): Boolean {
+        val words = tokens(text)
+        if (words.isEmpty() || words.first() in NO) return false
+        val doubted = tokens(word).toSet()
+        if (words.none { it in YES || it in doubted }) return false
+        return words.all { it in YES || it in FILLER || it in doubted }
+    }
+
+    /** [word] is one of [known] (a vocabulary entry or a label), or every token of it is in them. */
+    fun known(word: String, known: List<String>): Boolean {
+        val w = tokens(word)
+        if (w.isEmpty()) return true
+        val joined = w.joinToString("")
+        if (known.any { tokens(it).joinToString("") == joined }) return true
+        val all = known.flatMap(::tokens).toSet()
+        return w.all { it in all }
+    }
+
+    private fun tokens(text: String): List<String> =
+        text.lowercase().replace('’', '\'').split(Regex("[^\\p{L}\\p{N}']+")).map { it.trim('\'') }.filter { it.isNotEmpty() }
+
+    private val YES = setOf(
+        "yes", "yeah", "yep", "yup", "yah", "aye", "correct", "right", "exactly", "indeed", "sure", "affirmative",
+        "absolutely", "definitely", "ok", "okay", "mhm", "spot", "perfect", "that's", "thats",
+    )
+    private val NO = setOf("no", "nope", "nah", "not", "wrong", "actually", "sorry")
+    private val FILLER = setOf(
+        "it's", "its", "it", "is", "that", "the", "one", "on", "bill", "cheers", "thanks", "please", "good", "great",
+        "lovely", "uh", "huh", "mm", "yes", "so", "well", "i", "said", "did", "do", "you", "got",
+    )
+
+    private fun pending(tx: Tx): Pending? = tx.marks(MARK).firstNotNullOfOrNull(Pending::decode)
+
+    private fun clear(tx: Tx) {
+        tx.marks(MARK).forEach { tx.unmark(MARK, it) }
+    }
+
+    /** The question waiting for its answer, as one mark value. */
+    data class Pending(val turnId: String, val askedAt: Long, val taskId: String, val word: String, val question: String) {
+        fun encode(): String = listOf(turnId, askedAt.toString(), taskId, word, question).joinToString(SEP)
+
+        companion object {
+            private const val SEP = "\u001f"
+
+            fun decode(s: String): Pending? {
+                val p = s.split(SEP)
+                if (p.size != 5) return null
+                return Pending(p[0], p[1].toLongOrNull() ?: return null, p[2], p[3], p[4])
+            }
+        }
+    }
 }

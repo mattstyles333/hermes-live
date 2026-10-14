@@ -21,6 +21,8 @@ import com.folio.hermes.openrouter.JevAnswer
  *   when Jev's `redirect` confidence is ≥ 0.6; otherwise it is queued.
  * - R-TASK-4: a cancel with no sure task, right after a start, cancels the newest task.
  * - R-STT-5: `clarity = garbled` (sure) plays `clarify.again` instead of acting.
+ * - Stop-all (hub decision 2026-10-14, [withWords]): "stop everything" cancels every running task
+ *   without asking which.
  */
 object CeoRouter {
     /** R-RT-5: the slot groups each action may play. */
@@ -89,6 +91,44 @@ object CeoRouter {
                 Decision(Route.EndCall, slot(bye), writer = false)
             }
         }
+    }
+
+    /**
+     * [Route.CancelTask]'s task id for "stop everything": every running or queued task. Not a
+     * real id (tasks are `t<n>`); only [CeoCancelTaskHandler] reads it.
+     */
+    const val ALL_TASKS = "*"
+    const val CANCEL_ALL = "cancel.all"
+
+    /**
+     * The words of a stop-all: "everything", "all of them", "the lot", "every task", "all the
+     * jobs", "them all", or a stop verb followed by "all" at the end ("cancel all"). "All" inside
+     * a phrase ("the chase for all the Barden frames") is not one.
+     */
+    private val STOP_ALL = Regex(
+        "\\beverything\\b" +
+            "|\\ball of (them|it|those|these|that|the tasks|the jobs)\\b" +
+            "|\\b(them|those|these) all\\b" +
+            "|\\bthe (whole )?lot\\b" +
+            "|\\bevery (task|job|one|single one)\\b" +
+            "|\\ball (the |my |your |those |these )?(tasks|jobs)\\b" +
+            "|\\b(stop|cancel|kill|scrap|drop|halt|abort|end) (it )?all\\s*(?:[.!?,]|$)",
+    )
+
+    fun stopsAll(text: String): Boolean = STOP_ALL.containsMatchIn(text.lowercase().replace(Regex("\\s+"), " "))
+
+    /**
+     * What [decide] cannot see, the words (hub decision 2026-10-14): `cancel_task` with `task =
+     * none`, at least two tasks it could stop, and stop-all words ([stopsAll]) cancel them all
+     * ([ALL_TASKS], `cancel.all`) instead of asking which or taking the newest. One candidate
+     * still resolves to it (R-RT-3); a misheard single name still asks which.
+     */
+    fun withWords(state: State, answers: Map<String, JevAnswer>, text: String, decision: Decision): Decision {
+        if (decision.route != Route.Clarify && decision.route !is Route.CancelTask) return decision
+        val action = answers[CascadeBrain.ACTION]?.takeIf { it.confidence >= state.settings.actionFloor }?.choice
+        if (action != CascadeBrain.CANCEL_TASK || answers[CascadeBrain.TASK]?.choice != CascadeBrain.NONE) return decision
+        if (candidates(action, state.tasks.tasks).size < 2 || !stopsAll(text)) return decision
+        return Decision(Route.CancelTask(ALL_TASKS), CANCEL_ALL, writer = false)
     }
 
     /** The tasks an action can be about (R-RT-3's single-candidate rule). */

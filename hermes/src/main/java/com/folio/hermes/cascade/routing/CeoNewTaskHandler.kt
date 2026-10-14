@@ -12,8 +12,8 @@ import kotlinx.serialization.json.putJsonArray
 
 /**
  * `new_task` in CEO mode (R-TASK-2, spec v2 §0 ordering):
- * 1. the `start.*` line plays at once (the reducer plays the decision's slot first); with
- *    `key_doubt` Bill first asks one question and waits ([KeyDoubt]);
+ * 1. the `start.*` line plays at once (the reducer plays the decision's slot first), even with
+ *    `key_doubt`: a doubt never blocks; Bill asks his question once the tasks start ([KeyDoubt]);
  * 2. the writer returns briefs (one call per 20,000-character chunk above 24,000; R-CTX-3);
  * 3. each brief becomes a task: up to `maxBriefsPerTurn` start now, the rest queue ([TaskQueue]);
  * 4. the spoken summaries wait for Hermes's `Accepted` ([Confirmations]); a failed submit is
@@ -26,28 +26,17 @@ class CeoNewTaskHandler(private val memo: MemoRouting) : RouteHandler {
     private val chunkKey = "chunk"
     private val accKey = "briefs"
 
-    override fun playsSlotFirst(tx: Tx): Boolean = !KeyDoubt.needed(tx, tx.action) && !MemoRouting.isMemo(tx, tx.action.turnId)
+    override fun playsSlotFirst(tx: Tx): Boolean = !MemoRouting.isMemo(tx, tx.action.turnId)
 
     override fun start(tx: Tx): Next {
         val a = tx.action
         if (tx.s.outbox.stageDone(a.turnId, TASK_STAGE) || tx.env.registry.taskForTurn(tx.s, a.turnId) != null) return Next.Done
-        if (KeyDoubt.needed(tx, a)) return KeyDoubt.ask(tx)
         return writeChunk(tx, 0)
     }
 
     override fun resume(tx: Tx, result: ActionResult): Next {
         val a = tx.action
         return when (result) {
-            is ActionResult.Written -> KeyDoubt.afterQuestion(tx, result.spoke) ?: proceed(tx)
-            is ActionResult.TimerFired -> {
-                KeyDoubt.waited(tx)
-                if (tx.action.data[KeyDoubt.STATE] == KeyDoubt.DROPPED) {
-                    tx.play("cancel.drop")
-                    Next.Done
-                } else {
-                    proceed(tx)
-                }
-            }
             is ActionResult.Wrote -> {
                 val r = result.result
                 if (r is OpenRouterResult.Failed && r.kind == FailureKind.Offline && !a.resend) {
@@ -64,12 +53,6 @@ class CeoNewTaskHandler(private val memo: MemoRouting) : RouteHandler {
         }
     }
 
-    /** After a key-doubt question: the start line now (it did not play first), then the briefs. */
-    private fun proceed(tx: Tx): Next {
-        tx.action.decision.slot?.let { if (!MemoRouting.isMemo(tx, tx.action.turnId)) tx.play(it) }
-        return writeChunk(tx, 0)
-    }
-
     private fun chunksOf(tx: Tx): List<String> =
         BriefPlanner.chunks(tx.action.text, tx.s.settings.writerChunkAboveChars, tx.s.settings.writerChunkChars)
 
@@ -78,13 +61,15 @@ class CeoNewTaskHandler(private val memo: MemoRouting) : RouteHandler {
         val chunks = chunksOf(tx)
         val carried = decode(a.data[accKey])?.briefs?.map { it.label }.orEmpty()
         tx.updateAction { it.copy(data = it.data + (chunkKey to index.toString()), writerRan = true) }
-        return tx.requestWrite(Briefs.SYSTEM, Briefs.prompt(BriefPlanner.request(tx, a, chunks[index], index, chunks.size, carried)))
+        val request = BriefPlanner.request(tx, a, chunks[index], index, chunks.size, carried).copy(askDoubt = KeyDoubt.sure(tx, a))
+        return tx.requestWrite(Briefs.SYSTEM, Briefs.prompt(request))
     }
 
     private fun place(tx: Tx, set: BriefSet?): Next {
         val a = tx.action
         val offline = memo.offlineNote(tx, a.turnId)
-        val planned = BriefPlanner.plan(tx, a, set, offline)
+        val doubt = KeyDoubt.toAsk(tx, a, set?.doubt)
+        val planned = BriefPlanner.plan(tx, a, set, offline, doubt?.let(KeyDoubt::note))
         val placed = TaskQueue.add(tx, planned, a.turnId, offline = offline != null)
         tx.s = tx.s.copy(outbox = tx.s.outbox.markStage(a.turnId, TASK_STAGE))
         if (MemoRouting.isMemo(tx, a.turnId)) {
@@ -95,6 +80,8 @@ class CeoNewTaskHandler(private val memo: MemoRouting) : RouteHandler {
             tx.play(Confirmations.QUEUED)
             placed.queued.forEach { tx.mark(a.turnId, "queued:$it") }
         }
+        // R-STT-5: the tasks are on their way; now the one question (a resend never gets here twice).
+        if (doubt != null && !a.resend) KeyDoubt.ask(tx, a, doubt, placed.started + placed.queued)
         return Next.Done
     }
 
@@ -107,6 +94,7 @@ class CeoNewTaskHandler(private val memo: MemoRouting) : RouteHandler {
                 briefs.forEach { b -> add(buildJsonObject { put("brief", b.brief); put("label", b.label); b.summary?.let { put("summary", it) } }) }
             }
             (next?.repaired ?: prev?.repaired)?.let { put("repaired", it) }
+            (prev?.doubt ?: next?.doubt)?.let { d -> put("doubt", buildJsonObject { put("word", d.word); put("question", d.question) }) }
             putJsonArray("fixes") {
                 (prev?.fixes.orEmpty() + next?.fixes.orEmpty()).forEach { (from, to) -> add(buildJsonObject { put("from", from); put("to", to) }) }
             }

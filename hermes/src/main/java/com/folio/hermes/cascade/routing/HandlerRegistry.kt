@@ -48,7 +48,7 @@ sealed interface ActionResult {
     /** `session.interrupt` for [taskId] came back. */
     data class Interrupted(val taskId: String, val ok: Boolean) : ActionResult
 
-    /** A slice timer the action set (key `timer:<name>:<seq>`), e.g. the R-STT-5 8 s wait. */
+    /** A slice timer the action set (key `timer:<name>:<seq>`). */
     data class TimerFired(val timer: Timer) : ActionResult
 }
 
@@ -117,8 +117,7 @@ interface TurnHooks {
 
     /**
      * A turn was committed and its action built, before it is queued. Add gates (e.g. `accurate`
-     * for R-STT-2 with an [com.folio.hermes.cascade.Effect.AccuratePass], `key_doubt` for
-     * R-STT-5) and the reducer waits until they open ([Tx] removes a gate via `openGate`).
+     * for R-STT-2 with an [com.folio.hermes.cascade.Effect.AccuratePass]) and the reducer waits until they open ([Tx] removes a gate via `openGate`).
      */
     fun committed(tx: Tx, action: ActionState, event: TurnEvent.Done): ActionState = action
 
@@ -139,6 +138,9 @@ interface TurnHooks {
 
     /** One of a task's runs ended and the table settled it (its slot may be free now). */
     fun taskRunEnded(tx: Tx, event: Event.TaskRunEnded) = Unit
+
+    /** A `session.interrupt` came back (before the action waiting on it resumes). */
+    fun taskInterrupted(tx: Tx, event: Event.TaskInterrupted) = Unit
 
     /** The stored state was read back for the first time (call start or off-call restore), after the registry settled it. */
     fun restored(tx: Tx) = Unit
