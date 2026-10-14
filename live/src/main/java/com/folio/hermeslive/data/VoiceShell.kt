@@ -106,7 +106,7 @@ class VoiceShell(
             scope = scope,
             gate = gate,
             models = speechModels,
-            highAccuracy = { settings.settings.value.highAccuracySpeech },
+            wanted = { wantedModels() },
             bank = { bank },
             renders = {
                 val s = cascadeSettings()
@@ -124,6 +124,20 @@ class VoiceShell(
     }
 
     @Volatile private var wasActive: Boolean? = null
+
+    /** The speech-model ids the current settings want on the phone. */
+    fun wantedModels(): Set<String> = SpeechModelChoice.wanted(settings.settings.value).map { it.id }.toSet()
+
+    /**
+     * The first time the picker exists here: an install with speech models keeps them (and is
+     * told once about better ones), a new one gets the defaults ([SpeechModelChoice.firstRun]).
+     */
+    fun settleSpeechModels() {
+        val s = settings.settings.value
+        if (s.liveModel != null && s.accurateModel != null) return
+        val next = SpeechModelChoice.firstRun(s) { speechModels.installed(it.id) }
+        if (next != s) settings.update { next }
+    }
 
     /**
      * Close the cascade when the gate shuts (engine switched back, key removed). When it opens
@@ -143,7 +157,7 @@ class VoiceShell(
     fun autoPrepare(): Boolean {
         if (!gate.active || !network.wifi()) return false
         val s = prep.state.value
-        val missing = speechModels.wanted(settings.settings.value.highAccuracySpeech).isNotEmpty()
+        val missing = speechModels.wanted(wantedModels()).isNotEmpty()
         if (s.ready && !missing) return false
         return prep.start()
     }
@@ -170,7 +184,10 @@ class VoiceShell(
                     ),
                     client = g.client,
                     host = app as? CascadeHost,
-                ).also { instance = it }
+                ).also {
+                    instance = it
+                    it.settleSpeechModels()
+                }
             }
         }
     }

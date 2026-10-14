@@ -5,7 +5,7 @@ import com.folio.hermeslive.data.EngineStatus
 import com.folio.hermeslive.data.KeyCheck
 import com.folio.hermeslive.data.KeyStatus
 import com.folio.hermeslive.data.LiveSettings
-import com.folio.hermeslive.data.ModelRole
+import com.folio.hermeslive.data.SpeechModelChoice
 import com.folio.hermeslive.data.ModelState
 import com.folio.hermeslive.data.PrepPhase
 import com.folio.hermeslive.data.PrepState
@@ -20,16 +20,16 @@ enum class BillReadiness { Ready, Preparing, NeedsModels, NeedsKey, KeyRefused }
  * voice-live status (as before). Bill shows his own readiness, never GPT-Live's: ready, preparing
  * (with progress), his speech models still to fetch, no key, or the key refused.
  *
- * "Ready" agrees with the call switch (`CallSwitch.plan`): a usable key and the standard speech
- * models (streaming + accurate pass) installed. High accuracy falls back to them, and the stock
- * lines render on first use, so neither holds a call back.
+ * "Ready" agrees with the call switch (`CallSwitch.plan`): a usable key and a live and an accurate
+ * speech model installed (the chosen ones, or Zipformer and Parakeet-110M while those download),
+ * and the stock lines render on first use, so neither holds a call back.
  */
 object HomeVoiceLine {
-    fun readiness(key: KeyStatus, prep: PrepState, models: List<SpeechModelStatus>): BillReadiness = when {
+    fun readiness(key: KeyStatus, prep: PrepState, models: List<SpeechModelStatus>, settings: LiveSettings = LiveSettings()): BillReadiness = when {
         !key.saved -> BillReadiness.NeedsKey
         key.check == KeyCheck.Refused -> BillReadiness.KeyRefused
-        // The standard models decide (as `CallSwitch.plan` does); a phrase render alone never holds a call back.
-        standardMissing(models).isEmpty() -> BillReadiness.Ready
+        // Installed speech models decide (as `CallSwitch.plan` does); a phrase render alone never holds a call back.
+        callable(settings, models) -> BillReadiness.Ready
         prep.phase == PrepPhase.Running -> BillReadiness.Preparing
         else -> BillReadiness.NeedsModels
     }
@@ -43,11 +43,11 @@ object HomeVoiceLine {
         models: List<SpeechModelStatus>,
     ): String? {
         if (settings.voiceEngine != VoiceEngine.Cascade) return gptLive?.let { "Voice: ${voiceText(it)}" }
-        return "Voice: Bill · " + when (readiness(key, prep, models)) {
+        return "Voice: Bill · " + when (readiness(key, prep, models, settings)) {
             BillReadiness.Ready -> "ready" + if (prep.phase == PrepPhase.Running) progress(prep, models).let { if (it.isEmpty()) "" else " ($it)" } else ""
             BillReadiness.Preparing -> "preparing" + progress(prep, models).let { if (it.isEmpty()) "…" else " ($it)" }
             BillReadiness.NeedsModels -> "needs his speech models" +
-                standardMissing(models).sumOf { (it.bytesTotal - it.bytesDone).coerceAtLeast(0) }.let { if (it > 0) " (about ${EngineStatus.megabytes(it)})" else "" } +
+                missing(settings, models).sumOf { (it.bytesTotal - it.bytesDone).coerceAtLeast(0) }.let { if (it > 0) " (about ${EngineStatus.megabytes(it)})" else "" } +
                 ", downloaded on Wi-Fi"
             BillReadiness.NeedsKey -> "needs an OpenRouter key (Settings › Voice)"
             BillReadiness.KeyRefused -> "OpenRouter refused the key (Settings › Voice)"
@@ -68,6 +68,13 @@ object HomeVoiceLine {
         return parts.joinToString(", ")
     }
 
-    private fun standardMissing(models: List<SpeechModelStatus>) =
-        models.filter { it.role != ModelRole.HighAccuracy && it.state != ModelState.Ready }
+    /** A call can start: a live and an accurate model on the phone (the chosen ones or the fallbacks; `SpeechModelChoice.forCall`). */
+    private fun callable(settings: LiveSettings, models: List<SpeechModelStatus>): Boolean =
+        SpeechModelChoice.forCall(settings) { m -> models.any { it.id == m.id && it.state == ModelState.Ready } } != null
+
+    /** The chosen models still to fetch. */
+    private fun missing(settings: LiveSettings, models: List<SpeechModelStatus>): List<SpeechModelStatus> {
+        val ids = SpeechModelChoice.wanted(settings).map { it.id }.toSet()
+        return models.filter { it.id in ids && it.state != ModelState.Ready }
+    }
 }

@@ -23,10 +23,10 @@ object UiProjection {
         return CascadeUiState(
             turn = TurnUi(
                 phase = phase,
-                partial = turn.heard,
+                partial = turn.shown(turn.heard),
                 pauseProgress = s.pauseProgress,
-                held = turn.pending.joinToString(" "),
-                heldPieces = turn.pending,
+                held = turn.pending.joinToString(" ") { turn.shown(it) },
+                heldPieces = turn.pending.map { turn.shown(it) },
                 words = if (turn.heard.isNotEmpty() || lastTranscript == null) s.transcript.words else lastTranscript.words,
                 pass = if (turn.heard.isNotEmpty() || lastTranscript == null) TranscriptPass.Fast else lastTranscript.pass,
                 offline = !s.connection.online,

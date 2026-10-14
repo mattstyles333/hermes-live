@@ -144,6 +144,14 @@ class ModelManager(
         SttCatalog.all.forEach { updateModel(it, initialModel(it)) }
     }
 
+    /** Remove one model's files and any partial download (Settings › Voice › Speech models). */
+    fun deleteModel(model: SttModel) {
+        dir(model).deleteRecursively()
+        partFile(model).delete()
+        updateModel(model, ModelStatus.Missing)
+        ModelSet.entries.forEach { update(it, initial(it)) }
+    }
+
     /**
      * Installs [model] from an archive already on the device (tests and sideloading): the same
      * sha256 check and unpacking as a download.

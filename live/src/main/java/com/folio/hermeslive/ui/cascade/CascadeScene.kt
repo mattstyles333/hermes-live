@@ -46,7 +46,8 @@ internal fun CascadeScene(
     val measurer = rememberTextMeasurer(cacheSize = 8)
     val frame = remember { mutableLongStateOf(0L) }
     model.reduceMotion = motion.reduceMotion
-    val description by remember { derivedStateOf(structuralEqualityPolicy()) { sceneDescription(ui.value) } }
+    val ended = input.endRun
+    val description by remember(ended) { derivedStateOf(structuralEqualityPolicy()) { sceneDescription(ui.value, ended) } }
 
     if (animate && !near) {
         LaunchedEffect(model, motion) {
@@ -86,7 +87,16 @@ internal fun CascadeScene(
 }
 
 /** What the scene shows, for TalkBack (everything is also in the cards and captions). */
-internal fun sceneDescription(s: CascadeUiState): String {
+internal fun sceneDescription(s: CascadeUiState, ended: EndRun? = null): String {
+    if (ended != null) {
+        val running = EndSummary.runningOf(s.tasks)
+        val still = when (running) {
+            0 -> ""
+            1 -> " One agent still working."
+            else -> " $running agents still working."
+        }
+        return "Bill: ${ended.announcement.lowercase()}.$still"
+    }
     val who = orbStatus(s)
     val running = s.tasks.count { it.status.live }
     val agents = when (running) {

@@ -176,6 +176,11 @@ data class TurnState(
     /** The hold-silence rule while words are held with no pause running. */
     val silence: HoldSilence? = null,
     val silenceSeq: Long = 0L,
+    /**
+     * Cloud text shown in the caption in place of a fast segment's text (fast → cloud), when it
+     * did not rewrite Jev's words ([TurnRules.revised]). Additive (cloud STT slice).
+     */
+    val shownAs: Map<String, String> = emptyMap(),
 ) {
     /** Transcript since the last committed turn. */
     val heard: String get() = listOf(finals.trim(), partial.trim()).filter { it.isNotEmpty() }.joinToString(" ")
@@ -192,6 +197,16 @@ data class TurnState(
 
     /** Jev calls in flight for this pause. */
     val jevInFlight: Int get() = pause?.calls?.count { it.active } ?: 0
+
+    /** [text] as the caption shows it (cloud text in place of fast text, [shownAs]). */
+    fun shown(text: String): String = shownAs.entries.fold(text) { acc, (fast, cloud) -> acc.replaceLast(fast, cloud) }
+}
+
+/** [this] with the last [old] replaced by [new] (unchanged if absent). */
+internal fun String.replaceLast(old: String, new: String): String {
+    if (old.isEmpty()) return this
+    val i = lastIndexOf(old)
+    return if (i < 0) this else substring(0, i) + new + substring(i + old.length)
 }
 
 /** What the turn-taking produced: the new state, effects to run, and what happened. */
@@ -303,11 +318,45 @@ object TurnRules {
         return tx.step()
     }
 
+    /**
+     * Cloud speech-to-text's [text] for the fast segment that read [fast] (cloud mode).
+     *
+     * - **Material and Jev has not decided on these words yet** (no pause, or the pause is before
+     *   its commit point, or keep_listening is waiting to ask again; not parked): the cloud words
+     *   replace the fast ones. The commit point then sees other words than the early call's and
+     *   asks Jev again through its usual path; the recheck asks about the cloud words.
+     * - **Otherwise** (not material, or the commit or recheck call is already out, or parked):
+     *   the caption shows the cloud text ([TurnState.shownAs]) and Jev's words stay as they are,
+     *   so an answer in flight and the hold-silence rule's [HeldAnswers] still match them.
+     *
+     * Words already committed are gone from the turn: nothing changes (the accurate pass carries
+     * the cloud text into the turn's action instead).
+     */
+    fun revised(t: TurnState, fast: String, text: String, material: Boolean): TurnStep {
+        val f = fast.trim()
+        val c = text.trim()
+        if (f.isEmpty() || c.isEmpty() || f == c) return TurnStep(t)
+        val inFinals = t.finals.contains(f)
+        val inPending = t.pending.indexOfLast { it.contains(f) }
+        if (!inFinals && inPending < 0) return TurnStep(t)
+        val stage = t.pause?.stage
+        val beforeCommit = !t.parked && t.silence == null && (stage == null || stage == PauseStage.Early || stage == PauseStage.Commit || stage == PauseStage.Holding)
+        if (material && beforeCommit) {
+            val next = if (inFinals) {
+                t.copy(finals = t.finals.replaceLast(f, c))
+            } else {
+                t.copy(pending = t.pending.mapIndexed { i, p -> if (i == inPending) p.replaceLast(f, c) else p })
+            }
+            return TurnStep(next)
+        }
+        return TurnStep(t.copy(shownAs = t.shownAs + (f to c)))
+    }
+
     /** Forget everything held (call end). */
     fun reset(t: TurnState): TurnStep {
         val tx = Tx(t)
         tx.endPause()
-        tx.s = tx.s.copy(finals = "", partial = "", pending = emptyList(), parked = false, heldAnswers = null)
+        tx.s = tx.s.copy(finals = "", partial = "", pending = emptyList(), parked = false, heldAnswers = null, shownAs = emptyMap())
         return tx.step()
     }
 
@@ -540,7 +589,7 @@ object TurnRules {
 
     private fun Tx.clearAll() {
         endSilence()
-        s = s.copy(finals = "", partial = "", pending = emptyList(), parked = false, pause = null, heldAnswers = null)
+        s = s.copy(finals = "", partial = "", pending = emptyList(), parked = false, pause = null, heldAnswers = null, shownAs = emptyMap())
     }
 
     private sealed interface Outcome

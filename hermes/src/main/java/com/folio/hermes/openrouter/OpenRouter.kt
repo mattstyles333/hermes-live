@@ -46,6 +46,12 @@ class OpenRouter(
     val writer: WriterClient = WriterClient(this)
     val speech: SpeechClient = SpeechClient(this)
 
+    /** Transcript cleanup (chat completions, text only); only used when the cascade turns it on. */
+    val cleanup: CleanupClient = CleanupClient(this)
+
+    /** Cloud speech-to-text (`/audio/transcriptions`); only used when the user chose it. */
+    val transcription: TranscriptionClient = TranscriptionClient(this)
+
     /** True while a key is saved (no request). */
     val hasKey: Boolean get() = !key()?.trim().isNullOrEmpty()
 
@@ -99,6 +105,8 @@ class OpenRouter(
         request: Request,
         timeoutMs: Long,
         readsErrors: Boolean = false,
+        /** The caller sends its own telemetry event instead of `openrouter.call`. */
+        reportsItself: Boolean = false,
         extra: (OpenRouterResult<T>) -> Map<String, Any?> = { emptyMap() },
         read: (Response) -> OpenRouterResult<T>,
     ): OpenRouterResult<T> {
@@ -116,7 +124,7 @@ class OpenRouter(
         } catch (e: IOException) {
             ioFailure(e)
         }
-        report(label, result, (System.nanoTime() - started) / 1_000_000, extra(result))
+        if (!reportsItself) report(label, result, (System.nanoTime() - started) / 1_000_000, extra(result))
         return result
     }
 

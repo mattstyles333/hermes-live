@@ -5,11 +5,15 @@ import com.folio.hermes.cascade.CascadeSettings
 import com.folio.hermes.cascade.ports.SpeechToText
 import com.folio.hermeslive.audio.AudioSource
 import com.folio.hermeslive.audio.PlaybackMonitor
+import com.folio.hermeslive.stt.CloudStt
+import com.folio.hermeslive.data.LiveSettings
+import com.folio.hermeslive.data.SpeechModelChoice
+import com.folio.hermeslive.stt.FallbackLive
+import com.folio.hermeslive.stt.Hotwords
+import com.folio.hermeslive.stt.LiveFallback
 import com.folio.hermeslive.stt.ModelManager
-import com.folio.hermeslive.stt.ModelSet
 import com.folio.hermeslive.stt.SherpaEngines
 import com.folio.hermeslive.stt.SherpaSpeechToText
-import com.folio.hermeslive.stt.SttCatalog
 import com.folio.hermeslive.stt.SttEngineConfig
 
 /** One call's speech-to-text: the port plus what the call needs to drive it. */
@@ -34,20 +38,42 @@ fun interface CallSpeechFactory {
         playback: PlaybackMonitor,
         settings: () -> CascadeSettings,
         hotwords: () -> List<String>,
-        highAccuracy: Boolean,
+        /** Settings › Voice: the chosen live and accurate models ([SpeechModelChoice]). */
+        speech: LiveSettings,
+        /** The cloud pass, used only while `CascadeSettings.cloudSttModel` is set; null: on device only. */
+        cloud: CloudStt?,
+        /** The live-model guard swapped the live model for this call (capture thread or a loader thread). */
+        onFallback: (LiveFallback) -> Unit,
     ): CallSpeech
 
     companion object {
         /**
-         * sherpa-onnx (S-C): Silero VAD from the assets, Zipformer streaming, and Parakeet-110M as
-         * the second pass, or Parakeet-0.6B with High accuracy on when it is downloaded
-         * (§11b). Hotwords are the user's vocabulary, the task labels and the learned
-         * corrections (R-STT-7), read at each segment.
+         * sherpa-onnx (S-C): Silero VAD from the assets, the chosen live model (Zipformer,
+         * Nemotron or Moonshine) and accurate model (Parakeet 110M or 0.6B), each falling back to
+         * Zipformer / Parakeet-110M while the chosen one is not downloaded. Hotwords are the
+         * user's vocabulary, the task labels and the learned corrections (R-STT-7), read at each
+         * segment, where the model takes them. In cloud mode the same words go to the cloud model
+         * when it takes them. A live model that can't keep up is swapped for Zipformer for the
+         * rest of the call ([LiveGuard]), when Zipformer is installed.
          */
-        fun sherpa(assets: AssetManager, models: ModelManager): CallSpeechFactory = CallSpeechFactory { source, playback, settings, hotwords, highAccuracy ->
-            val accurate = if (highAccuracy && models.isInstalled(SttCatalog.parakeet06b)) SttCatalog.parakeet06b else SttCatalog.parakeet110m
-            val engines = SherpaEngines.load(assets, models, SttEngineConfig(accurate = accurate))
-            val stt = SherpaSpeechToText(engines, source, playback, settings = settings, hotwords = hotwords)
+        fun sherpa(assets: AssetManager, models: ModelManager): CallSpeechFactory = CallSpeechFactory { source, playback, settings, hotwords, speech, cloud, onFallback ->
+            val (live, accurate) = SpeechModelChoice.forCall(speech, models::isInstalled) ?: error("no speech models installed")
+            val config = SttEngineConfig(streaming = live, accurate = accurate)
+            val engines = SherpaEngines.load(assets, models, config)
+            val fallback = SpeechModelChoice.FALLBACK_LIVE.takeIf { it != live && models.isInstalled(it) }
+            val loadFallback: (() -> FallbackLive)? = fallback?.let { fb ->
+                {
+                    val fbConfig = config.copy(streaming = fb)
+                    val engine = SherpaEngines.streaming(models, fbConfig)
+                    val decoding = Hotwords.decodingFor(fb.kind, fbConfig.decoding)
+                    val vocab = models.hasVocab(fb)
+                    FallbackLive(engine) { words -> Hotwords.argument(words, fb, decoding, vocab) }
+                }
+            }
+            val stt = SherpaSpeechToText(
+                engines, source, playback, settings = settings, hotwords = hotwords, cloud = cloud,
+                fallbackLive = loadFallback, onFallback = onFallback,
+            )
             object : CallSpeech, SpeechToText by stt {
                 override fun start() = stt.start()
                 override fun release() = stt.release()
@@ -56,7 +82,7 @@ fun interface CallSpeechFactory {
             }
         }
 
-        /** The models a Bill call needs: the standard pair (High accuracy falls back to it when its model is missing). */
-        fun ready(models: ModelManager): Boolean = models.isReady(ModelSet.STANDARD)
+        /** A call can start: some live and some accurate model is on the phone (the chosen ones or the fallbacks). */
+        fun ready(models: ModelManager, speech: LiveSettings): Boolean = SpeechModelChoice.forCall(speech, models::isInstalled) != null
     }
 }

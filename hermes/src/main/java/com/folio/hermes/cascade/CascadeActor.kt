@@ -11,6 +11,7 @@ import com.folio.hermes.cascade.ports.SttEvent
 import com.folio.hermes.cascade.ports.Store
 import com.folio.hermes.openrouter.FailureKind
 import com.folio.hermes.openrouter.OpenRouterException
+import com.folio.hermes.openrouter.OpenRouterResult
 import com.folio.hermes.telemetry.TelemetrySink
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
@@ -280,6 +281,13 @@ class CascadeActor(
                 val transcript = stt?.let { s -> withTimeoutOrNull(settings().accuratePassWaitMs) { s.accurate(effect.turnId) } }
                 post(Event.AccurateFinal(effect.turnId, transcript))
             }
+            // The cleanup slice: the turn waits at most `cleanupWaitMs`, then keeps the heard text.
+            is Effect.Cleanup -> launch("cleanup:${effect.turnId}") {
+                val wait = settings().cleanupWaitMs
+                val started = clock.nowMs()
+                val result = withTimeoutOrNull(wait) { openRouter.cleanup(effect.input, wait) } ?: OpenRouterResult.Failed(FailureKind.Timeout)
+                post(Event.Cleaned(effect.turnId, result, clock.nowMs() - started))
+            }
             is Effect.DropSpeech -> runCatching { stt?.drop(effect.turnId) }
             is Effect.SaveRotation -> runCatching { rotations.save(effect.slotId, effect.rotation) }
             is Effect.LogDecision -> runCatching { decisions?.record(effect.record) }
@@ -309,6 +317,7 @@ class CascadeActor(
         is SttEvent.Final -> Event.Final(text, words)
         is SttEvent.UserSpeech -> Event.UserSpeech(continuousMs)
         is SttEvent.HoldToTalk -> Event.HoldToTalk(pressed)
+        is SttEvent.Revised -> Event.Revised(fast, text, material)
     }
 }
 

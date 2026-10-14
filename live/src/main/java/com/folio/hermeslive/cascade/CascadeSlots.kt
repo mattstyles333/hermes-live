@@ -83,6 +83,13 @@ class MutableSource(private val source: AudioSource) : AudioSource by source {
 
 /** The [Network] port on the default network: online when it has validated internet. */
 class AndroidNetwork(private val context: Context) : Network {
+    /** Online now (validated internet on the default network); true when it can't be told. */
+    fun isOnline(): Boolean {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return true
+        val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) } ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
     override val online: Flow<Boolean> = callbackFlow {
         val cm = context.getSystemService(ConnectivityManager::class.java)
         if (cm == null) {

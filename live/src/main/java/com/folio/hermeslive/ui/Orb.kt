@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -45,6 +46,9 @@ fun orbMood(state: CallUiState): OrbMood = when {
     else -> OrbMood.Listening
 }
 
+/** How long the orb takes to wind down into Idle when a call ends. */
+const val WIND_DOWN_MS = 800
+
 /** A calm, print-like orb that breathes, ripples with whoever is speaking and orbits while Hermes works. */
 @Composable
 fun Orb(mood: OrbMood, level: Float, modifier: Modifier = Modifier) {
@@ -59,16 +63,22 @@ fun Orb(mood: OrbMood, level: Float, modifier: Modifier = Modifier) {
         },
         tween(400), label = "tint",
     )
+    // The wind-down when a call ends (shared with Bill's end): 0 → 1 over ~800 ms into Idle; no animation out of it.
+    val idle = mood == OrbMood.Idle
+    val wind by animateFloatAsState(if (idle) 1f else 0f, if (idle) tween(WIND_DOWN_MS) else snap(), label = "wind")
     Canvas(modifier.semantics { contentDescription = "Hermes ${mood.name}" }) {
         val c = center
         val base = size.minDimension / 2f * 0.52f
         val phase = t * 2f * PI.toFloat()
         val breathe = 1f + 0.025f * sin(phase * 3f) // one breath every 4 s
-        val r = base * breathe
+        // Winding down: it draws in toward the centre and settles back to its idle size.
+        val settle = if (idle) 1f - 0.12f * sin(PI.toFloat() * wind) else 1f
+        val r = base * breathe * settle
 
         // Halo
         val haloAlpha = when (mood) {
-            OrbMood.Idle, OrbMood.Muted -> 0.06f
+            OrbMood.Idle -> 0.06f + 0.06f * (1f - wind)
+            OrbMood.Muted -> 0.06f
             OrbMood.HermesSpeaking, OrbMood.UserSpeaking -> 0.12f + 0.20f * smooth
             else -> 0.10f
         }
@@ -107,7 +117,7 @@ fun Orb(mood: OrbMood, level: Float, modifier: Modifier = Modifier) {
         // Core: a waveform edge while someone speaks, a plain disc otherwise.
         val speaking = mood == OrbMood.HermesSpeaking || mood == OrbMood.UserSpeaking
         val coreAlpha = when (mood) {
-            OrbMood.Idle -> 0.35f
+            OrbMood.Idle -> 0.35f + 0.5f * (1f - wind)
             OrbMood.Muted -> 0.28f
             else -> 0.85f
         }

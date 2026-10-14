@@ -2,10 +2,10 @@ package com.folio.hermeslive.cascade
 
 import com.folio.hermeslive.data.ModelRole
 import com.folio.hermeslive.data.ModelState
+import com.folio.hermeslive.data.SpeechModelChoice
 import com.folio.hermeslive.data.SpeechModelStatus
 import com.folio.hermeslive.data.SpeechModels
 import com.folio.hermeslive.stt.ModelManager
-import com.folio.hermeslive.stt.ModelSet
 import com.folio.hermeslive.stt.ModelStatus
 import com.folio.hermeslive.stt.SttCatalog
 import com.folio.hermeslive.stt.SttModel
@@ -16,16 +16,13 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
 /**
- * S-C's [ModelManager] as S-E's [SpeechModels] (Settings › Voice › "Prepare Bill's voice"):
- * Zipformer (streaming), Parakeet-110M (accurate), Parakeet-0.6B (High accuracy), and the
+ * S-C's [ModelManager] as S-E's [SpeechModels] (Settings › Voice › "Prepare Bill's voice" and
+ * "Speech models"): every live and accurate model the picker offers ([SpeechModelChoice]), and the
  * bundled Silero VAD, always ready. Nothing downloads until [download] is called.
  */
 class SttSpeechModels(private val manager: ModelManager, scope: CoroutineScope) : SpeechModels {
-    private val rows = listOf(
-        Row(SttCatalog.zipformer, "Listening (streaming)", ModelRole.Streaming),
-        Row(SttCatalog.parakeet110m, "Accurate pass", ModelRole.Accurate),
-        Row(SttCatalog.parakeet06b, "High accuracy pass", ModelRole.HighAccuracy),
-    )
+    private val rows = SpeechModelChoice.LIVE.map { Row(it, SpeechModelChoice.label(it), ModelRole.Streaming) } +
+        SpeechModelChoice.ACCURATE.map { Row(it, SpeechModelChoice.label(it), ModelRole.Accurate) }
 
     private class Row(val model: SttModel, val label: String, val role: ModelRole)
 
@@ -52,7 +49,7 @@ class SttSpeechModels(private val manager: ModelManager, scope: CoroutineScope) 
 
     override fun delete(id: String) {
         val model = SttCatalog.byId(id) ?: return
-        ModelSet.entries.firstOrNull { model in it.models }?.let(manager::delete)
+        manager.deleteModel(model)
     }
 
     companion object {

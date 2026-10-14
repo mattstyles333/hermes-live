@@ -111,6 +111,25 @@ data class CascadeSettings(
      */
     val accuratePass: Boolean = false,
     /**
+     * Cloud speech-to-text (Settings › Voice › Speech recognition, "Cloud when online"): the
+     * OpenRouter model each speech segment's audio is sent to as it ends, whose text becomes the
+     * accurate pass when it is in by then (the on-device pass is the fallback). Null (the
+     * default): on device only, and no audio ever leaves the phone. Additive (cloud STT slice).
+     */
+    val cloudSttModel: String? = null,
+    /** One cloud transcription request, end to end; then the on-device pass stands. */
+    val cloudSttTimeoutMs: Long = 4_000L,
+    /**
+     * Transcript cleanup (hub decision 2026-10-14, cleanup bench): each committed turn's text
+     * (the accurate pass, else the fast one) goes to the cleanup model while online, and its
+     * checked output becomes the turn's text for the brief, the submit and the caption. The
+     * stock line never waits for it. Off by default (no request); `:live` maps Settings › Voice ›
+     * Clean up transcripts onto it. Additive (cleanup slice).
+     */
+    val cleanup: Boolean = false,
+    /** The brief and the submit wait at most this for the cleanup, then go with the uncleaned text. */
+    val cleanupWaitMs: Long = 1_500L,
+    /**
      * Fast-pass words below this confidence are uncertain (v1 CEO §7, R-STT-4). 0.45 is the best
      * F1 on the S-C corpus bench (`hermes-cascade-stt-bench-2026-10-13.md`).
      */

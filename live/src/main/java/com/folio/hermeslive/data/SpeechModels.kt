@@ -9,11 +9,8 @@ enum class ModelRole {
     /** Fast streaming pass (Zipformer-en int8 by default). R-STT-1. */
     Streaming,
 
-    /** Accurate second pass (Parakeet-TDT-110M by default). R-STT-2. */
+    /** Accurate second pass (Parakeet-TDT-110M or 0.6B). R-STT-2. */
     Accurate,
-
-    /** The optional "High accuracy" second pass (Parakeet-0.6B-v2): fetched only when that setting is on. */
-    HighAccuracy,
 
     /** Voice activity (Silero, bundled). */
     Vad,
@@ -49,9 +46,12 @@ interface SpeechModels {
 
     fun delete(id: String)
 
-    /** Models still to fetch for these settings: everything not ready, the high-accuracy one only when it is on. */
-    fun wanted(highAccuracy: Boolean): List<SpeechModelStatus> =
-        status.value.filter { it.state != ModelState.Ready && (it.role != ModelRole.HighAccuracy || highAccuracy) }
+    /** Of the models [ids] (the chosen ones, [SpeechModelChoice.wanted]), those still to fetch. */
+    fun wanted(ids: Set<String>): List<SpeechModelStatus> =
+        status.value.filter { it.state != ModelState.Ready && it.id in ids }
+
+    /** True if model [id] is on the phone. */
+    fun installed(id: String): Boolean = status.value.any { it.id == id && it.state == ModelState.Ready }
 
     companion object {
         /** No model manager wired yet (before S-F): nothing to show or fetch. */

@@ -3,6 +3,7 @@ package com.folio.hermeslive.cascade
 import com.folio.hermes.ApprovalChoice
 import com.folio.hermes.cascade.CascadeUiState
 import com.folio.hermes.cascade.Event
+import com.folio.hermes.cascade.SpeechKind
 import com.folio.hermes.cascade.TaskUiStatus
 import com.folio.hermes.cascade.TurnPhase
 import com.folio.hermes.telemetry.Telemetry
@@ -85,6 +86,9 @@ class CascadeCallEngine(
     private var tickJob: Job? = null
     private var epoch = 0
 
+    /** The last call's audio, held while its goodbye plays (at most [GOODBYE_CAP_MS]). */
+    private var teardown: Teardown? = null
+
     /** The runtime of the current call (the call screen draws its actor). */
     val session: CascadeAppRuntime? get() = rt
 
@@ -94,6 +98,8 @@ class CascadeCallEngine(
     // ── commands ────────────────────────────────────────────────────────────────────────────
 
     override fun start(request: CallRequest) {
+        // "Talk again" while the last goodbye plays: release the last call's audio first.
+        teardown?.let { releaseNow(it, earcon = false) }
         if (_state.value.inCall) {
             if (request.muted && !_state.value.muted) toggleMute()
             // During a call a typed request could interleave with speech: Bill takes it by voice.
@@ -127,7 +133,7 @@ class CascadeCallEngine(
                 val src = MutableSource(io.source).also { it.muted = request.muted }
                 val stt = try {
                     withContext(this@CascadeCallEngine.io) {
-                        speech.create(src, io.playback, r.settings, ::hotwords, callSettings.highAccuracySpeech).also { it.start() }
+                        speech.create(src, io.playback, r.settings, ::hotwords, callSettings, r.cloudStt, ::liveFallback).also { it.start() }
                     }
                 } catch (e: Exception) {
                     io.release()
@@ -169,10 +175,22 @@ class CascadeCallEngine(
         }
     }
 
-    /** End the call (End button, notification, tile, headset, Bill's goodbye). Tasks keep running. */
+    /**
+     * End the call (End button, notification, tile, headset). Bill says a short goodbye while the
+     * end animation runs, unless someone was speaking; a second press cuts it short. Tasks keep running.
+     */
     override fun end() {
+        if (!_state.value.inCall) {
+            teardown?.let { releaseNow(it, earcon = it.earcon) }
+            return
+        }
+        finish("close_requested", goodbye = Goodbye.Say)
+    }
+
+    /** Bill said goodbye (`Effect.EndCall`): his line plays to the end while the call winds down. */
+    fun goodbyeSaid() {
         if (!_state.value.inCall) return
-        finish("close_requested")
+        finish("close_requested", goodbye = Goodbye.Queued)
     }
 
     override fun toggleMute() {
@@ -284,6 +302,18 @@ class CascadeCallEngine(
         Telemetry.event("cascade.typed_turn", mapOf("chars" to text.length))
     }
 
+    /**
+     * The live-model guard swapped the live model for this call (any thread): say so once on the
+     * call screen, and report it (ids, reason and RTF only).
+     */
+    private fun liveFallback(f: com.folio.hermeslive.stt.LiveFallback) {
+        Telemetry.event("stt.live_fallback", mapOf("from" to f.from, "to" to f.to, "reason" to f.reason.wire, "rtf" to f.rtf, "swapped" to f.swapped))
+        if (!f.swapped) return
+        scope.launch {
+            if (_state.value.inCall) _state.update { it.copy(notice = "Speech recognition switched to the faster model for this call: the chosen one can't keep up on this phone.") }
+        }
+    }
+
     /** The runtime of this call, or the process's (approvals from the no-call viewer). */
     private fun runtimeNow(): CascadeAppRuntime? = rt ?: runtime()?.also { rt = it }
 
@@ -340,7 +370,37 @@ class CascadeCallEngine(
         if (callSettings.haptics) effects.haptic(strong = kind == Earcon.Warning)
     }
 
-    private fun finish(reason: String, error: String? = null) {
+    /** What the goodbye does at hang-up: nothing, wait for Bill's queued `end.bye*`, or say one (the End button). */
+    enum class Goodbye(val wire: String) { None("none"), Queued("queued"), Say("say") }
+
+    /** One call's audio and speaker, released once (after the goodbye, or at once). */
+    private inner class Teardown(val runtime: CascadeAppRuntime?, val io: CascadeAudioIo?, val earcon: Boolean) {
+        var job: Job? = null
+        private var done = false
+
+        /**
+         * Bill stops, the speaker and the call audio mode go. Any thread; runs once. Holds the lock
+         * throughout, so a new call ([releaseNow] from [start]) waits for a release already under way.
+         */
+        fun release() {
+            synchronized(this) {
+                if (done) return
+                done = true
+                runCatching { runtime?.endCall() }
+                runCatching { io?.release?.invoke() }
+                runCatching { audio.end() }
+            }
+        }
+    }
+
+    /**
+     * Hang-up. On this frame only what must happen now: the state flips to Ended (the end
+     * animation starts), the off-call service starts while the call is still foreground
+     * (R-CONV-3), and the mic stops listening. The models and the mic are released on [io]. Bill's
+     * goodbye then plays to the end (at most [GOODBYE_CAP_MS]) while the animation runs; only then
+     * do Bill, the speaker and the call audio mode go, also on [io].
+     */
+    private fun finish(reason: String, error: String? = null, goodbye: Goodbye = Goodbye.None) {
         if (!_state.value.inCall) return
         epoch++
         val r = rt
@@ -349,35 +409,68 @@ class CascadeCallEngine(
         val held = running > 0 && runCatching { offCall(running) }.getOrDefault(false)
         // Not startJob: a model load blocks and finishes anyway; the epoch check releases its result.
         tickJob?.cancel()
-        r?.endCall()
+        val wasLive = liveAtMs != null
+        val endedAt = clock()
+        val summary = liveAtMs?.let {
+            CallSummary(endedAt - it, null, if (running > 0) "Call ended. Bill's tasks carry on and you'll get a notification." else "Call ended.")
+        }
+        _state.value = CallUiState(phase = if (error != null && liveAtMs == null) CallPhase.Failed else CallPhase.Ended, summary = summary, error = error)
+        effects.proximity(false)
+        Telemetry.event(
+            "call.end",
+            mapOf("engine" to "cascade", "reason" to reason, "failed" to (error != null), "duration_s" to (liveAtMs?.let { (endedAt - it) / 1000 } ?: 0L), "tasks_running" to running, "off_call" to held),
+        )
+        // No more turns: the mic stops now; the models and the mic are released off the main thread.
+        r?.stt?.detach()
         val stt = call
         val io = audioIo
         call = null
         source = null
         audioIo = null
-        if (stt != null || io != null) {
+        if (stt != null) {
             // Joins the capture thread and a running decode: never on the main thread.
-            scope.launch(this.io) {
-                runCatching { stt?.release() }
-                runCatching { io?.release?.invoke() }
+            scope.launch(this.io) { runCatching { stt.release() } }
+        }
+        val actor = r?.core?.actor
+        val bye = when {
+            actor == null || !wasLive || error != null -> Goodbye.None
+            // Bill's own goodbye is already on its way (End pressed just after it): wait for that one.
+            goodbye == Goodbye.Say && Goodbyes.pending(actor.state.value) -> Goodbye.Queued
+            goodbye == Goodbye.Say && !Goodbyes.canSay(actor.state.value) -> Goodbye.None
+            else -> goodbye
+        }
+        val t = Teardown(r, io, earcon = wasLive || error == null)
+        teardown = t
+        t.job = scope.launch {
+            try {
+                if (actor != null && bye != Goodbye.None) {
+                    if (bye == Goodbye.Say) actor.send(Event.Say(Goodbyes.slot(running > 0), SpeechKind.Reply))
+                    val heard = Goodbyes.awaitPlayed(actor.state, GOODBYE_CAP_MS, waitForStart = bye == Goodbye.Say)
+                    Telemetry.event("cascade.goodbye", mapOf("how" to bye.wire, "played" to heard))
+                }
+            } finally {
+                withContext(this@CascadeCallEngine.io + NonCancellable) { t.release() }
+                // Cleared only once released; not after releaseNow (a new call may already be starting).
+                val mine = teardown === t
+                if (mine) teardown = null
+                if (mine && t.earcon) effect(Earcon.Ended)
             }
         }
-        effects.proximity(false)
-        audio.end()
-        if (liveAtMs != null || error == null) effect(Earcon.Ended)
-        val endedAt = clock()
-        Telemetry.event(
-            "call.end",
-            mapOf("engine" to "cascade", "reason" to reason, "failed" to (error != null), "duration_s" to (liveAtMs?.let { (endedAt - it) / 1000 } ?: 0L), "tasks_running" to running, "off_call" to held),
-        )
-        val summary = liveAtMs?.let {
-            CallSummary(endedAt - it, null, if (running > 0) "Call ended. Bill's tasks carry on and you'll get a notification." else "Call ended.")
-        }
-        _state.value = CallUiState(phase = if (error != null && liveAtMs == null) CallPhase.Failed else CallPhase.Ended, summary = summary, error = error)
+    }
+
+    /** Release [t] now, on this thread (a new call needs the audio, or End was pressed again). */
+    private fun releaseNow(t: Teardown, earcon: Boolean) {
+        if (teardown === t) teardown = null
+        t.job?.cancel()
+        t.release()
+        if (earcon) effect(Earcon.Ended)
     }
 
     companion object {
         const val TICK_MS = 150L
+
+        /** The goodbye plays to the end, but the call's audio is released within this of the hang-up. */
+        const val GOODBYE_CAP_MS = 2_000L
         const val MAX_TYPED_CHARS = 4_000
     }
 }

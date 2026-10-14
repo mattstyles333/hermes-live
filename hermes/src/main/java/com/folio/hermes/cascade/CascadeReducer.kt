@@ -59,11 +59,21 @@ class CascadeReducer(val env: CascadeEnv) {
                 turn(TurnRules.final(s.turn, event.text))
                 if (event.words.isNotEmpty()) s = s.copy(transcript = s.transcript.copy(words = s.transcript.words + event.words))
             }
+            is Event.Revised -> {
+                val step = TurnRules.revised(s.turn, event.fast, event.text, event.material)
+                if (step.state != s.turn) {
+                    val rewrote = step.state.finals != s.turn.finals || step.state.pending != s.turn.pending
+                    report("cascade.revised", mapOf("material" to event.material, "rewrote" to rewrote, "stage" to (s.turn.pause?.stage?.name ?: "none")))
+                }
+                turn(step)
+            }
             is Event.AccurateFinal -> {
                 env.handlers.hooks.accurate(this, event)
                 // Fast text when the pass gave nothing: the turn goes on either way.
                 openGate(event.turnId, ACCURATE_GATE)
             }
+            // The hook opens its own gate (it may re-ask Jev first).
+            is Event.Cleaned -> env.handlers.hooks.cleaned(this, event)
             is Event.UserSpeech -> cutIn(event.continuousMs)
             is Event.HoldToTalk -> {
                 s = s.copy(transcript = s.transcript.copy(holdToTalk = event.pressed))
@@ -88,7 +98,11 @@ class CascadeReducer(val env: CascadeEnv) {
             is Event.ResumeChosen -> chooseResume(event.choice)
             is Event.TimerFired -> timer(event.timer)
             is Event.JevAnswered ->
-                if (s.flush?.jevSeq == event.seq) flushAnswered(event.result) else turn(TurnRules.answered(s.turn, event.seq, event.result, event.atMs, ask))
+                when {
+                    s.flush?.jevSeq == event.seq -> flushAnswered(event.result)
+                    env.handlers.hooks.jevAnswered(this, event) -> Unit
+                    else -> turn(TurnRules.answered(s.turn, event.seq, event.result, event.atMs, ask))
+                }
             is Event.WriterSentence -> sentence(event.seq, event.text)
             is Event.WriterFinished -> s.writers[event.seq]?.let { writerEnded(it, event.failure) }
             is Event.WriterWrote ->

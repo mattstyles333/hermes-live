@@ -107,7 +107,8 @@ class LiveGraph(private val app: Context) {
                 val auth = account.currentAuth()
                 if (config != null && auth != null) config to auth else null
             },
-            onEndCall = { calls.cascadeEngine?.end() },
+            // Bill's goodbye (`Effect.EndCall`) plays to the end while the call winds down.
+            onEndCall = { calls.cascadeEngine.let { if (it is CascadeCallEngine) it.goodbyeSaid() else it?.end() } },
             onHaptic = { cascadeEffects.haptic(strong = false) },
             user = { settings.username },
         )
@@ -140,7 +141,7 @@ class LiveGraph(private val app: Context) {
                 )
             },
             cascadeActive = { VoiceShell.of(app).gate.active },
-            modelsReady = { CallSpeechFactory.ready(modelManager) },
+            modelsReady = { CallSpeechFactory.ready(modelManager, settings.settings.value) },
         )
     }
 

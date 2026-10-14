@@ -5,6 +5,7 @@ import com.k2fsa.sherpa.onnx.EndpointConfig
 import com.k2fsa.sherpa.onnx.EndpointRule
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineMoonshineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
@@ -108,6 +109,7 @@ object SherpaEngines {
     fun streaming(models: ModelManager, config: SttEngineConfig): StreamingEngine {
         val model = config.streaming
         require(model.role == ModelRole.STREAMING)
+        if (model.kind == ModelKind.MOONSHINE) return moonshine(models, model, config)
         val decoding = Hotwords.decodingFor(model.kind, config.decoding)
         val encoder = models.path(model, model.encoder)
         val decoder = models.path(model, model.decoder)
@@ -170,6 +172,37 @@ object SherpaEngines {
         }
 
         override fun release() = stream.release()
+    }
+
+    /** Moonshine v2 as the live model: simulated streaming over sherpa's offline recognizer. */
+    private fun moonshine(models: ModelManager, model: SttModel, config: SttEngineConfig): StreamingEngine {
+        val encoder = models.path(model, model.encoder)
+        val decoder = models.path(model, model.decoder)
+        val tokens = models.path(model, model.tokens)
+        need(encoder, decoder, tokens)
+        val recognizer = OfflineRecognizer(
+            config = OfflineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = AudioRate.HZ, featureDim = 80),
+                modelConfig = OfflineModelConfig(
+                    moonshine = OfflineMoonshineModelConfig(encoder = encoder, mergedDecoder = decoder),
+                    tokens = tokens,
+                    numThreads = config.streamingThreads,
+                    provider = "cpu",
+                ),
+                decodingMethod = Hotwords.GREEDY,
+            ),
+        )
+        val decode: (FloatArray) -> String = { samples ->
+            val s = recognizer.createStream()
+            try {
+                s.acceptWaveform(samples, AudioRate.HZ)
+                recognizer.decode(s)
+                recognizer.getResult(s).text.trim()
+            } finally {
+                s.release()
+            }
+        }
+        return MoonshineStreaming(model, decode, release = { recognizer.release() })
     }
 
     fun offline(models: ModelManager, model: SttModel, config: SttEngineConfig): OfflineEngine {

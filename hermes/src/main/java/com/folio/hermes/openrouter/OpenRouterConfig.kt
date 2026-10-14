@@ -15,6 +15,8 @@ data class OpenRouterConfig(
     val jevModel: String = "typesafe/jev-1.13",
     /** Writes the spoken lines and agent prompts. */
     val writerModel: String = "deepseek/deepseek-v4.1-flash",
+    /** Cleans up each committed turn's transcript (hub decision 2026-10-14, cleanup bench). */
+    val cleanupModel: String = "deepseek/deepseek-v4.1-flash",
     val ttsModel: String = "elevenlabs/eleven-v4-turbo",
     val voice: String = "bill",
     val connectTimeoutMs: Long = 4_000L,

@@ -38,6 +38,15 @@ import com.folio.hermeslive.data.VoiceEngine
 import com.folio.hermeslive.service.MemoEntry
 import com.folio.hermeslive.service.ResultNotifications
 import com.folio.hermeslive.ui.CascadeCallRoute
+import com.folio.hermeslive.ui.MainScreen
+import com.folio.hermeslive.ui.mainScreen
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import com.folio.hermeslive.ui.PreparingBill
 import androidx.compose.runtime.remember
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -76,11 +85,26 @@ class LiveActivity : ComponentActivity() {
     /** Bill's screen with no call, on a result notification's Open (§14 item 9). */
     private var viewingTask by mutableStateOf<String?>(null)
 
+    /** Bill's call screen was up when the call ended: it plays its end transition until closed. */
+    private var billOutro by mutableStateOf(false)
+
+    /** Leaves Bill's end transition for home (Close, Back, the summary's hold, sign-out). */
+    private fun closeBillOutro() {
+        if (!billOutro) return
+        billOutro = false
+        if (!graph.calls.state.value.inCall) graph.calls.dismissSummary()
+    }
+
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         val request = pendingStart ?: return@registerForActivityResult
         pendingStart = null
         val mic = result[Manifest.permission.RECORD_AUDIO] ?: hasMic()
-        if (mic) startCall(request) else micRefused = true
+        if (mic) {
+            startCall(request)
+        } else {
+            micRefused = true
+            billOutro = false
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -137,6 +161,7 @@ class LiveActivity : ComponentActivity() {
     private fun requestStart(request: CallRequest) {
         micRefused = false
         if (graph.calls.plan(request) == CallPlan.PreparingBill) {
+            billOutro = false
             preparing = request
             VoiceShell.of(this).autoPrepare()
             return
@@ -225,6 +250,7 @@ class LiveActivity : ComponentActivity() {
                     onBack = { showSettings = false },
                     onChange = { change -> g.settings.update(change) },
                     onSignOut = {
+                        billOutro = false
                         g.calls.end()
                         scope.launch {
                             g.account.signOut()
@@ -279,48 +305,90 @@ class LiveActivity : ComponentActivity() {
                     onCancel = { preparing = null },
                 )
             }
-            (active is CascadeCallEngine && call.inCall && (active as CascadeCallEngine).session != null) || (viewingTask != null && !call.inCall) -> {
-                val engine = g.calls.bill() as? CascadeCallEngine
-                val rt = engine?.session ?: (VoiceShell.of(this@LiveActivity).shell.existing() as? CascadeAppRuntime)
-                if (engine == null || rt == null) {
-                    LaunchedEffect(Unit) { viewingTask = null }
-                } else {
-                    val shell = remember { VoiceShell.of(this@LiveActivity) }
-                    BackHandler(enabled = viewingTask != null && !call.inCall) { viewingTask = null }
-                    CascadeCallRoute(
-                        engine = engine,
-                        runtime = rt,
-                        pauseMs = settings.pauseMs,
-                        viewer = !call.inCall,
-                        decisions = { runCatching { shell.decisionLog.records().asReversed() }.getOrDefault(emptyList()) },
-                        onHaptic = { if (settings.haptics) g.haptic() },
-                        onClose = { viewingTask = null },
-                    )
+            else -> {
+                val billActive = active is CascadeCallEngine
+                val screen = mainScreen(billActive, call.inCall, (active as? CascadeCallEngine)?.session != null, billOutro, viewingTask != null)
+                LaunchedEffect(screen) { if (screen == MainScreen.Bill) billOutro = true }
+                // Bill's end fades into home; every other change cuts as before. Bill's three screens are one
+                // content, so the call screen (its scene and memory) carries on into its end transition.
+                AnimatedContent(
+                    screen,
+                    transitionSpec = {
+                        if (initialState == MainScreen.BillEnded && targetState == MainScreen.Home) {
+                            fadeIn(tween(BILL_TO_HOME_MS)) togetherWith fadeOut(tween(BILL_TO_HOME_MS))
+                        } else {
+                            EnterTransition.None togetherWith ExitTransition.None
+                        }
+                    },
+                    contentKey = { it == MainScreen.Home },
+                    label = "main",
+                ) { shown ->
+                    if (shown == MainScreen.Home) Home(call, elapsed, voiceLine) else BillScreen(shown, call, settings.pauseMs, settings.haptics)
                 }
             }
-            else -> CallScreen(
-                state = if (micRefused && !call.inCall) call.copy(error = "Hermes Live needs the microphone. Allow it in Settings › Apps.") else call,
-                elapsed = elapsed,
-                voiceLine = voiceLine,
-                actions = CallActions(
-                    onTalk = {
-                        g.calls.dismissSummary()
-                        requestStart(CallRequest())
-                    },
-                    onEnd = g.calls::end,
-                    onMute = g.calls::toggleMute,
-                    onRoute = g.calls::selectRoute,
-                    onApprove = g.calls::answerApproval,
-                    onClarify = g.calls::answerClarify,
-                    onSettings = { showSettings = true },
-                    onDismissSummary = g.calls::dismissSummary,
-                    onNewConversation = {
-                        g.calls.dismissSummary()
-                        requestStart(CallRequest(newConversation = true))
-                    },
-                ),
-            )
         }
+    }
+
+    /** Bill's call screen: the call, its end transition, or the no-call viewer. */
+    @Composable
+    private fun BillScreen(shown: MainScreen, call: CallUiState, pauseMs: Int, haptics: Boolean) {
+        val g = graph
+        val engine = g.calls.bill() as? CascadeCallEngine
+        val rt = engine?.session ?: (VoiceShell.of(this@LiveActivity).shell.existing() as? CascadeAppRuntime)
+        if (engine == null || rt == null) {
+            LaunchedEffect(Unit) {
+                viewingTask = null
+                billOutro = false
+            }
+            return
+        }
+        val shell = remember { VoiceShell.of(this@LiveActivity) }
+        BackHandler(enabled = shown == MainScreen.BillViewer) { viewingTask = null }
+        CascadeCallRoute(
+            engine = engine,
+            runtime = rt,
+            pauseMs = pauseMs,
+            viewer = shown == MainScreen.BillViewer,
+            decisions = { runCatching { shell.decisionLog.records().asReversed() }.getOrDefault(emptyList()) },
+            onHaptic = { if (haptics) g.haptic() },
+            onClose = { viewingTask = null },
+            ending = shown == MainScreen.BillEnded && !call.inCall,
+            onCloseEnded = ::closeBillOutro,
+            onCallAgain = { requestStart(CallRequest()) },
+        )
+    }
+
+    /** The idle home screen (and GPT-Live's call screen). */
+    @Composable
+    private fun Home(call: CallUiState, elapsed: String?, voiceLine: String?) {
+        val g = graph
+        CallScreen(
+            state = if (micRefused && !call.inCall) call.copy(error = "Hermes Live needs the microphone. Allow it in Settings › Apps.") else call,
+            elapsed = elapsed,
+            voiceLine = voiceLine,
+            actions = CallActions(
+                onTalk = {
+                    g.calls.dismissSummary()
+                    requestStart(CallRequest())
+                },
+                onEnd = g.calls::end,
+                onMute = g.calls::toggleMute,
+                onRoute = g.calls::selectRoute,
+                onApprove = g.calls::answerApproval,
+                onClarify = g.calls::answerClarify,
+                onSettings = { showSettings = true },
+                onDismissSummary = g.calls::dismissSummary,
+                onNewConversation = {
+                    g.calls.dismissSummary()
+                    requestStart(CallRequest(newConversation = true))
+                },
+            ),
+        )
+    }
+
+    private companion object {
+        /** Bill's end transition crossfades into home over this long. */
+        const val BILL_TO_HOME_MS = 450
     }
 }
 

@@ -67,8 +67,17 @@ sealed interface Event {
     /** A fast-pass final, with per-word confidence when the engine has it (R-STT-4). */
     data class Final(val text: String, val words: List<Word> = emptyList()) : Event
 
+    /** Cloud text for a fast segment (`SttEvent.Revised`; additive, cloud STT slice). See [TurnRules.revised]. */
+    data class Revised(val fast: String, val text: String, val material: Boolean) : Event
+
     /** The accurate pass for committed turn [turnId] (R-STT-2); null [transcript] if none. */
     data class AccurateFinal(val turnId: String, val transcript: Transcript?) : Event
+
+    /**
+     * The transcript cleanup for committed turn [turnId] ([Effect.Cleanup]): the cleaned text, or
+     * a failure (also a timeout after `cleanupWaitMs`), after [ms]. Additive (cleanup slice).
+     */
+    data class Cleaned(val turnId: String, val result: OpenRouterResult<String>, val ms: Long) : Event
 
     /** VAD while Bill plays: the user has spoken for [continuousMs] (R-SPK-4). */
     data class UserSpeech(val continuousMs: Long) : Event
