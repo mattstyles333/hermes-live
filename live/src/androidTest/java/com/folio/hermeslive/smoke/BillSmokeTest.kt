@@ -95,6 +95,8 @@ class BillSmokeTest {
         val events = ArrayList<Pair<Long, CascadeEvent>>()
         val statuses = HashMap<String, LinkedHashMap<TaskUiStatus, Long>>()
         val watch = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val timeline = ArrayList<Pair<Long, String>>()
+        var anchor = 0L
         val result = JSONObject()
         try {
             shell("pm grant ${context.packageName} ${Manifest.permission.RECORD_AUDIO}")
@@ -116,6 +118,8 @@ class BillSmokeTest {
 
             val wav = args.getString("wav") ?: if (dry) File(context.getExternalFilesDir(null), "stt-corpus/e14-sarah.wav").path else null
             val pcm = wav?.let { CorpusAudioSource.read(File(it)) } ?: speak(key, say)
+            // The request as fed (TTS, made-up words): kept so a misheard run can be decoded again offline (`TailPadDeviceTest`).
+            File(context.getExternalFilesDir(null), "smoke").apply { mkdirs() }.resolve("request.wav").writeBytes(wav16(pcm))
             BuildHooks.cascadeAudio = CascadeAudioFactory { _, _ -> CascadeAudioIo(corpus, out, out) }
 
             val scenario = ActivityScenario.launch(LiveActivity::class.java)
@@ -143,12 +147,26 @@ class BillSmokeTest {
                     (listOfNotNull(st.actions.active) + st.actions.waiting).forEach { a -> vadEnds.putIfAbsent(a.turnId, a.speechEndAt) }
                 }
             }
+            // Diagnostics: every change of the turn-taking's shape (no words, only counts), on the actor's clock.
+            watch.launch {
+                var last = ""
+                actor.state.collect { st ->
+                    val t = st.turn
+                    val line = "speaking=${st.userSpeaking} stage=${t.pause?.stage} heard=${words(t.heard)}w pending=${t.pending.size} " +
+                        "parked=${t.parked} bill=${st.speech.current != null} actions=${listOfNotNull(st.actions.active).size + st.actions.waiting.size}"
+                    if (line != last) {
+                        last = line
+                        synchronized(timeline) { timeline += System.nanoTime() / 1_000_000 to line }
+                    }
+                }
+            }
             // The noise floor learns over the first 2 s: give it quiet first (the source idles in silence).
             Thread.sleep(2_500)
 
             corpus.enqueue(pcm, "request", silenceAfterMs = 4_000)
             val speechMs = pcm.size * 1000L / 16_000 / 2 // fed at twice real time
             val fedAt = waitFor("request fed", 30_000) { corpus.clipStarts.containsKey("request") }
+            anchor = fedAt
             // The clip's end (fed at twice real time): the old anchor, kept as `clip_end_*`.
             val clipEnd = fedAt + speechMs
             fun at(e: (CascadeEvent) -> Boolean) = synchronized(events) { events.firstOrNull { e(it.second) }?.first }
@@ -250,6 +268,7 @@ class BillSmokeTest {
             result.put("pass", false).put("error", e.javaClass.simpleName + ": " + e.message?.take(160))
             throw e
         } finally {
+            runCatching { diagnose(result, shell, timeline, events, anchor) }
             File(context.getExternalFilesDir(null), "smoke").apply { mkdirs() }.resolve("bill.json").writeText(result.toString(2))
             android.util.Log.i("HermesSmoke", "BILL_SMOKE $result")
             watch.cancel()
@@ -260,6 +279,39 @@ class BillSmokeTest {
             shell.onSettingsChanged()
             runBlocking { g.account.signOut() }
         }
+    }
+
+    private fun words(text: String) = text.split(' ').count { it.isNotBlank() }
+
+    /**
+     * What happened to the turn, for a smoke that failed: the turn-taking's shape over time (counts,
+     * no words), the event types, and each decision-log record's outcome and Jev's `turn`/`action`
+     * picks with their confidence. Times are ms from the request clip's start ([anchor]).
+     */
+    private fun diagnose(result: JSONObject, shell: VoiceShell, timeline: List<Pair<Long, String>>, events: List<Pair<Long, CascadeEvent>>, anchor: Long) {
+        val d = JSONObject()
+        d.put("timeline", org.json.JSONArray(synchronized(timeline) { timeline.map { (t, l) -> "${t - anchor} $l" } }))
+        d.put("events", org.json.JSONArray(synchronized(events) { events.map { (t, e) -> "${t - anchor} ${e.javaClass.simpleName}" } }))
+        val decisions = org.json.JSONArray()
+        if (shell.dirs.decisions.isFile) {
+            shell.dirs.decisions.readLines().filter { it.isNotBlank() }.forEach { line ->
+                val r = JSONObject(line)
+                val a = r.optJSONObject("answers")
+                fun pick(q: String) = a?.optJSONObject(q)?.let { "${it.optString("choice")}@${"%.2f".format(it.optDouble("confidence"))}" }
+                // How the turn was committed: Jev's `done` at the pause, or the hold-silence rule (`hold_silence`).
+                if (r.optString("outcome") == "done" && !result.has("commit_via")) result.put("commit_via", (r.opt("via") as? String) ?: "pause")
+                decisions.put(
+                    JSONObject().put("turn", r.optString("turnId")).put("outcome", r.optString("outcome")).put("route", r.opt("route"))
+                        .put("via", r.opt("via")).put("slot", r.opt("slot")).put("failure", r.opt("failure")).put("jev_ms", r.opt("jevMs"))
+                        .put("jev_turn", pick("turn")).put("jev_action", pick("action")).put("jev_clarity", pick("clarity"))
+                        .put("jev_calls", r.optInt("jevCalls")).put("utterance_words", r.optJSONObject("state")?.optString("utterance")?.let(::words)),
+                )
+                // The smoke's own scripted sentence (test input, not user data): to logcat only, never bill.json.
+                r.optJSONObject("state")?.optString("utterance")?.let { android.util.Log.i("HermesSmoke", "BILL_SMOKE_HEARD ${r.optString("turnId")} ${r.optString("outcome")}: $it") }
+            }
+        }
+        d.put("decisions", decisions)
+        result.put("diag", d)
     }
 
     /** Wipe Bill's durable store, decision log and rotations (keep the TTS cache and the speech models). No runtime may be open. */
@@ -279,6 +331,17 @@ class BillSmokeTest {
 
         /** Shaped like a key, valid nowhere; used only with `openrouter.ai` unreachable. */
         const val DRY_KEY = "sk-or-v1-dryrun000000000000000000000000000000000000000000000000000000"
+    }
+
+    /** 16 kHz mono 16-bit samples as a WAV file. */
+    private fun wav16(pcm: ShortArray): ByteArray {
+        val data = pcm.size * 2
+        val b = java.nio.ByteBuffer.allocate(44 + data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        b.put("RIFF".toByteArray()).putInt(36 + data).put("WAVE".toByteArray())
+        b.put("fmt ".toByteArray()).putInt(16).putShort(1).putShort(1).putInt(16_000).putInt(32_000).putShort(2).putShort(16)
+        b.put("data".toByteArray()).putInt(data)
+        pcm.forEach { b.putShort(it) }
+        return b.array()
     }
 
     /** [text] spoken by OpenRouter TTS (24 kHz), as 16 kHz mono samples for the pipeline. */

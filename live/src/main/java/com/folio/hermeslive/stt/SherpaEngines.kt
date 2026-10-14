@@ -34,7 +34,18 @@ data class SttEngineConfig(
     /** Raised from sherpa's 5 s so dictation stays one segment (spec: sherpa-onnx findings). */
     val vadMaxSpeechS: Float = 60f,
     val vadThreshold: Float = 0.5f,
-)
+    /**
+     * Zeros fed after a segment ends, so the streaming model decodes its last word. 0.66 s as in
+     * sherpa-onnx's own examples; was 0.3 s until 2026-10-14, which clipped a final plosive
+     * ("… in stock" heard as "… in sto") on 5 of 6 saved smoke requests at pace 0 (0 of 6 at
+     * 0.66), and a clipped request is what Jev then judged unfinished (`TailPadDeviceTest`).
+     */
+    val tailPadS: Double = TAIL_PAD_S,
+) {
+    companion object {
+        const val TAIL_PAD_S = 0.66
+    }
+}
 
 /**
  * sherpa-onnx v1.13.8 behind the [Engines] interfaces. sherpa-onnx exits the process on a
@@ -42,8 +53,6 @@ data class SttEngineConfig(
  * where [Hotwords.supported] allows. Silero VAD comes from the bundled asset.
  */
 object SherpaEngines {
-    private const val TAIL_PAD_S = 0.3
-
     fun load(assets: AssetManager, models: ModelManager, config: SttEngineConfig): SttEngines {
         val vad = vad(assets, config)
         val streaming = streaming(models, config)
@@ -136,13 +145,13 @@ object SherpaEngines {
         return object : StreamingEngine {
             override val model: SttModel = model
 
-            override fun open(hotwords: String): StreamingSession = Session(recognizer, recognizer.createStream(hotwords), model.upperCase)
+            override fun open(hotwords: String): StreamingSession = Session(recognizer, recognizer.createStream(hotwords), model.upperCase, config.tailPadS)
 
             override fun release() = recognizer.release()
         }
     }
 
-    private class Session(val recognizer: OnlineRecognizer, val stream: OnlineStream, val upperCase: Boolean) : StreamingSession {
+    private class Session(val recognizer: OnlineRecognizer, val stream: OnlineStream, val upperCase: Boolean, val tailPadS: Double) : StreamingSession {
         override fun accept(samples: FloatArray) {
             stream.acceptWaveform(samples, AudioRate.HZ)
             while (recognizer.isReady(stream)) recognizer.decode(stream)
@@ -155,7 +164,7 @@ object SherpaEngines {
         }
 
         override fun finish() {
-            stream.acceptWaveform(FloatArray((AudioRate.HZ * TAIL_PAD_S).toInt()), AudioRate.HZ)
+            stream.acceptWaveform(FloatArray((AudioRate.HZ * tailPadS).toInt()), AudioRate.HZ)
             stream.inputFinished()
             while (recognizer.isReady(stream)) recognizer.decode(stream)
         }

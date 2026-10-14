@@ -1,6 +1,7 @@
 package com.folio.fakehermes
 
 import com.folio.hermes.HermesGateway
+import com.folio.hermes.cascade.AppLines
 import com.folio.hermes.cascade.AudioClip
 import com.folio.hermes.cascade.CascadeCore
 import com.folio.hermes.cascade.CascadeEvent
@@ -101,9 +102,17 @@ class GoldenCallTest {
         val briefPrompts = CopyOnWriteArrayList<String>()
 
         override suspend fun jev(state: JsonObject, questions: Map<String, JevQuestion>, timeoutMs: Long): OpenRouterResult<Map<String, JevAnswer>> {
-            val latest = state["latest"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            // The keep_listening recheck asks about the held words with nothing new (`latest` empty): route on all of them.
+            val latest = state["latest"]?.jsonPrimitive?.contentOrNull.orEmpty().ifBlank { state["utterance"]?.jsonPrimitive?.contentOrNull.orEmpty() }
             val route = routes.entries.firstOrNull { latest.contains(it.key, ignoreCase = true) }?.value ?: mapOf("action" to "reply")
-            return OpenRouterResult.Ok((mapOf("turn" to "done") + route).mapValues { (_, v) -> JevAnswer("choice", v, mapOf(v to 0.95), 0.95) })
+            // A value may carry its confidence ("done@0.51"); 0.95 otherwise.
+            return OpenRouterResult.Ok(
+                (mapOf("turn" to "done") + route).mapValues { (_, v) ->
+                    val choice = v.substringBefore('@')
+                    val conf = v.substringAfter('@', "0.95").toDouble()
+                    JevAnswer("choice", choice, mapOf(choice to conf), conf)
+                },
+            )
         }
 
         /** The spoken writer: a result is read back in Hermes's own words (its first sentence); anything else gets one line. */
@@ -313,6 +322,57 @@ class GoldenCallTest {
         assertEquals("start.lookup", call.heard().first())
         assertEquals(TaskUiStatus.Done, call.actor.ui.value.tasks.single().status)
         assertEquals(1, promptCount())
+        noDoubles()
+    }
+
+    // ── 1c. the hold-silence rule: no held turn waits forever ─────────────────────────────
+
+    /**
+     * Found on the emulator smoke (2026-10-14): the fast pass heard "… we have in sto", Jev said
+     * `turn = done` at 0.51 (under the 0.60 floor) at the pause and at the recheck, and the turn
+     * stayed held with Bill silent. Now, after `holdSilenceMs` of silence, words Jev reads as a
+     * request (`action` ≥ the floor) are committed: the line, the task, the result.
+     */
+    @Test fun aClippedRequestJevIsUnsureOfIsCommittedAfterSilence() {
+        h.signIn()
+        val call = Call(
+            routes = mapOf("in sto" to newTask(line = "start.lookup") + ("turn" to "done@0.51") + ("action" to "new_task@0.98")),
+            briefs = mapOf("in sto" to listOf("Check stock of the Kestrel aviators.")),
+            settings = HOLD,
+        )
+        call.start()
+        call.say("Check how many Kestrel aviators we have in sto")
+
+        call.until("the result spoken") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        assertEquals("the stock line, never a prompt: ${call.heard()}", "start.lookup", call.heard().first())
+        assertTrue(call.heard().none { it == AppLines.HOLD_GO_ON || it == AppLines.HOLD_CONFIRM })
+        assertEquals(TaskUiStatus.Done, call.actor.ui.value.tasks.single().status)
+        assertTrue(prompts().single().contains("we have in sto"))
+        assertEquals(1, promptCount())
+        noDoubles()
+    }
+
+    /** Held words that are not a request: "Go on" once, then "go ahead?"; the answer joins them and nothing was sent before. */
+    @Test fun heldWordsThatAreNotARequestGetGoOnThenGoAheadThenTheAnswerJoinsThem() {
+        h.signIn()
+        val call = Call(
+            routes = mapOf(
+                "kestrel stock" to newTask(line = "start.lookup"),
+                "the thing about" to mapOf("turn" to "keep_listening@0.9", "action" to "reply@0.2"),
+            ),
+            briefs = mapOf("kestrel stock" to listOf("Check stock of the Kestrel aviators.")),
+            settings = HOLD,
+        )
+        call.start()
+        call.say("So the thing about the")
+        call.until("go on, then go ahead") { call.heard() == listOf(AppLines.HOLD_GO_ON, AppLines.HOLD_CONFIRM) && !call.actor.speaking }
+        assertEquals("nothing sent while held", 0, promptCount())
+        assertEquals(listOf("So the thing about the"), call.actor.state.value.turn.pending)
+
+        call.say("Yes, check the Kestrel stock")
+        call.until("the result spoken") { call.events.any { it is CascadeEvent.ResultSpoken } && !call.actor.speaking }
+        assertTrue(prompts().single().contains("So the thing about the Yes, check the Kestrel stock"))
+        assertEquals(listOf(AppLines.HOLD_GO_ON, AppLines.HOLD_CONFIRM, "start.lookup"), call.heard().take(3))
         noDoubles()
     }
 
@@ -602,5 +662,8 @@ class GoldenCallTest {
 
         /** The shortest pause the setting allows, so each call is quick. */
         val SETTINGS = CascadeSettings(pauseMs = 400)
+
+        /** The hold-silence golden calls: the recheck and the silence shortened (real time on the wire). */
+        val HOLD = SETTINGS.copy(holdRecheckMs = 300, holdSilenceMs = 400)
     }
 }

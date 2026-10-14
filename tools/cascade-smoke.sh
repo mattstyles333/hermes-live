@@ -41,7 +41,7 @@ if [[ -z ${SKIP_BUILD:-} ]]; then (cd "$ROOT" && ./gradlew -q :live:assembleDebu
 "${ADB[@]}" install -r -t "$ROOT/live/build/outputs/apk/androidTest/debug/live-debug-androidTest.apk" >/dev/null
 
 # A result left on the device by an earlier run must never be read as this run's.
-"${ADB[@]}" shell rm -f /sdcard/Android/data/com.folio.hermeslive/files/smoke/bill.json
+"${ADB[@]}" shell rm -f /sdcard/Android/data/com.folio.hermeslive/files/smoke/bill.json /sdcard/Android/data/com.folio.hermeslive/files/smoke/request.wav
 "${ADB[@]}" shell screenrecord --time-limit 45 /sdcard/Download/bill-smoke.mp4 >/dev/null 2>&1 &
 rec=$!
 set +e
@@ -53,6 +53,8 @@ wait $rec 2>/dev/null || true
 
 D=/sdcard/Android/data/com.folio.hermeslive/files
 "${ADB[@]}" pull "$D/smoke/bill.json" "$OUT/bill.json" >/dev/null 2>&1 || true
+# The request as fed (made-up words, TTS): to decode a misheard run again (TailPadDeviceTest).
+"${ADB[@]}" pull "$D/smoke/request.wav" "$OUT/request.wav" >/dev/null 2>&1 || true
 "${ADB[@]}" pull /sdcard/Download/bill-smoke-midtask.png "$OUT/bill-smoke-midtask.png" >/dev/null 2>&1 || true
 "${ADB[@]}" pull /sdcard/Download/bill-smoke.mp4 "$OUT/bill-smoke.mp4" >/dev/null 2>&1 || true
 curl -fsS "http://127.0.0.1:$PORT/__fake/assert/prompts" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({"prompts": d.get("count")}))' >"$OUT/fake-prompts.json"

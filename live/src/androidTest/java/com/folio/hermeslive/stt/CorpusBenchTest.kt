@@ -22,6 +22,8 @@ class CorpusBenchTest {
     private val combos = listOf(
         Combo("zipformer+p110m", SttEngineConfig(), false),
         Combo("zipformer+p110m+hotwords", SttEngineConfig(), true),
+        // The tail padding before 2026-10-14 (0.3 s; now 0.66 s), for comparison.
+        Combo("zipformer+p110m+pad0.3", SttEngineConfig(tailPadS = 0.3), false),
         Combo("zipformer+p06b", SttEngineConfig(accurate = SttCatalog.parakeet06b), false),
         Combo("zipformer+p06b+hotwords", SttEngineConfig(accurate = SttCatalog.parakeet06b), true),
         Combo("zipformer-greedy", SttEngineConfig(decoding = Hotwords.GREEDY, accurate = null), false),

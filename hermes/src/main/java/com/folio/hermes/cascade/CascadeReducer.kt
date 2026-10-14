@@ -273,7 +273,20 @@ class CascadeReducer(val env: CascadeEnv) {
     private fun Tx.onTurn(event: TurnEvent) {
         stopTicker()
         if (event is TurnEvent.Parked) {
-            log(DecisionRecord(turnId = event.turnId, atMs = s.wallMs, outcome = "parked"))
+            log(
+                DecisionRecord(
+                    turnId = event.turnId, atMs = s.wallMs, outcome = "parked", answers = event.answers?.logged().orEmpty(),
+                    failure = event.failure?.wire, jevCalls = 1, jevMs = event.jevMs,
+                ),
+            )
+            gate()
+            return
+        }
+        if (event is TurnEvent.Prompted) {
+            // The hold-silence rule: held words, real silence, not a request. Said as a reply (the held words gate everything else).
+            val line = say(event.slot, SpeechKind.Reply)
+            log(DecisionRecord(turnId = event.turnId, atMs = s.wallMs, outcome = "hold_prompt", slot = event.slot, line = line))
+            report("cascade.turn", mapOf("outcome" to "hold_prompt", "slot" to event.slot))
             gate()
             return
         }
@@ -282,7 +295,7 @@ class CascadeReducer(val env: CascadeEnv) {
             is TurnEvent.Holding -> event.timing
             is TurnEvent.Ignored -> event.timing
             is TurnEvent.NoAnswer -> event.timing
-            is TurnEvent.Parked -> JevTiming(null, null, 0)
+            is TurnEvent.Parked, is TurnEvent.Prompted -> JevTiming(null, null, 0)
         }
         val answers = when (event) {
             is TurnEvent.Done -> event.answers
@@ -316,6 +329,7 @@ class CascadeReducer(val env: CascadeEnv) {
                     state = event.request.state,
                     questions = event.request.questions.keys.toList(),
                     route = decision.route.wire,
+                    via = event.via,
                 )
                 flushAwaiting()
                 val action = hooks.committed(this, ActionState(event.turnId, text, decision, event.speechEndAt, record), event)
@@ -334,9 +348,10 @@ class CascadeReducer(val env: CascadeEnv) {
                 if (s.settings.accuratePass) effects += Effect.DropSpeech(event.turnId)
                 hooks.noAnswer(this, event, base)
             }
-            is TurnEvent.Parked -> Unit
+            is TurnEvent.Parked, is TurnEvent.Prompted -> Unit
         }
-        report("cascade.turn", mapOf("outcome" to outcomeWire(event), "jev_calls" to timing.calls, "jev_ms" to timing.jevMs, "to_jev_ms" to timing.speechEndToJevMs))
+        val via = (event as? TurnEvent.Done)?.via
+        report("cascade.turn", mapOf("outcome" to outcomeWire(event), "jev_calls" to timing.calls, "jev_ms" to timing.jevMs, "to_jev_ms" to timing.speechEndToJevMs) + (if (via != null) mapOf("via" to via) else emptyMap()))
         gate()
     }
 
@@ -388,11 +403,14 @@ class CascadeReducer(val env: CascadeEnv) {
         is TurnEvent.Ignored -> "ignore"
         is TurnEvent.NoAnswer -> "no_answer"
         is TurnEvent.Parked -> "parked"
+        is TurnEvent.Prompted -> "hold_prompt"
     }
 
     private fun Tx.timer(timer: Timer) {
         when (timer.name) {
             TurnRules.EARLY, TurnRules.COMMIT, TurnRules.RECHECK -> turn(TurnRules.timer(s.turn, timer, s.nowMs, ask))
+            // Real silence only: not while the user speaks, Bill speaks, or an action is under way.
+            TurnRules.SILENCE -> turn(TurnRules.timer(s.turn, timer, s.nowMs, ask, busy = s.userSpeaking || s.speaking || s.actions.active != null || s.actions.waiting.isNotEmpty()))
             OUTBOX_RETRY -> if (s.outboxRetrySeq == timer.seq) {
                 s = s.copy(outboxRetrySeq = null)
                 // As if the network came back: flush what is held (a new offline failure holds and arms again).

@@ -35,6 +35,14 @@ object Router {
         }
     }
 
+    /**
+     * The hold-silence rule: held words look like a request when Jev's `action` for them is at or
+     * above [CascadeSettings.actionFloor]. Never a goodbye: silence after a held "ok, bye for…"
+     * asks instead of hanging up.
+     */
+    fun looksLikeRequest(answers: Map<String, JevAnswer>, settings: CascadeSettings): Boolean =
+        answers[CascadeBrain.ACTION]?.let { it.confidence >= settings.actionFloor && it.choice != null && it.choice != CascadeBrain.END_CALL } == true
+
     /** `action = end_call` at or above `endCallDoneFloor` (hub decision 2026-10-14). */
     fun sureGoodbye(answers: Map<String, JevAnswer>, settings: CascadeSettings): Boolean =
         answers[CascadeBrain.ACTION]?.let { it.choice == CascadeBrain.END_CALL && it.confidence >= settings.endCallDoneFloor } == true

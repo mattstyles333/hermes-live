@@ -59,7 +59,12 @@ import org.junit.Test
  * 4. **stale results are never applied:** a result the actor already consumed (Jev, writer,
  *    timer, clip, playback, busy mode), delivered again, changes nothing and does nothing;
  * 5. **the UI is consistent:** the screen state is the projection of the state, and its phase,
- *    offline pill and task cards agree with it.
+ *    offline pill and task cards agree with it;
+ * 6. **no held turn waits forever in silence** (the hold-silence rule, 2026-10-14): words still
+ *    held after [HOLD_BOUND_MS] of quiet since the user last spoke were committed, or Bill has
+ *    asked both "Go on" and "go ahead?" since. Jev's held routes cover a request it is unsure is
+ *    finished ([Route.HeldRequest]), words that are not a request ([Route.HeldUnsure]) and a
+ *    recheck that times out ([Route.HeldTimeout]); every one stays keep_listening at the recheck.
  *
  * Seeded and reproducible: [SEQUENCES] sequences from [BASE_SEED]. A failure prints the seed and a
  * minimal sequence (shrunk by removing operations while it still fails). To replay one sequence,
@@ -69,7 +74,7 @@ class CascadePropertyTest {
     private val bank = PhraseBank.load()
     private val settings = CascadeSettings()
 
-    enum class Route { NewTask, Status, Cancel, Update, Reply, KeepListening, Ignore, Timeout, Offline }
+    enum class Route { NewTask, Status, Cancel, Update, Reply, KeepListening, HeldRequest, HeldUnsure, HeldTimeout, Ignore, Timeout, Offline }
 
     /** One step of a call. Every value the run depends on is here, so a list of these replays exactly. */
     sealed interface Op {
@@ -112,14 +117,17 @@ class CascadePropertyTest {
     }
 
     private fun pickRoute(random: Random): Route = when (random.nextInt(100)) {
-        in 0 until 35 -> Route.NewTask
-        in 35 until 43 -> Route.Status
-        in 43 until 51 -> Route.Cancel
-        in 51 until 61 -> Route.Update
-        in 61 until 73 -> Route.Reply
-        in 73 until 81 -> Route.KeepListening
-        in 81 until 86 -> Route.Ignore
-        in 86 until 93 -> Route.Timeout
+        in 0 until 32 -> Route.NewTask
+        in 32 until 40 -> Route.Status
+        in 40 until 48 -> Route.Cancel
+        in 48 until 58 -> Route.Update
+        in 58 until 68 -> Route.Reply
+        in 68 until 74 -> Route.KeepListening
+        in 74 until 78 -> Route.HeldRequest
+        in 78 until 82 -> Route.HeldUnsure
+        in 82 until 85 -> Route.HeldTimeout
+        in 85 until 89 -> Route.Ignore
+        in 89 until 95 -> Route.Timeout
         else -> Route.Offline
     }
 
@@ -139,6 +147,10 @@ class CascadePropertyTest {
         val newest = HashMap<String, Long>()
         val finishedPieces = HashSet<Piece>()
         val decisions = mutableListOf<DecisionRecord>()
+
+        /** When the user last stopped speaking, and the hold-silence prompts Bill said (time, slot). */
+        var lastSpeechEnd = 0L
+        val holdPrompts = mutableListOf<Pair<Long, String>>()
 
         /** Results the actor has consumed (correlation-id events), for the stale replays. */
         val consumed = mutableListOf<Event>()
@@ -165,8 +177,30 @@ class CascadePropertyTest {
         val router = object : OpenRouterPort {
             override suspend fun jev(state: JsonObject, questions: Map<String, JevQuestion>, timeoutMs: Long): OpenRouterResult<Map<String, JevAnswer>> {
                 val latest = state["latest"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val utterance = state["utterance"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                // The recheck asks about held words with nothing new: a held route answers the same about them.
+                val held = Regex("item (\\d+)").findAll(utterance).mapNotNull { says[it.groupValues[1].toInt()] }.lastOrNull { it.route in HELD }
                 val say = Regex("item (\\d+)").findAll(latest).lastOrNull()?.groupValues?.get(1)?.toInt()?.let { says[it] }
+                    ?: held?.takeIf { latest.isBlank() }
                     ?: return OpenRouterResult.Ok(mapOf("turn" to answer("done", 0.95), "action" to answer("reply", 0.95)))
+                if (say.route in HELD && online.value) {
+                    val recheck = (state["silence_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L) >= settings.pause + settings.holdRecheckMs
+                    if (recheck && say.route == Route.HeldTimeout) {
+                        delay(timeoutMs)
+                        return OpenRouterResult.Failed(FailureKind.Timeout)
+                    }
+                    delay(say.jevMs)
+                    // Unsure the request is finished (`done` under the 0.60 floor) at the pause and at the recheck.
+                    val sure = say.route != Route.HeldUnsure
+                    return OpenRouterResult.Ok(
+                        mapOf(
+                            "turn" to answer(if (sure) "done" else "keep_listening", if (sure) 0.51 else 0.9),
+                            "action" to answer(if (sure) "new_task" else "reply", if (sure) 0.95 else 0.2),
+                            "split" to answer("one", 0.95), "clarity" to answer("clear", 0.95), "line" to answer("start.one", 0.95),
+                            "enough" to answer("line_then_writer", 0.95),
+                        ),
+                    )
+                }
                 if (!online.value) {
                     delay(15)
                     return OpenRouterResult.Failed(FailureKind.Offline)
@@ -283,6 +317,7 @@ class CascadePropertyTest {
         private fun allow(e: Effect): Boolean {
             if (e is Effect.Play && actor.state.value.userSpeaking) throw Violation(PLAYED_OVER_USER, "'${e.piece.text}' started while the user was speaking")
             if (e is Effect.LogDecision) world.decisions += e.record
+            if (e is Effect.LogDecision && e.record.outcome == "hold_prompt") world.holdPrompts += world.ts.testScheduler.currentTime to e.record.slot.orEmpty()
             correlation(e)?.let { (kind, id) -> world.newest.merge(kind, id, ::maxOf) }
             val left = killIn ?: return true
             killIn = left - 1
@@ -351,6 +386,8 @@ class CascadePropertyTest {
                 check(w, null)
                 questions += w.questions
                 corrections += w.server.prompts.count { it.startsWith("Correction:") }
+                silenceCommits += w.decisions.count { it.via == TurnRules.HOLD_SILENCE }
+                holdAsks += w.holdPrompts.size
                 // A turn still held (Jev failed while flushing) waits durably for the next call: start one.
                 if (w.proc.actor.state.value.outbox.size > 0) {
                     restart(w)
@@ -383,6 +420,7 @@ class CascadePropertyTest {
                 advanceTimeBy(op.speechMs)
                 runCurrent()
                 actor.speechEnded()
+                w.lastSpeechEnd = testScheduler.currentTime
                 runCurrent()
             }
             is Op.Wait -> {
@@ -452,6 +490,8 @@ class CascadePropertyTest {
             if (done && t.currentTool != null) throw Violation(UI, "finished card ${t.id} still shows a tool")
         }
         if (s.userSpeaking && w.proc.speaker.playing && s.speech.current == null) throw Violation(PLAYED_OVER_USER, "audio playing with nothing current while the user speaks")
+        // 6. No held turn waits forever in silence.
+        heldForever(w)
         // 4. Stale results: a consumed result delivered again changes nothing.
         val sample = w.consumed.filter { w.stale(it) }.shuffled(w.pick).take(4)
         for (e in sample) {
@@ -462,6 +502,16 @@ class CascadePropertyTest {
         }
         // 1. Doubles, as soon as they happen.
         doubles(w)
+    }
+
+    private fun heldForever(w: World) {
+        val s = w.proc.actor.state.value
+        if (s.turn.pending.isEmpty() || s.userSpeaking || s.turn.pause != null) return
+        val quiet = w.ts.testScheduler.currentTime - w.lastSpeechEnd
+        if (quiet < HOLD_BOUND_MS) return
+        val asked = w.holdPrompts.filter { it.first >= w.lastSpeechEnd }.map { it.second }
+        if (AppLines.HOLD_CONFIRM in asked) return
+        throw Violation(HELD_FOREVER, "${s.turn.pending.size} held pieces after ${quiet} ms of quiet, Bill asked $asked (parked ${s.turn.parked}, silence ${s.turn.silence?.step})")
     }
 
     private fun doubles(w: World) {
@@ -527,9 +577,15 @@ class CascadePropertyTest {
     private var questions = 0
     private var corrections = 0
 
+    /** Coverage of the hold-silence rule: held words committed after silence, and prompts said. */
+    private var silenceCommits = 0
+    private var holdAsks = 0
+
     private fun invariants(accurate: Boolean) {
         questions = 0
         corrections = 0
+        silenceCommits = 0
+        holdAsks = 0
         val only = System.getenv("CASCADE_PROPERTY_SEED")?.toLongOrNull()
         val seeds = if (only != null) listOf(only) else (0 until SEQUENCES).map { BASE_SEED + it }
         for (seed in seeds) {
@@ -546,6 +602,8 @@ class CascadePropertyTest {
         if (only == null) {
             println("key doubt over ${seeds.size} calls (accurate pass ${if (accurate) "on" else "off"}): $questions questions, $corrections corrections")
             assertTrue("the key-doubt path ran: $questions questions, $corrections corrections", questions > 0 && corrections > 0)
+            println("hold silence over ${seeds.size} calls (accurate pass ${if (accurate) "on" else "off"}): $silenceCommits commits, $holdAsks prompts")
+            assertTrue("the hold-silence rule ran: $silenceCommits commits, $holdAsks prompts", silenceCommits > 0 && holdAsks > 0)
         }
     }
 
@@ -562,6 +620,11 @@ class CascadePropertyTest {
         const val PLAYED_OVER_USER = "played while the user spoke"
         const val STALE = "stale result applied"
         const val UI = "inconsistent UI"
+        const val HELD_FOREVER = "held turn waits forever in silence"
+
+        /** Held words get an answer within this much quiet: pause 1 s + recheck 2.5 s + Jev ≤ 2.5 s + 2 × 4 s, and slack for Bill's own speech. */
+        const val HOLD_BOUND_MS = 30_000L
+        val HELD = setOf(Route.HeldRequest, Route.HeldUnsure, Route.HeldTimeout)
         const val SEQUENCES = 500
         val TRACE = System.getenv("CASCADE_PROPERTY_TRACE") == "1"
         const val BASE_SEED = 20_261_014L

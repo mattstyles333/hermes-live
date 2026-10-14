@@ -88,6 +88,12 @@ object AppLines {
     const val WHICH_CANCEL = "cancel.which"
     const val WHICH_ONE = "clarify.which"
 
+    /** The hold-silence rule's first prompt: held words that do not look like a request, then silence ("Go on."). */
+    const val HOLD_GO_ON = "listen.patient"
+
+    /** Its second, after more silence ("Just to check, go ahead?"). */
+    const val HOLD_CONFIRM = "clarify.confirm"
+
     /** Groups only the app picks from. */
     val APP_GROUPS = setOf("wait", "limit", "approval", "error", "end")
 
