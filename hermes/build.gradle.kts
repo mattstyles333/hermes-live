@@ -47,4 +47,12 @@ tasks.withType<Test>().configureEach {
     // Only these switches are inputs; the OpenRouter key never is.
     inputs.property("recordJev", providers.environmentVariable("RECORD_JEV").orElse(""))
     inputs.property("updateJevEffective", providers.environmentVariable("UPDATE_JEV_EFFECTIVE").orElse(""))
+    // The opt-in live tests' secrets (OpenRouter key, telemetry URL) never go into a
+    // configuration-cache entry: dropped from the task's environment here, read when it runs.
+    val secrets = listOf("OPENROUTER_API_KEY", "TELEMETRY_LIVE_URL")
+    secrets.forEach { environment.remove(it) }
+    doFirst {
+        val test = this as Test
+        secrets.forEach { name -> System.getenv(name)?.let { test.environment(name, it) } }
+    }
 }

@@ -241,6 +241,7 @@ class Tx(var s: State, val env: CascadeEnv) {
     fun endFlush() {
         val f = s.flush ?: return
         s = s.copy(flush = null)
+        if (s.outbox.size == 0) s = s.copy(outboxRetryDelayMs = 0L)
         if (f.sent > 0) report("cascade.outbox", mapOf("event" to "sent", "count" to f.sent, "size" to s.outbox.size))
     }
 
@@ -251,8 +252,9 @@ class Tx(var s: State, val env: CascadeEnv) {
     fun armOutboxRetry() {
         if (!s.connection.portOnline || s.outboxRetrySeq != null) return
         val seq = nextSeq()
-        s = s.copy(outboxRetrySeq = seq)
-        effects += Effect.StartTimer(Timer(CascadeReducer.OUTBOX_RETRY, seq), s.settings.offlineRetryMs)
+        val wait = if (s.outboxRetryDelayMs <= 0L) s.settings.offlineRetryMs else minOf(s.outboxRetryDelayMs * 2, s.settings.offlineRetryMaxMs)
+        s = s.copy(outboxRetrySeq = seq, outboxRetryDelayMs = wait)
+        effects += Effect.StartTimer(Timer(CascadeReducer.OUTBOX_RETRY, seq), wait)
     }
 
     /** Hold a turn for the network (C1 `holdOffline`): the first hold while online says `error.offline`. */

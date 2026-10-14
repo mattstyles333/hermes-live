@@ -35,6 +35,7 @@ class PropertyFindingsTest {
         val hermes = ClientHermes(server)
         val online = MutableStateFlow(true)
         val audio = FakeAudioOut(clock)
+        val store = MemoryStore()
         val router = FakeOpenRouter(clock).apply {
             cached += bank.allLines
             plan = { prompt -> OpenRouterResult.Ok(briefs(brief(prompt.substringAfter("Transcript: \"").substringBefore("\"\n"), "job", "On it."))) }
@@ -42,7 +43,7 @@ class PropertyFindingsTest {
         }
         val core = CascadeCore.create(
             scope = scope,
-            ports = CascadePorts(router, hermes, hermes, audio, MemoryStore(), clock, object : Network {
+            ports = CascadePorts(router, hermes, hermes, audio, store, clock, object : Network {
                 override val online = this@Rig.online
             }),
             bank = bank, settings = { CascadeSettings() }, telemetry = TelemetrySink.None, zone = ZoneOffset.UTC, seed = 9,
@@ -145,6 +146,44 @@ class PropertyFindingsTest {
         advanceTimeBy(500)
         runCurrent()
         assertEquals(null, rig.actor.state.value.speech.current)
+        rig.scope.cancel()
+    }
+
+    /**
+     * OpenRouter stays unreachable while the port says online: the retry stays quiet (no line per
+     * cycle) and backs off (10 s doubling to 5 min), so a 30-minute outage costs about ten Jev
+     * requests, not 180.
+     */
+    @Test fun aLongOutageRetriesQuietlyAndBacksOff() = runTest {
+        val rig = Rig(this)
+        rig.core.start()
+        runCurrent()
+        rig.online.value = false
+        runCurrent()
+        rig.say("check the Leeds stock")
+        advanceTimeBy(3_000)
+        runCurrent()
+        // Back on the port, but every Jev call fails as offline from now on.
+        rig.router.jevDefault = FakeOpenRouter.JevScript(20, OpenRouterResult.Failed(FailureKind.Offline))
+        val callsBefore = rig.router.jevCalls.size
+        val playedBefore = rig.audio.played.size
+        rig.online.value = true
+        advanceTimeBy(30 * 60_000L)
+        runCurrent()
+        val calls = rig.router.jevCalls.size - callsBefore
+        assertEquals("still held", 1, rig.actor.state.value.outbox.size)
+        assertTrue("backs off: $calls Jev calls in 30 min", calls in 5..12)
+        assertEquals("quiet: nothing spoken per retry", playedBefore, rig.audio.played.size)
+        // The network comes back for real (a port change): sent at once, the backoff starts again.
+        rig.router.jevDefault = FakeOpenRouter.JevScript(20, newTask)
+        rig.online.value = false
+        runCurrent()
+        rig.online.value = true
+        advanceTimeBy(3_000)
+        runCurrent()
+        assertEquals(0, rig.actor.state.value.outbox.size)
+        assertEquals(1, rig.server.prompts.count { "Leeds" in it })
+        assertEquals(0L, rig.actor.state.value.outboxRetryDelayMs)
         rig.scope.cancel()
     }
 }

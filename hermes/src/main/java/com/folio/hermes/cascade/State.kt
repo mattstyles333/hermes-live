@@ -181,6 +181,8 @@ data class State(
     val tickSeq: Long? = null,
     /** The outbox retry timer while held turns wait with the port online (additive). */
     val outboxRetrySeq: Long? = null,
+    /** The last retry wait (0: none yet); doubles per failed retry, back to 0 on a network change from the port. */
+    val outboxRetryDelayMs: Long = 0L,
     val tickBegan: Long = 0L,
     val pauseProgress: Float = 0f,
     val actions: ActionQueue = ActionQueue(),

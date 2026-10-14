@@ -71,7 +71,11 @@ class CascadeReducer(val env: CascadeEnv) {
                 if (!event.pressed) released()
             }
             is Event.OutputLevel -> s = s.copy(bill = s.bill.copy(level = event.level.coerceIn(0f, 1f)))
-            is Event.Network -> network(event.online)
+            is Event.Network -> {
+                // The port's word: a real network change also restarts the retry backoff.
+                s = s.copy(connection = s.connection.copy(portOnline = event.online), outboxRetryDelayMs = 0L)
+                network(event.online)
+            }
             is Event.HermesConnection -> s = s.copy(connection = s.connection.copy(hermesUp = event.up))
             is Event.Say -> say(event.slotId, event.kind)
             is Event.RenderProgressed -> s = s.copy(render = event.progress)
@@ -589,7 +593,6 @@ class CascadeReducer(val env: CascadeEnv) {
     // ── network and the outbox ──────────────────────────────────────────────────────────────
 
     private fun Tx.network(online: Boolean) {
-        s = s.copy(connection = s.connection.copy(portOnline = online))
         if (!online) {
             val was = s.connection.online
             if (was) emit(CascadeEvent.Offline)
