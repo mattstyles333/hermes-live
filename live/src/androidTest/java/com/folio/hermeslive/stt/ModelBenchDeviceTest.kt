@@ -65,7 +65,7 @@ class ModelBenchDeviceTest {
             val audioS = utts.sumOf { u -> u.timing?.audioMs ?: 0L } / 1000.0
             val decode = utts.mapNotNull { it.timing?.decodeMs?.toDouble() }
             val r = JSONObject()
-                .put("live", live.id).put("accurate", acc?.id)
+                .put("live", live.id).put("accurate", acc?.id).put("files", utts.size)
                 .put("live_hotwords", live.hotwords && Device.models.hasVocab(live))
                 .put("accurate_hotwords", acc?.let { it.hotwords && Device.models.hasVocab(it) } ?: false)
                 .put("live_mb_on_disk", Device.models.bytesOnDisk(live) / 1e6)

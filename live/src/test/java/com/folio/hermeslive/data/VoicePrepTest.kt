@@ -30,7 +30,7 @@ import org.junit.Test
 class VoicePrepTest {
     private val server = FakeOpenRouterServer()
     private val bank = PhraseBank(3, emptyMap(), listOf(PhraseSlot("ack.ok", "ack", "use", listOf("On it.", "Got it.", "Sure."))))
-    private var settings = LiveSettings(voiceEngine = VoiceEngine.Cascade)
+    private var settings = LiveSettings(voiceEngine = VoiceEngine.Cascade, liveModel = com.folio.hermeslive.stt.SttCatalog.zipformer.id, accurateModel = com.folio.hermeslive.stt.SttCatalog.parakeet110m.id)
     private var key = KeyStatus(true, KeyCheck.Valid)
     private val gate = CascadeGate({ settings }, { key })
     private val store = MemoryStore()

@@ -32,7 +32,8 @@ class VoiceSettingsTest {
     }
 
     @Test fun defaultsMapOntoTheSpecDefaults() {
-        assertEquals(CascadeSettings(), LiveSettings().cascadeSettings())
+        // Parakeet 0.6B by default (the bench): the longer accurate-pass wait; everything else the spec defaults.
+        assertEquals(CascadeSettings(accuratePassWaitMs = 2_500L), LiveSettings().cascadeSettings())
     }
 
     @Test fun everyVoiceFieldMapsOntoCascadeSettings() {
@@ -55,8 +56,8 @@ class VoiceSettingsTest {
 
     /** Spec v2 §14 item 11: High accuracy waits longer for the 0.6B second pass. */
     @Test fun highAccuracyWaitsLongerForTheAccuratePass() {
-        assertEquals(1_500L, LiveSettings().cascadeSettings().accuratePassWaitMs)
-        assertEquals(2_500L, LiveSettings(accurateModel = com.folio.hermeslive.stt.SttCatalog.parakeet06b.id).cascadeSettings().accuratePassWaitMs)
+        assertEquals(1_500L, LiveSettings(accurateModel = com.folio.hermeslive.stt.SttCatalog.parakeet110m.id).cascadeSettings().accuratePassWaitMs)
+        assertEquals(2_500L, LiveSettings().cascadeSettings().accuratePassWaitMs)
         assertEquals(0.45, LiveSettings().cascadeSettings().uncertainBelow, 1e-9)
     }
 
@@ -136,7 +137,7 @@ class VoiceSettingsTest {
     @Test fun cloudModeSendsTheChosenModelAndKeepsTheWaitLimit() {
         val s = LiveSettings(speechRecognition = SpeechRecognition.Cloud, cloudSttModel = "elevenlabs/scribe-v2").cascadeSettings()
         assertEquals("elevenlabs/scribe-v2", s.cloudSttModel)
-        assertEquals("the cloud never extends the wait", 1_500L, s.accuratePassWaitMs)
+        assertEquals("the cloud never extends the wait", LiveSettings().cascadeSettings().accuratePassWaitMs, s.accuratePassWaitMs)
         assertEquals("a custom id is kept", "someone/new-stt", LiveSettings(speechRecognition = SpeechRecognition.Cloud, cloudSttModel = " someone/new-stt ").cascadeSettings().cloudSttModel)
         assertEquals("a broken id falls back to the default", "assemblyai/universal-3-5-pro", LiveSettings(cloudSttModel = "not a model").normalized().cloudSttModel)
     }

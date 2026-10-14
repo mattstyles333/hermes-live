@@ -35,7 +35,7 @@ class HomeVoiceLineTest {
     val compose = createComposeRule()
 
     private val noOpenAi = VoiceLiveStatus(ok = true, mode = "gpt-live", available = false, reason = "no OpenAI API key (set OPENAI_API_KEY)")
-    private val bill = LiveSettings(voiceEngine = VoiceEngine.Cascade)
+    private val bill = LiveSettings(voiceEngine = VoiceEngine.Cascade, liveModel = com.folio.hermeslive.stt.SttCatalog.zipformer.id, accurateModel = com.folio.hermeslive.stt.SttCatalog.parakeet110m.id)
     private val validKey = KeyStatus(saved = true, check = KeyCheck.Valid, hint = "abcd")
     private val mb = 1_048_576L
 

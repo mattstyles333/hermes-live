@@ -24,8 +24,14 @@ object SpeechModelChoice {
     val LIVE: List<SttModel> = listOf(SttCatalog.zipformer, SttCatalog.nemotron, SttCatalog.moonshineBase)
     val ACCURATE: List<SttModel> = listOf(SttCatalog.parakeet110m, SttCatalog.parakeet06b)
 
-    val DEFAULT_LIVE: SttModel = SttCatalog.zipformer
-    val DEFAULT_ACCURATE: SttModel = SttCatalog.parakeet110m
+    /**
+     * The bench's rules (hub, 2026-10-14): Nemotron only if its emulator RTF at 4 threads is about
+     * 1.5 or less (it was 2.2-4.3), else Moonshine base when it beats Zipformer on WER (live text
+     * 8.9% vs 18.1%); Parakeet 0.6B when its p90 wait at commit stays within `accuratePassWaitMs`
+     * (795 ms paced, against 1.5 s and 2.5 s).
+     */
+    val DEFAULT_LIVE: SttModel = SttCatalog.moonshineBase
+    val DEFAULT_ACCURATE: SttModel = SttCatalog.parakeet06b
 
     /** A short name and what it is like, for the picker. */
     fun label(model: SttModel): String = when (model.id) {
@@ -41,11 +47,11 @@ object SpeechModelChoice {
     fun note(model: SttModel): String = NOTES[model.id] ?: ""
 
     private val NOTES = mapOf(
-        SttCatalog.zipformer.id to "Fast, light, takes your words",
-        SttCatalog.nemotron.id to "More accurate, heavy; no custom words",
-        SttCatalog.moonshineBase.id to "Small; no custom words",
-        SttCatalog.parakeet110m.id to "Quick",
-        SttCatalog.parakeet06b.id to "Most accurate, slower; a big download",
+        SttCatalog.zipformer.id to "Light, takes your words; 18% word errors while you talk",
+        SttCatalog.nemotron.id to "Best live words (7%), but too heavy for most phones; no custom words",
+        SttCatalog.moonshineBase.id to "Default: 9% word errors while you talk, light; no custom words",
+        SttCatalog.parakeet110m.id to "Quick; 6% word errors",
+        SttCatalog.parakeet06b.id to "Default: 4.6% word errors, more names right",
     )
 
     /** The live model chosen (or the default). */

@@ -84,12 +84,12 @@ class CascadeCallEngineTest {
         assertEquals(1, r.rt.gateway.connects)
         assertTrue(r.rt.core.actor.state.value.started)
         assertTrue(Earcon.Connected in r.effects.earcons)
-        assertFalse("standard models by default", stt.highAccuracy)
+        assertTrue("Parakeet 0.6B by default (the bench)", stt.highAccuracy)
     }
 
-    @Test fun highAccuracyAsksForTheBigSecondPass() = rig(LiveSettings(accurateModel = com.folio.hermeslive.stt.SttCatalog.parakeet06b.id)) { r ->
+    @Test fun theSmallSecondPassWhenChosen() = rig(LiveSettings(accurateModel = com.folio.hermeslive.stt.SttCatalog.parakeet110m.id)) { r ->
         r.live()
-        assertTrue(r.speech.built.single().highAccuracy)
+        assertFalse(r.speech.built.single().highAccuracy)
     }
 
     @Test fun muteSilencesWhatTheSpeechModelsHear() = rig { r ->

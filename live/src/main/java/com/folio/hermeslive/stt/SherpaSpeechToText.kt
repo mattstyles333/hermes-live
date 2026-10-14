@@ -112,7 +112,7 @@ class SherpaSpeechToText(
         val from = engines.streaming.model?.id
         Thread({
             val loaded = runCatching { load() }.getOrNull()
-            if (loaded != null && running.get()) pipeline.swapLiveWhenQuiet(loaded.engine, loaded.hotwords)
+            if (loaded != null && running.get()) pipeline.swapLiveWhenQuiet(loaded.engine, loaded.hotwords) else loaded?.engine?.let { runCatching { it.release() } }
             runCatching { onFallback(LiveFallback(from, loaded?.engine?.model?.id, reason, guard?.rtf ?: 0.0, loaded != null)) }
         }, "stt-live-fallback").apply { isDaemon = true }.start()
     }

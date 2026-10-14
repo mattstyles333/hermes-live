@@ -120,6 +120,9 @@ class BillSmokeTest {
                 it.copy(
                     voiceEngine = VoiceEngine.Cascade, startOnOpen = false,
                     speechRecognition = if (cloud) com.folio.hermeslive.data.SpeechRecognition.Cloud else com.folio.hermeslive.data.SpeechRecognition.OnDevice,
+                    // What a new install gets (`-e live` / `-e accurate` override), not what this emulator had first.
+                    liveModel = args.getString("live") ?: com.folio.hermeslive.data.SpeechModelChoice.DEFAULT_LIVE.id,
+                    accurateModel = args.getString("accurate") ?: com.folio.hermeslive.data.SpeechModelChoice.DEFAULT_ACCURATE.id,
                 )
             }
             result.put("live_model", com.folio.hermeslive.data.SpeechModelChoice.live(g.settings.settings.value).id)
