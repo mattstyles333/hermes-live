@@ -117,6 +117,18 @@ class CascadeTasks internal constructor(
     /** Every task (or just [taskId]), oldest first, from the event log only. */
     fun status(taskId: String? = null): List<TaskView> = views(actor.state.value, taskId)
 
+    /**
+     * What the user has not been told yet: finished tasks with an unread result (or an unread
+     * failure), and running tasks waiting on them. For a front end that attaches after they arrived.
+     */
+    fun unheard(): List<TaskNotice> = actor.state.value.tasks.tasks.mapNotNull { t ->
+        when {
+            t.state == TaskState.Running && t.waiting -> TaskNotice.NeedsYou(t.id, t.label, if (t.events.lastOrNull().let { it is TaskEvent.Waiting && it.what == "clarify" }) "clarify" else "approval")
+            t.unread && t.state == TaskState.Done -> TaskNotice.Finished(t.id, t.label, t.result.orEmpty(), ok = true)
+            else -> null
+        }
+    }
+
     /** Task [taskId]'s whole result, or null (no such task, or no result yet). Marks it heard. */
     suspend fun readResult(taskId: String): String? {
         val result = actor.state.value.tasks[taskId]?.result ?: return null
