@@ -10,7 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -87,10 +87,12 @@ class GrokRoutingEvalTest {
             if (case.pending.isNotBlank()) realtime.send(RealtimeProtocol.message("user", case.pending))
             realtime.send(RealtimeProtocol.message("user", case.heard))
             realtime.send(RealtimeProtocol.responseCreate())
+            // Up to and including `response.done`: the calls come "alongside" it, and may be listed in its output only.
             val seen = withTimeoutOrNull(30_000) {
-                events.takeWhile { it !is ServerEvent.ResponseDone }.toList()
+                events.transformWhile { emit(it); it !is ServerEvent.ResponseDone }.toList()
             }.orEmpty()
-            return seen.filterIsInstance<ServerEvent.Call>().firstOrNull()?.call
+            val calls = seen.filterIsInstance<ServerEvent.Call>().map { it.call } + seen.filterIsInstance<ServerEvent.ResponseDone>().flatMap { it.calls }
+            return calls.distinctBy { it.callId }.firstOrNull()
         } finally {
             realtime.close()
             scope.cancel()

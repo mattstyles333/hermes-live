@@ -126,23 +126,33 @@ class GrokSessionTest {
         s.stop()
     }
 
-    @Test fun aFinishedTaskIsInjectedOnlyWhenGrokIsIdleAndThenMarkedHeard() {
-        val s = connected()
+    /** A task started and finished on fake Hermes, its result now waiting to be told. */
+    private fun finishedTask(result: String = "Four in stock in Leeds. Two in York.") {
         runBlocking { core.tasks.startTask("check stock", "Stock check", key = "k1") }
         runBlocking { withTimeout(5_000) { core.actor.state.first { it.tasks["t1"]?.storedSessionId != null && hermes.prompts.isNotEmpty() } } }
+        hermes.complete("s1", result)
+        runBlocking { withTimeout(5_000) { core.actor.state.first { it.tasks["t1"]?.result != null } } }
+    }
+
+    private fun noNote() = assertTrue("nothing injected", fake.fence(fake.mark()).none { it.type == "conversation.item.create" })
+
+    @Test fun aFinishedTaskIsInjectedOnlyWhenGrokIsIdleAndThenMarkedHeard() {
+        val s = connected()
         // Grok is mid-answer: the result must wait.
         fake.responseCreated("r1")
         fake.audioDelta("r1", "a1", 300)
-        hermes.complete("s1", "Four in stock in Leeds. Two in York.")
-        runBlocking { withTimeout(5_000) { core.actor.state.first { it.tasks["t1"]?.result != null } } }
-        assertTrue("nothing injected mid-response", fake.fence(fake.mark()).none { it.type == "conversation.item.create" })
+        finishedTask()
+        noNote()
         fake.responseDone("r1")
-        assertTrue("nothing injected while the audio plays", fake.fence(fake.mark()).none { it.type == "conversation.item.create" })
+        noNote() // its audio still plays
         fake.speechStarted()
         fake.fence(fake.mark())
         playback.drain()
-        assertTrue("nothing injected while the user speaks", fake.fence(fake.mark()).none { it.type == "conversation.item.create" })
+        noNote() // the user speaks
         fake.speechStopped()
+        noNote() // the server is answering the user's turn
+        fake.responseCreated("r_user")
+        fake.responseDone("r_user")
         val note = fake.take("conversation.item.create")["item"]!!.jsonObject
         assertEquals("system", note["role"]!!.jsonPrimitive.content)
         val text = note["content"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content
@@ -152,6 +162,37 @@ class GrokSessionTest {
         fake.responseCreated("r2")
         fake.responseDone("r2")
         runBlocking { withTimeout(5_000) { core.actor.state.first { it.tasks["t1"]?.unread == false } } }
+        s.stop()
+    }
+
+    @Test fun aRefusedInjectionIsQueuedAgainAndStaysUnread() {
+        val s = connected()
+        finishedTask()
+        fake.take("conversation.item.create")
+        fake.take("response.create")
+        fake.send("""{"type":"error","error":{"type":"invalid_request_error","code":"busy","message":"x"}}""")
+        // Requeued and, Grok being idle, sent again; the first attempt never marks it heard.
+        fake.take("conversation.item.create")
+        fake.take("response.create")
+        assertTrue(core.actor.state.value.tasks["t1"]!!.unread)
+        s.stop()
+    }
+
+    @Test fun userSpeechAfterToolOutputsGetsTheServersAnswerNotASecondResponse() {
+        val s = connected()
+        fake.responseCreated("r1")
+        fake.audioDelta("r1", "a1", 300)
+        fake.functionCall("r1", "call_1", GrokTools.TASK_STATUS, "{}")
+        fake.responseDone("r1")
+        fake.take("conversation.item.create")
+        fake.speechStarted()
+        fake.fence(fake.mark())
+        playback.drain()
+        fake.speechStopped()
+        fake.responseCreated("r_user")
+        fake.responseDone("r_user")
+        assertTrue("no response.create of ours", fake.fence(fake.mark()).none { it.type == "response.create" })
+        assertTrue(fake.log.none { it.type == "response.create" })
         s.stop()
     }
 
@@ -217,6 +258,19 @@ class GrokSessionTest {
         fake.accept()
         s.networkBack()
         assertEquals("conv_1", fake.request().url.queryParameter("conversation_id"))
+        runBlocking { withTimeout(5_000) { s.ui.first { it.link is LinkState.Open } } }
+        s.stop()
+    }
+
+    @Test fun afterTheRetriesRunOutTheNetworkComingBackReconnects() {
+        val s = connected()
+        fake.request()
+        // The socket died before the phone noticed it was offline: every retry fails, then it gives up.
+        repeat(3) { fake.refuse(503) }
+        fake.socket!!.close(1011, "gone")
+        runBlocking { withTimeout(5_000) { s.ui.first { it.link == LinkState.Failed(GrokRealtime.UNREACHABLE) } } }
+        fake.accept()
+        s.networkBack()
         runBlocking { withTimeout(5_000) { s.ui.first { it.link is LinkState.Open } } }
         s.stop()
     }

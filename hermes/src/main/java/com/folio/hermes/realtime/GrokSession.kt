@@ -82,7 +82,7 @@ class GrokSession(
         data class Idle(val idle: Boolean) : Input
         data class Link(val state: LinkState) : Input
         data class ToolsDone(val outputs: List<Pair<FunctionCall, ToolOutcome>>, val cancelled: Boolean) : Input
-        data object Drained : Input
+        data class Grace(val turn: Int) : Input
     }
 
     private val inputs = Channel<Input>(Channel.UNLIMITED)
@@ -106,14 +106,29 @@ class GrokSession(
     private val seenCalls = hashSetOf<String>()
     private val queue = mutableListOf<TaskNotice>()
     private val queuedAt = hashMapOf<String, Long>()
-    private var injected: List<String> = emptyList()
+
+    /** The user's turn ended and the server's answer to it has not finished (or the grace ran out). */
+    private var turnPending = false
+    private var turnSeq = 0
+
+    /** Notices sent, waiting for their `response.created`; then bound to that response's id. */
+    private var injecting: List<TaskNotice>? = null
+    private var injectedResponse: String? = null
+    private var injected: List<TaskNotice> = emptyList()
+
+    /** We asked for a response and its `response.created` has not come. */
+    private var ownCreatePending = false
+
+    /** Tool outputs the socket did not take (it was reconnecting): resent if the conversation resumed. */
+    private val unsent = mutableListOf<Pair<FunctionCall, ToolOutcome>>()
     private var connectedOnce = false
     private var drainWait: Job? = null
 
     /** Connect and run. Results already waiting (from before the call) are queued first. */
     fun start(): Boolean {
-        tasks.unheard().forEach { inputs.trySend(Input.Notice(it)) }
         jobs += scope.launch { for (input in inputs) step(input) }
+        // After process death the store is read back first (bounded), so nothing waiting is missed.
+        jobs += scope.launch { tasks.unheard().forEach { inputs.send(Input.Notice(it)) } }
         jobs += scope.launch { realtime.events.collect { inputs.send(Input.Server(it)) } }
         jobs += scope.launch { tasks.notices.collect { inputs.send(Input.Notice(it)) } }
         jobs += scope.launch { playback.idle.collect { inputs.send(Input.Idle(it)) } }
@@ -132,7 +147,9 @@ class GrokSession(
 
     /** The network is back: reconnect (resuming). */
     fun networkBack() {
-        if (realtime.link.value is LinkState.Offline) realtime.reconnect()
+        val link = realtime.link.value
+        // A socket often fails before the phone notices it is offline: after the retries it is `unreachable`.
+        if (link is LinkState.Offline || link == LinkState.Failed(GrokRealtime.UNREACHABLE)) realtime.reconnect()
     }
 
     /** Hang-up: the socket closes, playback stops. Tasks keep running. */
@@ -152,7 +169,8 @@ class GrokSession(
             is Input.Idle -> _ui.value = _ui.value.copy(speaking = !input.idle)
             is Input.Link -> link(input.state)
             is Input.ToolsDone -> toolsDone(input.outputs, input.cancelled)
-            Input.Drained -> Unit
+            // No answer to the user's turn came: a VAD blip must not hold results back for ever.
+            is Input.Grace -> if (input.turn == turnSeq && !responding) turnPending = false
         }
         pump()
     }
@@ -162,12 +180,25 @@ class GrokSession(
             is ServerEvent.SpeechStarted -> bargeIn()
             is ServerEvent.SpeechStopped -> {
                 userSpeaking = false
+                // The server now commits the turn and answers it: nothing of ours goes in before that answer is done.
+                turnPending = true
+                val seq = ++turnSeq
+                scope.launch {
+                    kotlinx.coroutines.delay(TURN_GRACE_MS)
+                    inputs.send(Input.Grace(seq))
+                }
                 _ui.value = _ui.value.copy(userSpeaking = false)
             }
             is ServerEvent.UserTranscript -> _ui.value = _ui.value.copy(caption = e.text.takeLast(CAPTION_CHARS))
             is ServerEvent.ResponseCreated -> {
                 responding = true
+                ownCreatePending = false
                 dropAudio = false
+                injecting?.let { batch ->
+                    injected = batch
+                    injectedResponse = e.responseId
+                    injecting = null
+                }
                 _ui.value = _ui.value.copy(reply = "")
             }
             is ServerEvent.AudioDelta -> if (!dropAudio) {
@@ -185,8 +216,13 @@ class GrokSession(
             is ServerEvent.Ping -> realtime.send(RealtimeProtocol.pong(e.timestamp))
             is ServerEvent.Error -> {
                 _ui.value = _ui.value.copy(error = e.code ?: e.type)
-                // A refused `response.create` never gets its `response.created`: do not wait for it.
-                if (responding && e.type == "invalid_request_error") responding = false
+                // A refused `response.create` never gets its `response.created`: do not wait for it, and keep its notices.
+                if (ownCreatePending) {
+                    ownCreatePending = false
+                    responding = false
+                    injecting?.let { queue.addAll(0, it) }
+                    injecting = null
+                }
             }
             else -> Unit
         }
@@ -195,6 +231,8 @@ class GrokSession(
     /** The user started speaking: Grok stops at once; the server cancels the response under `server_vad`. */
     private fun bargeIn() {
         userSpeaking = true
+        // The server answers this turn itself, with any tool outputs already in its context.
+        createPending = false
         val speaking = !playback.idle.value
         if (speaking || responding) {
             playback.stop()
@@ -216,12 +254,15 @@ class GrokSession(
 
     private fun responseDone(e: ServerEvent.ResponseDone) {
         responding = false
+        turnPending = false
         e.calls.forEach(::gather)
         report("grok.response", mapOf("status" to e.status, "calls" to calls.size))
-        if (injected.isNotEmpty()) {
-            val heard = injected
+        if (injected.isNotEmpty() && e.responseId == injectedResponse) {
+            val batch = injected
             injected = emptyList()
-            scope.launch { heard.forEach { runCatching { tasks.heard(it) } } }
+            injectedResponse = null
+            // Said: read, never replayed. Cut off by the user: it stays unread on its card.
+            if (e.status == "completed") scope.launch { batch.map { it.taskId }.distinct().forEach { runCatching { tasks.heard(it) } } }
         }
         if (calls.isEmpty()) return
         val batch = calls.values.toList()
@@ -241,7 +282,7 @@ class GrokSession(
 
     private fun toolsDone(outputs: List<Pair<FunctionCall, ToolOutcome>>, cancelled: Boolean) {
         toolsRunning = false
-        outputs.forEach { (call, outcome) -> realtime.send(RealtimeProtocol.functionOutput(call.callId, outcome.output)) }
+        outputs.forEach { (call, outcome) -> if (!realtime.send(RealtimeProtocol.functionOutput(call.callId, outcome.output))) unsent += call to outcome }
         _ui.value = _ui.value.copy(
             chips = _ui.value.chips.map { chip ->
                 outputs.firstOrNull { it.first.callId == chip.callId }?.let { (_, o) -> chip.copy(ok = o.ok, taskId = taskIdOf(o.output)) } ?: chip
@@ -276,6 +317,18 @@ class GrokSession(
         }
         val first = !connectedOnce
         connectedOnce = true
+        if (unsent.isNotEmpty()) {
+            // Resumed: the calls are in the replayed history, so their outputs still belong. Otherwise they are gone.
+            if (state.resumed) {
+                unsent.forEach { (call, outcome) -> realtime.send(RealtimeProtocol.functionOutput(call.callId, outcome.output)) }
+                createPending = true
+            }
+            unsent.clear()
+        }
+        turnPending = false
+        injecting?.let { queue.addAll(0, it) }
+        injecting = null
+        ownCreatePending = false
         if (!first && !state.resumed) {
             // A new conversation: Grok has lost the task ids. Tell it, without a response.
             val views = tasks.status().filter { it.status == "running" || it.status == "queued" || it.status == "waiting_on_user" }
@@ -286,11 +339,14 @@ class GrokSession(
     /** The idle rule: one thing at a time, never over the user or over Grok's own audio. */
     private fun pump() {
         if (ending || realtime.link.value !is LinkState.Open) return
-        val quiet = playback.idle.value && !userSpeaking && !responding
+        val quiet = playback.idle.value && !userSpeaking && !responding && !turnPending
         if (createPending) {
             if (!quiet) return
             createPending = false
-            if (realtime.send(RealtimeProtocol.responseCreate())) responding = true
+            if (realtime.send(RealtimeProtocol.responseCreate())) {
+                responding = true
+                ownCreatePending = true
+            }
             report("grok.response_create", mapOf("after" to "tools"))
             return
         }
@@ -300,7 +356,8 @@ class GrokSession(
         val text = batch.joinToString("\n") { noteFor(it) }
         if (realtime.send(RealtimeProtocol.message(config().noticeRole, text)) && realtime.send(RealtimeProtocol.responseCreate())) {
             responding = true
-            injected = batch.map { it.taskId }.distinct()
+            ownCreatePending = true
+            injecting = batch
             batch.forEach { n ->
                 report("grok.notice", mapOf("kind" to kindOf(n), "waited_ms" to (queuedAt.remove(n.taskId)?.let { clock() - it } ?: 0L)))
             }
@@ -326,6 +383,9 @@ class GrokSession(
 
     companion object {
         const val CAPTION_CHARS = 280
+
+        /** How long after the user stops speaking the server has to start its answer before results may go in. */
+        const val TURN_GRACE_MS = 3_000L
         const val MAX_CHIPS = 6
 
         /** The excerpt of a result Grok gets (the card has the whole text). */

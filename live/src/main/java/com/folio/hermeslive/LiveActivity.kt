@@ -225,6 +225,10 @@ class LiveActivity : ComponentActivity() {
             val prep by shell.prep.state.collectAsStateWithLifecycle()
             val models by shell.speechModels.status.collectAsStateWithLifecycle()
             HomeVoiceLine.of(settings, voice, key, prep, models)
+        } else if (settings.voiceEngine == VoiceEngine.Grok) {
+            val shell = remember { VoiceShell.of(this@LiveActivity) }
+            val xai by (shell.xaiKeys?.status ?: kotlinx.coroutines.flow.MutableStateFlow(KeyStatus())).collectAsStateWithLifecycle()
+            HomeVoiceLine.of(settings, voice, KeyStatus(), PrepState(), emptyList(), xai)
         } else {
             HomeVoiceLine.of(settings, voice, KeyStatus(), PrepState(), emptyList())
         }

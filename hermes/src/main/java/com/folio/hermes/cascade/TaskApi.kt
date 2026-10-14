@@ -3,7 +3,9 @@ package com.folio.hermes.cascade
 import com.folio.hermes.TurnUpdate
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
 /*
@@ -121,12 +123,25 @@ class CascadeTasks internal constructor(
      * What the user has not been told yet: finished tasks with an unread result (or an unread
      * failure), and running tasks waiting on them. For a front end that attaches after they arrived.
      */
-    fun unheard(): List<TaskNotice> = actor.state.value.tasks.tasks.mapNotNull { t ->
-        when {
-            t.state == TaskState.Running && t.waiting -> TaskNotice.NeedsYou(t.id, t.label, if (t.events.lastOrNull().let { it is TaskEvent.Waiting && it.what == "clarify" }) "clarify" else "approval")
-            t.unread && t.state == TaskState.Done -> TaskNotice.Finished(t.id, t.label, t.result.orEmpty(), ok = true)
-            else -> null
+    suspend fun unheard(): List<TaskNotice> {
+        ready()
+        return actor.state.value.tasks.tasks.mapNotNull { t ->
+            when {
+                t.state == TaskState.Running && t.waiting -> TaskNotice.NeedsYou(t.id, t.label, if (t.events.lastOrNull().let { it is TaskEvent.Waiting && it.what == "clarify" }) "clarify" else "approval")
+                t.unread && t.state == TaskState.Done -> TaskNotice.Finished(t.id, t.label, t.result.orEmpty(), ok = true)
+                else -> null
+            }
         }
+    }
+
+    /**
+     * Read the stored state back (no call, nothing spoken) and wait for it, at most [timeoutMs].
+     * True once the task table is the stored one. In a fresh process [status] is empty until this
+     * (or any command) has run.
+     */
+    suspend fun ready(timeoutMs: Long = READY_TIMEOUT_MS): Boolean {
+        restore()
+        return withTimeoutOrNull(timeoutMs) { actor.state.first { it.restored } } != null
     }
 
     /** Task [taskId]'s whole result, or null (no such task, or no result yet). Marks it heard. */
@@ -151,6 +166,7 @@ class CascadeTasks internal constructor(
         /** [cancelTask]'s "every task". */
         const val ALL = "all"
         const val REPLY_TIMEOUT_MS = 10_000L
+        const val READY_TIMEOUT_MS = 3_000L
 
         fun newKey(): String = UUID.randomUUID().toString()
 
