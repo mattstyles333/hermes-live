@@ -112,6 +112,12 @@ class DelegationBridge(
     private val backend: DelegationBackend,
     private val send: (String) -> Boolean,
     private val settings: BridgeSettings = BridgeSettings(),
+    /**
+     * GPT-Live parallel agents (off: null, today's one conversation). When set, every delegation
+     * (and typed request) goes to [agents] instead of one Hermes turn at a time; nothing is
+     * interrupted, and the idle hang-up waits while [DelegationAgents.working].
+     */
+    private val agents: DelegationAgents? = null,
     private val listener: (BridgeEvent) -> Unit = {},
 ) {
     private val events = LiveClientEvents()
@@ -182,7 +188,29 @@ class DelegationBridge(
             "The user typed this request and it has gone to Hermes: \"${text.trim().take(300)}\". " +
                 "Say briefly that you are checking, then wait for the answer. Do not answer it yourself.",
         )?.let(send)
-        startDelegation(localId = "text-${++localIds}", wireId = null, prompt = DelegationPrompt(text.trim(), "User: ${text.trim()}"))
+        val prompt = DelegationPrompt(text.trim(), "User: ${text.trim()}")
+        agents?.let {
+            it.onDelegation(null, prompt)
+            armIdle()
+            return
+        }
+        startDelegation(localId = "text-${++localIds}", wireId = null, prompt = prompt)
+    }
+
+    /**
+     * The voice as [AgentDesk] talks to it: commentary on a delegation (or an instruction to say
+     * it), thinking, instructions. Nothing goes out once the session is over.
+     */
+    val voice: AgentVoice = object : AgentVoice {
+        override fun say(delegationId: String?, text: String) {
+            if (!finished) speak(delegationId, text)
+        }
+
+        override fun think(delegationId: String, text: String) {
+            if (!finished) this@DelegationBridge.think(delegationId, text)
+        }
+
+        override fun instruct(text: String) = this@DelegationBridge.instruct(text)
     }
 
     /** Mute or unmute the user's microphone on the vendor side (the app also disables the track). */
@@ -308,6 +336,12 @@ class DelegationBridge(
             return
         }
         if (delegationInterceptor?.invoke(prompt) == true) return
+        agents?.let {
+            listener(BridgeEvent.DelegationStarted(delegationId, prompt.prompt))
+            it.onDelegation(delegationId, prompt)
+            armIdle()
+            return
+        }
         startDelegation(localId = delegationId, wireId = delegationId, prompt = prompt)
     }
 
@@ -423,6 +457,10 @@ class DelegationBridge(
             if (settings.idleWarningMs in 1 until settings.idleHangUpMs) {
                 delay(settings.idleHangUpMs - settings.idleWarningMs)
                 if (activeDelegation != null) return@launch
+                if (agents?.working == true) {
+                    armIdle()
+                    return@launch
+                }
                 idleWarned = true
                 listener(BridgeEvent.IdleWarning)
                 val seconds = (settings.idleWarningMs + 999) / 1000
@@ -431,7 +469,12 @@ class DelegationBridge(
             } else {
                 delay(settings.idleHangUpMs)
             }
-            if (activeDelegation == null) close(StopReason.IdleTimeout)
+            when {
+                activeDelegation != null -> Unit
+                // Agents still working: count the quiet again from now (a task's result is coming).
+                agents?.working == true -> armIdle()
+                else -> close(StopReason.IdleTimeout)
+            }
         }
     }
 

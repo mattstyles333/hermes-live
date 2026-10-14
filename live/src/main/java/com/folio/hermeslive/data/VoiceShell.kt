@@ -85,7 +85,10 @@ class VoiceShell(
     val xaiChecker: KeyChecker = xaiChecker ?: XaiKeyChecker(client, telemetry = telemetry)
 
     val storage: CascadeStorage by lazy { CascadeStorage(dirs, telemetry) }
-    val gate = CascadeGate({ settings.settings.value }, { keys.status.value }, { xaiKeys?.status?.value ?: KeyStatus() })
+    val gate = CascadeGate(
+        { settings.settings.value }, { keys.status.value }, { xaiKeys?.status?.value ?: KeyStatus() },
+        gptLiveAgents = { GptLivePrefs.of(context).agents.value },
+    )
     val speechModels: SpeechModels get() = host?.speechModels ?: SpeechModels.None
     val offCallHooks: OffCallHooks get() = host?.offCallHooks ?: OffCallHooks.None
 

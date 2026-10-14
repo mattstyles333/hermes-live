@@ -167,5 +167,18 @@ class VoiceLiveApi(
             }
             return out.toList()
         }
+
+        /**
+         * [history] plus an app [note] as the newest message (a reopened or reconnected session
+         * learns which agent tasks are still open), still within [maxMessages] and [maxChars]:
+         * the note's room is taken from the transcript. No note: exactly [history].
+         */
+        fun history(turns: List<LiveTurn>, note: String?, maxMessages: Int = MAX_MESSAGES, maxChars: Int = MAX_CHARS): List<LiveHistoryMessage> {
+            val text = note?.replace(WHITESPACE, " ")?.trim()?.take(MAX_MESSAGE_CHARS)?.ifEmpty { null }
+                ?: return history(turns, maxMessages, maxChars)
+            val framed = "[Note from the app, not said by the user] $text".take(MAX_MESSAGE_CHARS)
+            val before = history(turns, maxMessages - 1, maxChars - framed.length)
+            return before + LiveHistoryMessage(role = "user", content = listOf(LiveHistoryContent("input_text", framed)))
+        }
     }
 }

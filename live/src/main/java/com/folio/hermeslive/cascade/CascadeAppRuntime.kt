@@ -78,7 +78,8 @@ class CascadeAppRuntime(
     val stt: SttSlot,
     val audio: AudioSlot,
     private val gateway: GatewayControl,
-    private val openRouter: OpenRouterPort,
+    /** Jev and the writer (GPT-Live agents classify and label with them; no key: no request). */
+    val openRouter: OpenRouterPort,
     /** The cascade's settings now (read per call). */
     val settings: () -> CascadeSettings,
     /** Voice tasks running, shared with the off-call hooks (the off-call service watches it). */

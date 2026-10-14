@@ -3,6 +3,8 @@ package com.folio.hermeslive.call
 import com.folio.hermes.ApprovalChoice
 import com.folio.hermes.HermesAuthException
 import com.folio.hermes.HermesRpcException
+import com.folio.hermes.live.AgentDesk
+import com.folio.hermes.live.AgentDeskEvent
 import com.folio.hermes.live.BridgeEvent
 import com.folio.hermes.live.BridgeStatus
 import com.folio.hermes.live.DelegationBridge
@@ -12,11 +14,13 @@ import com.folio.hermes.live.StopReason
 import com.folio.hermes.live.VoiceLiveApi
 import com.folio.hermes.live.VoiceLiveException
 import com.folio.hermes.telemetry.Telemetry
+import com.folio.hermeslive.call.ondemand.OnDemandUi
 import com.folio.hermeslive.data.LiveSettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,6 +43,11 @@ interface SessionMemoryStore {
  * Ending (goodbye, `session.close`, ≤15 s for `session.closed`) → Ended with a [CallSummary].
  * A dropped line while Live reconnects once with the transcript as history.
  *
+ * Parallel agents (gptlive-parallel slice; off unless [agentsFactory] gives a host): every
+ * delegation becomes its own durable task through the shared task API ([AgentDesk]); approvals
+ * and clarify come from the task sessions; tasks carry on after the call ([offCall]). The paid
+ * voice session can be closed and reopened inside one call ([GptLiveSessionControl]).
+ *
  * Every method and callback runs on [scope]'s single thread (Main).
  */
 class CallEngine(
@@ -50,7 +59,15 @@ class CallEngine(
     private val effects: CallEffects,
     private val memory: SessionMemoryStore,
     private val clock: () -> Long = System::currentTimeMillis,
-) : CallAudio.Listener, VoiceCall {
+    /** Parallel agents for a call, or null (off: today's single Hermes conversation). */
+    private val agentsFactory: GptLiveAgentsFactory = GptLiveAgentsFactory.Off,
+    /** Hang-up with agent tasks still running: start the off-call service while the call is foreground. */
+    private val offCall: (tasksRunning: Int) -> Boolean = { false },
+    /** An agents call is live (true) or over: task notifications stay quiet meanwhile (the voice says results). */
+    private val onAgentsLive: (Boolean) -> Unit = {},
+    /** On-demand sessions for a call (the shared controller), or null: the session stays open, as before. */
+    private val onDemandFactory: GptLiveOnDemandFactory = GptLiveOnDemandFactory.Off,
+) : CallAudio.Listener, VoiceCall, GptLiveSessionControl {
     private val _state = MutableStateFlow(CallUiState())
 
     /** Everything the UI, notification, tile and provider show. */
@@ -93,6 +110,41 @@ class CallEngine(
     private var lostAtMs = 0L
     private var lastRouteKind: RouteKind? = null
 
+    // Parallel agents and on-demand sessions.
+    private var agents: GptLiveAgentsHost? = null
+    private var lastAgents: GptLiveAgentsHost? = null
+    private var desk: AgentDesk? = null
+    private var agentHold: AutoCloseable? = null
+    private val agentJobs = mutableListOf<Job>()
+    private var dormant = false
+    private var reopening = false
+    private var reopenAtMs = 0L
+    private var preRoll: String? = null
+    private val _sessionOpen = MutableStateFlow(false)
+    private val noPending = MutableStateFlow(0)
+    private var onDemand: GptLiveOnDemand? = null
+    private var dormantSinceMs = 0L
+    private var finishing = false
+    private var voiceSessionId: String? = null
+    private val noOnDemand = MutableStateFlow(OnDemandUi())
+
+    /** Who is audible, as of the last tick (the on-demand link reads these). */
+    internal var userSpeakingNow = false
+        private set
+    internal var voiceSpeakingNow = false
+        private set
+
+    /** On-demand sessions' state for the call screen (indicator, dimmed orb); disabled when off. */
+    val onDemandUi: StateFlow<OnDemandUi> get() = onDemand?.ui ?: noOnDemand
+
+    /** The agents of the current (or last) call; null when agents are off. The call screen draws their tray. */
+    val agentSession: GptLiveAgentsHost? get() = lastAgents
+
+    override val sessionOpen: StateFlow<Boolean> = _sessionOpen.asStateFlow()
+    override val pendingResults: StateFlow<Int> get() = desk?.pendingResults ?: noPending
+    override var lastReopenMs: Long? = null
+        private set
+
     // ── commands ────────────────────────────────────────────────────────────────────────────
 
     /** Start a call. While one is running, a [CallRequest.prompt] is submitted to it instead. */
@@ -117,6 +169,7 @@ class CallEngine(
         audio.setFocus(FocusMode.Hold)
         val resume = memory.load().resumable(clock())
         link = links.create(resume)
+        startAgents()
         requestedAtMs = clock()
         Telemetry.event(
             "call.start",
@@ -127,6 +180,7 @@ class CallEngine(
                 "new_conversation" to request.newConversation,
                 "resumed" to (resume != null),
                 "route" to route.route?.kind,
+                "agents" to (desk != null),
             ),
         )
         tickJob = scope.launch {
@@ -136,6 +190,10 @@ class CallEngine(
             }
         }
         connect()
+        onDemand = runCatching { onDemandFactory.create(this) }.getOrNull()?.also {
+            if (request.muted) it.setMuted(true)
+            it.start()
+        }
     }
 
     /** End the call (End button, notification, tile, headset). A second press skips the goodbye. */
@@ -158,6 +216,7 @@ class CallEngine(
         if (!_state.value.inCall || _state.value.muted == muted) return
         if (!muted) autoMuted = false
         _state.update { it.copy(muted = muted) }
+        onDemand?.setMuted(muted)
         transport?.setMicEnabled(!muted)
         if (bridge?.status?.value.let { it != null && it != BridgeStatus.Connecting && it != BridgeStatus.Closed }) {
             bridge?.setMuted(muted)
@@ -173,6 +232,18 @@ class CallEngine(
         if (!_state.value.inCall) return
         route = RouteChoice(devices.firstOrNull { it.id == option.id } ?: option, manual = true)
         applyRoute()
+    }
+
+    /** The speaker button on the agents screen: speaker if not on it, else back to the automatic pick. */
+    fun toggleSpeaker() {
+        if (!_state.value.inCall) return
+        val speaker = devices.firstOrNull { it.kind == RouteKind.Speaker } ?: return
+        if (route.route?.kind == RouteKind.Speaker) {
+            route = RouteChoice(RouteSelector.auto(devices.filterNot { it.kind == RouteKind.Speaker }, callSettings.fallbackRoute) ?: speaker, manual = true)
+            applyRoute()
+        } else {
+            selectRoute(speaker)
+        }
     }
 
     /** A typed or shared request during the call. */
@@ -194,6 +265,10 @@ class CallEngine(
         val card = _state.value.approvals.firstOrNull { it.id == id } ?: return
         if (choice !in card.choices && choice != ApprovalChoice.Deny) return
         _state.update { s -> s.copy(approvals = s.approvals.filterNot { it.id == id }) }
+        agents?.let { host ->
+            scope.launch { if (!host.answerApproval(id, choice)) _state.update { it.copy(notice = "Could not send your answer to Hermes.") } }
+            return
+        }
         val l = link ?: return
         scope.launch {
             try {
@@ -211,6 +286,10 @@ class CallEngine(
     override fun answerClarify(id: String, answers: Map<String, String?>) {
         val card = _state.value.clarify?.takeIf { it.id == id } ?: return
         _state.update { it.copy(clarify = null) }
+        agents?.let { host ->
+            scope.launch { if (!host.answerClarify(id, answers)) _state.update { it.copy(notice = "Could not send your answer to Hermes.") } }
+            return
+        }
         val l = link ?: return
         scope.launch {
             try {
@@ -285,26 +364,26 @@ class CallEngine(
                 transport = t
                 val snd = OrderedSender(scope, t::send, ::commentaryLead)
                 sender = snd
-                val b = DelegationBridge(scope, l.backend, snd::send, s.bridgeSettings()) { event ->
+                val b = DelegationBridge(scope, l.backend, snd::send, s.bridgeSettings(), agents = desk) { event ->
                     if (attempt == epoch) onBridgeEvent(event)
                 }
                 b.delegationInterceptor = ::intercept
                 bridge = b
                 if (_state.value.muted) t.setMicEnabled(false)
-                val history = VoiceLiveApi.history(captions.history())
+                val history = VoiceLiveApi.history(captions.history(), note = desk?.openTasksNote())
                 withTimeout(START_TIMEOUT_MS) { t.start { offer -> l.createVoiceSession(offer, history) } }
                 if (attempt != epoch) return@launch
                 startedTimeout = scope.launch {
                     delay(STARTED_TIMEOUT_MS)
                     if (attempt == epoch && b.status.value == BridgeStatus.Connecting) {
                         Telemetry.warn("call.failed", null, mapOf("type" to "session_not_started", "reconnect" to everLive))
-                        fail("Hermes Live did not start. Try again.")
+                        connectFailed("Hermes Live did not start. Try again.")
                     }
                 }
             } catch (e: CancellationException) {
                 if (attempt == epoch && _state.value.inCall && e is kotlinx.coroutines.TimeoutCancellationException) {
                     Telemetry.warn("call.failed", null, mapOf("type" to "timeout", "after_ms" to clock() - requestedAtMs, "reconnect" to everLive))
-                    fail("Hermes Live took too long to connect.")
+                    connectFailed("Hermes Live took too long to connect.")
                 } else if (e !is kotlinx.coroutines.TimeoutCancellationException) {
                     throw e
                 }
@@ -313,7 +392,7 @@ class CallEngine(
                     val attrs = failureAttrs(e) + mapOf("reconnect" to everLive, "shown" to describe(e))
                     // Expected failures (network, auth, vendor) carry codes only: their messages can echo the server.
                     if (e is java.io.IOException) Telemetry.warn("call.failed", null, attrs) else Telemetry.error("call.failed", e, attrs)
-                    fail(describe(e))
+                    connectFailed(describe(e))
                 }
             }
         }
@@ -344,22 +423,28 @@ class CallEngine(
 
     private fun onBridgeEvent(event: BridgeEvent) {
         when (event) {
-            is BridgeEvent.Started -> onStarted()
+            is BridgeEvent.Started -> {
+                voiceSessionId = event.sessionId
+                onStarted()
+            }
             is BridgeEvent.Transcript -> {
                 captions.append(event.fragment)
                 val now = clock()
                 if (event.fragment.speaker == Speaker.User) {
                     lastUserTextAtMs = now
+                    desk?.userWords(now)
                     onUserWords(event.fragment.text)
                 } else {
                     lastVoiceTextAtMs = now
+                    desk?.voiceWords(now)
                     utterance = StringBuilder()
                 }
                 _state.update { it.copy(captions = captions.captions) }
                 evaluate()
             }
             is BridgeEvent.DelegationStarted -> {
-                delegationActive = true
+                // With agents, the desk's tasks say whether work is pending (nothing settles here).
+                if (desk == null) delegationActive = true
                 touchMemory()
                 _state.update { it.copy(tool = null) }
                 evaluate()
@@ -421,6 +506,12 @@ class CallEngine(
 
     private fun onStarted() {
         startedTimeout?.cancel()
+        _sessionOpen.value = true
+        if (reopening) {
+            onReopened()
+            onDemand?.sessionReady()
+            return
+        }
         val reconnected = everLive
         everLive = true
         if (reconnected) {
@@ -449,6 +540,9 @@ class CallEngine(
             )
             delegationCutOff = false
         }
+        // Agents: the session note, then any results that waited (tasks outlive the line).
+        desk?.attach(b.voice, sessionId = voiceSessionId)
+        onDemand?.sessionReady()
         pendingPrompt?.let { prompt ->
             pendingPrompt = null
             captions.appendUserText(prompt)
@@ -461,6 +555,12 @@ class CallEngine(
     private fun onClosed(reason: String, usage: Double?) {
         usageDone += usage ?: usageNow
         usageNow = 0.0
+        _sessionOpen.value = false
+        desk?.detach()
+        if (dormant && !userEnding && _state.value.inCall) {
+            onDormant(reason)
+            return
+        }
         val wasLive = _state.value.phase == CallPhase.Live
         if (reason == "connection_lost" && !userEnding && wasLive && reconnectsLeft > 0) {
             reconnect()
@@ -492,6 +592,209 @@ class CallEngine(
         touchMemory()
         _state.update { it.copy(tool = null, notice = problem ?: it.notice) }
         evaluate()
+    }
+
+    // ── parallel agents ────────────────────────────────────────────────────────────────────
+
+    /** Agents on (a host): the desk, the gateway held for the call, the task sessions' cards on screen. */
+    private fun startAgents() {
+        val host = runCatching { agentsFactory.create() }
+            .onFailure { Telemetry.warn("agents.unavailable", null, mapOf("type" to it.javaClass.simpleName)) }
+            .getOrNull() ?: return
+        agents = host
+        lastAgents = host
+        agentHold = runCatching { host.hold() }.getOrNull()
+        val d = AgentDesk(scope, host.tasks, host.intents, host.labeler, clock, listener = ::onDeskEvent)
+        desk = d
+        d.start()
+        agentJobs += scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            host.approvals.collect { cards ->
+                if (!_state.value.inCall) return@collect
+                val fresh = cards.any { c -> _state.value.approvals.none { it.id == c.id } }
+                _state.update { it.copy(approvals = cards) }
+                if (fresh) effects.haptic(strong = true)
+            }
+        }
+        agentJobs += scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            host.clarify.collect { card ->
+                if (!_state.value.inCall) return@collect
+                val fresh = card != null && card.id != _state.value.clarify?.id
+                _state.update { it.copy(clarify = card) }
+                if (fresh) effects.haptic(strong = true)
+            }
+        }
+        onAgentsLive(true)
+    }
+
+    private fun stopAgents() {
+        if (agents == null) return
+        desk?.stop()
+        desk = null
+        agentJobs.forEach { it.cancel() }
+        agentJobs.clear()
+        agentHold?.let { runCatching { it.close() } }
+        agentHold = null
+        agents = null
+        onAgentsLive(false)
+    }
+
+    /** The desk's doings as telemetry: kinds, ids and timings only, never what was said. */
+    private fun onDeskEvent(event: AgentDeskEvent) {
+        when (event) {
+            is AgentDeskEvent.Started -> {
+                touchMemory()
+                Telemetry.event("agents.task", mapOf("event" to "started", "queued" to event.queued, "existing" to event.existing, "typed" to (event.delegationId == null)))
+            }
+            is AgentDeskEvent.Handled -> Telemetry.event("agents.intent", mapOf("intent" to event.intent))
+            is AgentDeskEvent.Failed -> Telemetry.warn("agents.failed", null, mapOf("kind" to event.kind))
+            is AgentDeskEvent.Injected -> Telemetry.event("agents.injected", mapOf("count" to event.count, "waited_ms" to event.waitedMs, "commentary" to event.asCommentary))
+        }
+    }
+
+    // ── on-demand sessions ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Close the paid voice session (`session.close`) and keep the call: audio, the Hermes link,
+     * the agents and their tasks. Not while a single-conversation delegation runs (it would be
+     * cut off), connecting, ending or already closed.
+     */
+    override fun closeSession(): Boolean {
+        val b = bridge ?: return false
+        if (_state.value.phase != CallPhase.Live || dormant || reopening || userEnding || delegationActive) return false
+        if (b.status.value == BridgeStatus.Connecting || b.status.value == BridgeStatus.Closing || b.status.value == BridgeStatus.Closed) return false
+        dormant = true
+        Telemetry.event("call.session_close", mapOf("tasks_running" to (desk?.running?.value ?: 0)))
+        b.close(StopReason.UserRequest)
+        return true
+    }
+
+    /**
+     * Open a new voice session in the same call: `POST /api/audio/voice-live/session` with the
+     * recent transcript and an open-tasks note as history (≤ 24 messages). WebRTC takes only the
+     * live mic track, so the words said while it was closed come as text: [preRoll] (on-device
+     * speech-to-text) goes in as "The user just said: …" once the session starts.
+     */
+    override fun reopenSession(preRoll: String?): Boolean {
+        if (!dormant || bridge != null || !_state.value.inCall || userEnding) return false
+        dormant = false
+        reopening = true
+        reopenAtMs = clock()
+        this.preRoll = preRoll?.trim()?.ifEmpty { null }
+        _state.update { it.copy(notice = null) }
+        connect()
+        return true
+    }
+
+    private fun onDormant(reason: String) {
+        dropTransport()
+        dormantSinceMs = clock()
+        Telemetry.event("call.session_closed", mapOf("reason" to reason, "voice_s" to usageDone.toLong()))
+        _state.update { it.copy(notice = "Paused. Speak to carry on.", tool = null, level = 0f, activity = CallActivity.Listening) }
+    }
+
+    private fun onReopened() {
+        reopening = false
+        val ms = clock() - reopenAtMs
+        lastReopenMs = ms
+        Telemetry.event("call.session_reopened", mapOf("ms" to ms, "pre_roll" to (preRoll != null), "tasks_running" to (desk?.running?.value ?: 0)))
+        _state.update { it.copy(phase = CallPhase.Live, notice = null, error = null) }
+        val b = bridge ?: return
+        if (_state.value.muted) b.setMuted(true)
+        desk?.attach(b.voice, sessionId = voiceSessionId)
+        preRoll?.let { said ->
+            b.instruct("While the line was paused the user said: \"${said.take(PRE_ROLL_CHARS)}\". Respond to that now, as if you had heard it.")
+        }
+        preRoll = null
+        applyRoute()
+    }
+
+    /** A connect failed: a reopen goes back to closed (the call stays; the controller retries), anything else ends the call. */
+    private fun connectFailed(message: String) {
+        if (!reopening) {
+            fail(message)
+            return
+        }
+        Telemetry.warn("call.session_reopen_failed", null, mapOf("after_ms" to clock() - reopenAtMs))
+        reopening = false
+        dormant = true
+        epoch++
+        startedTimeout?.cancel()
+        dropTransport()
+        _sessionOpen.value = false
+        dormantSinceMs = clock()
+        _state.update { it.copy(phase = CallPhase.Live, notice = "Couldn't reconnect. Speak to try again.") }
+        onDemand?.sessionFailed()
+    }
+
+    /** The first session is still connecting (the on-demand link's first open waits for it). */
+    internal val connecting: Boolean
+        get() = _state.value.inCall && !dormant && !_sessionOpen.value && (reopening || bridge == null || bridge?.status?.value == BridgeStatus.Connecting)
+
+    /**
+     * The on-demand link closes: an open session closes ([closeSession] without its idle checks:
+     * the controller has made them), a connect in progress is abandoned. The call stays.
+     */
+    internal fun dropSession() {
+        if (!_state.value.inCall || userEnding || finishing) return
+        val b = bridge
+        val open = b != null && _sessionOpen.value && b.status.value != BridgeStatus.Closing && b.status.value != BridgeStatus.Closed
+        if (open) {
+            dormant = true
+            Telemetry.event("call.session_close", mapOf("tasks_running" to (desk?.running?.value ?: 0)))
+            b!!.close(StopReason.UserRequest)
+            return
+        }
+        if (dormant && !reopening) return
+        // Opening: give it up.
+        epoch++
+        startedTimeout?.cancel()
+        reopening = false
+        dormant = true
+        desk?.detach()
+        _sessionOpen.value = false
+        onDormant("abandoned")
+    }
+
+    /** What the user said while the session was closed (on-device text), told once the new session is up. */
+    internal fun tellPreRoll(text: String?, missed: Boolean) {
+        val b = bridge?.takeIf { _sessionOpen.value } ?: return
+        when {
+            text != null -> {
+                captions.appendUserText(text)
+                _state.update { it.copy(captions = captions.captions) }
+                b.instruct("While the line was paused the user said: \"${text.take(PRE_ROLL_CHARS)}\". Respond to that now, as if you had heard it.")
+            }
+            missed -> b.instruct("The user started speaking just before the line reopened, so the start of what they said may be missing. If it seems to begin mid-sentence, ask them to repeat it.")
+        }
+    }
+
+    /** Nothing in flight for the voice: no single-conversation turn, no delegation being handled, no result it was given and hasn't said. */
+    internal fun voiceIdle(): Boolean {
+        if (bridge == null || delegationActive) return false
+        return desk?.settled(clock()) ?: true
+    }
+
+    /**
+     * While the session is closed the bridge's idle and cap timers are gone: the call keeps them.
+     * True when the call ended.
+     */
+    private fun dormantLimits(now: Long): Boolean {
+        if (!dormant || reopening || bridge != null) return false
+        val idleMs = callSettings.idleTimeoutMinutes.coerceAtLeast(0) * 60_000L
+        val capMs = callSettings.callCapMinutes.coerceAtLeast(0) * 60_000L
+        val lastActive = maxOf(lastUserTextAtMs, dormantSinceMs)
+        val busy = desk?.working == true || pendingResults.value > 0 || onDemand?.phoneHearsSpeech == true
+        return when {
+            capMs > 0 && liveAtMs?.let { now - it >= capMs } == true -> {
+                finish("call_cap")
+                true
+            }
+            idleMs > 0 && !busy && now - lastActive >= idleMs -> {
+                finish("idle_timeout")
+                true
+            }
+            else -> false
+        }
     }
 
     // ── spoken answers ─────────────────────────────────────────────────────────────────────
@@ -547,11 +850,20 @@ class CallEngine(
         if (!s.inCall) return
         val now = clock()
         remoteGate.offer(lastRemoteLevel, now)
-        val userSpeaking = !s.muted && !otherCall && (vad.speaking || now - lastUserTextAtMs < TEXT_SPEECH_MS)
-        val remoteSpeaking = remoteGate.on || now - lastVoiceTextAtMs < TEXT_SPEECH_MS
+        val od = onDemand
+        val sessionUp = bridge != null
+        val userSpeaking = !s.muted && !otherCall && (vad.speaking || now - lastUserTextAtMs < TEXT_SPEECH_MS || od?.phoneHearsSpeech == true)
+        val remoteSpeaking = sessionUp && (remoteGate.on || now - lastVoiceTextAtMs < TEXT_SPEECH_MS)
+        userSpeakingNow = userSpeaking
+        voiceSpeakingNow = remoteSpeaking
+        od?.tick()
+        if (dormantLimits(now)) return
         bridge?.setRemoteSpeaking(remoteSpeaking)
         val headset = route.route?.kind?.isHeadset == true
-        val decision = policy.update(GapSignals(userSpeaking, remoteSpeaking, delegationActive, headset, otherCall), now)
+        desk?.signals(userSpeaking, remoteSpeaking)
+        val working = delegationActive || desk?.working == true
+        val base = GapSignals(userSpeaking, remoteSpeaking, working, headset, otherCall)
+        val decision = policy.update(od?.gap(base) ?: base, now)
         if (decision.changed) {
             audio.setFocus(decision.mode)
             // Music is about to come back where the mic can hear it: make it the VAD's new floor
@@ -561,7 +873,7 @@ class CallEngine(
         val activity = when {
             remoteSpeaking -> CallActivity.HermesSpeaking
             userSpeaking -> CallActivity.UserSpeaking
-            delegationActive -> CallActivity.Thinking
+            working -> CallActivity.Thinking
             else -> CallActivity.Listening
         }
         val level = when (activity) {
@@ -602,8 +914,14 @@ class CallEngine(
 
     private fun finish(reason: String, error: String? = null) {
         if (!_state.value.inCall) return
+        finishing = true
         epoch++
         val endedAt = clock()
+        val tasksRunning = desk?.running?.value ?: 0
+        val heldOffCall = tasksRunning > 0 && runCatching { offCall(tasksRunning) }.getOrDefault(false)
+        onDemand?.stop()
+        onDemand = null
+        stopAgents()
         Telemetry.event(
             "call.end",
             mapOf(
@@ -614,6 +932,9 @@ class CallEngine(
                 "voice_s" to (usageDone + usageNow).toLong(),
                 "user_ended" to userEnding,
                 "reconnects_used" to (1 - reconnectsLeft).coerceAtLeast(0),
+                "agents" to (lastAgents != null),
+                "tasks_running" to tasksRunning,
+                "off_call" to heldOffCall,
             ),
         )
         tickJob?.cancel()
@@ -630,7 +951,7 @@ class CallEngine(
             CallSummary(
                 durationMs = liveAtMs?.let { endedAt - it } ?: 0L,
                 voiceSeconds = usageDone.takeIf { it > 0 },
-                reason = endReason(reason),
+                reason = endReason(reason) + if (tasksRunning > 0) " Hermes's tasks carry on and you'll get a notification." else "",
             )
         } else {
             null
@@ -659,6 +980,13 @@ class CallEngine(
 
     private fun resetCall() {
         captions.clear()
+        finishing = false
+        dormant = false
+        reopening = false
+        preRoll = null
+        lastReopenMs = null
+        lastAgents = null
+        _sessionOpen.value = false
         devices = emptyList()
         route = RouteChoice(null, false)
         lastUserTextAtMs = Long.MIN_VALUE / 2
@@ -687,6 +1015,7 @@ class CallEngine(
         const val STARTED_TIMEOUT_MS = 20_000L
         const val RECONNECT_DELAY_MS = 600L
         const val VAD_SETTLE_MS = 1_200L
+        const val PRE_ROLL_CHARS = 600
 
         /** Plain English for `session.closed` reasons and our own. */
         fun endReason(reason: String): String = when (reason.trim()) {

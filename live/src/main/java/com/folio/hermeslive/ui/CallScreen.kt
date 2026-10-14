@@ -45,6 +45,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -62,6 +63,7 @@ import com.folio.hermeslive.call.ApprovalCard
 import com.folio.hermeslive.call.CallPhase
 import com.folio.hermeslive.call.CallSummary
 import com.folio.hermeslive.call.CallUiState
+import com.folio.hermeslive.call.ondemand.OnDemandUi
 import com.folio.hermeslive.call.Caption
 import com.folio.hermeslive.call.ClarifyCard
 import com.folio.hermeslive.call.RouteKind
@@ -94,6 +96,8 @@ fun CallScreen(
     modifier: Modifier = Modifier,
     elapsed: String? = null,
     voiceLine: String? = null,
+    /** On-demand sessions (GPT-Live): the indicator shows and the orb dims while the paid session is closed. */
+    session: OnDemandUi = OnDemandUi(),
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     Box(
@@ -110,7 +114,8 @@ fun CallScreen(
                 FullTranscript(state.captions, Modifier.weight(1f).fillMaxWidth()) { expanded = false }
             } else {
                 Spacer(Modifier.weight(0.6f))
-                Orb(orbMood(state), state.level, Modifier.size(248.dp).align(Alignment.CenterHorizontally))
+                Orb(orbMood(state), state.level, Modifier.size(248.dp).align(Alignment.CenterHorizontally).alpha(if (session.dimmed && state.inCall) DIMMED_ALPHA else 1f))
+                if (state.inCall) GptLiveSessionIndicator(session, Modifier.align(Alignment.CenterHorizontally))
                 StatusText(state, voiceLine)
                 Spacer(Modifier.weight(0.4f))
                 RecentCaptions(state.captions) { expanded = true }
