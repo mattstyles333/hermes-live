@@ -7,7 +7,6 @@ import com.folio.hermes.cascade.PhraseBank
 import com.folio.hermes.cascade.Route
 import com.folio.hermes.cascade.TaskBrief
 import com.folio.hermes.cascade.TaskState
-import com.folio.hermes.cascade.TurnVerdict
 import com.folio.hermes.cascade.UpdateMode
 import com.folio.hermes.cascade.answer
 import com.folio.hermes.openrouter.JevAnswer
@@ -26,14 +25,6 @@ class RouterTest {
     )
 
     private fun answers(vararg pairs: Pair<String, JevAnswer>) = mapOf(*pairs)
-
-    @Test fun lowTurnConfidenceKeepsListening() {
-        assertEquals(TurnVerdict.KeepListening, Router.verdict(answers("turn" to answer("done", 0.58)), s))
-        assertEquals(TurnVerdict.Done, Router.verdict(answers("turn" to answer("done", 0.60)), s))
-        assertEquals(TurnVerdict.Ignore, Router.verdict(answers("turn" to answer("ignore", 0.8)), s))
-        assertEquals(TurnVerdict.KeepListening, Router.verdict(answers("turn" to answer("ignore", 0.3)), s))
-        assertEquals(TurnVerdict.KeepListening, Router.verdict(emptyMap(), s))
-    }
 
     @Test fun lowActionConfidenceIsAClarifyingQuestionNeverATask() {
         val d = Router.decide(answers("action" to answer("new_task", 0.5), "line" to answer("ack.do")), tasks, bank, s)

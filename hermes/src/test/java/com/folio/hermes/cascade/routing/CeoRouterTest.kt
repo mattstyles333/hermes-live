@@ -43,6 +43,7 @@ class CeoRouterTest {
         assertEquals("the floor is a setting", TurnVerdict.Done, Router.verdict(mapOf("turn" to answer("done", 0.56)), s.copy(turnDoneFloor = 0.55)))
         assertEquals("ignore is accepted at 0.4", TurnVerdict.Ignore, Router.verdict(mapOf("turn" to answer("ignore", 0.4)), s))
         assertEquals(TurnVerdict.KeepListening, Router.verdict(mapOf("turn" to answer("ignore", 0.39)), s))
+        assertEquals("no turn answer at all keeps listening", TurnVerdict.KeepListening, Router.verdict(emptyMap(), s))
     }
 
     @Test fun unsureActionPlaysClarifyConfirmAndNeverStartsATask() {
