@@ -127,7 +127,7 @@ class CascadeCallEngine(
                 val src = MutableSource(io.source).also { it.muted = request.muted }
                 val stt = try {
                     withContext(this@CascadeCallEngine.io) {
-                        speech.create(src, io.playback, r.settings, ::hotwords, callSettings.highAccuracySpeech).also { it.start() }
+                        speech.create(src, io.playback, r.settings, ::hotwords, callSettings, r.cloudStt, ::liveFallback).also { it.start() }
                     }
                 } catch (e: Exception) {
                     io.release()
@@ -282,6 +282,18 @@ class CascadeCallEngine(
         actor.send(Event.Final(text.take(MAX_TYPED_CHARS)))
         actor.send(Event.SpeechEnded)
         Telemetry.event("cascade.typed_turn", mapOf("chars" to text.length))
+    }
+
+    /**
+     * The live-model guard swapped the live model for this call (any thread): say so once on the
+     * call screen, and report it (ids, reason and RTF only).
+     */
+    private fun liveFallback(f: com.folio.hermeslive.stt.LiveFallback) {
+        Telemetry.event("stt.live_fallback", mapOf("from" to f.from, "to" to f.to, "reason" to f.reason.wire, "rtf" to f.rtf, "swapped" to f.swapped))
+        if (!f.swapped) return
+        scope.launch {
+            if (_state.value.inCall) _state.update { it.copy(notice = "Speech recognition switched to the faster model for this call: the chosen one can't keep up on this phone.") }
+        }
     }
 
     /** The runtime of this call, or the process's (approvals from the no-call viewer). */

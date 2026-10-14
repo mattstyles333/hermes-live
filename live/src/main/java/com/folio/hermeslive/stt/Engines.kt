@@ -50,12 +50,27 @@ interface OfflineEngine {
 /** What the speech-to-text needs, loaded once per call (or kept across calls). */
 class SttEngines(
     val vad: VoiceDetector,
-    val streaming: StreamingEngine,
+    streaming: StreamingEngine,
     val offline: OfflineEngine?,
     /** Hotwords argument builders: the model, decoding and vocab decide whether any are passed. */
-    val streamingHotwords: (List<String>) -> String = { "" },
+    streamingHotwords: (List<String>) -> String = { "" },
     val offlineHotwords: (List<String>) -> String = { "" },
 ) {
+    /** The live model now (the live-model guard may swap it for the fallback mid-call, between segments). */
+    @Volatile var streaming: StreamingEngine = streaming
+        private set
+
+    @Volatile var streamingHotwords: (List<String>) -> String = streamingHotwords
+        private set
+
+    /** Swap the live model (capture thread, no segment open). Returns the old one, for the caller to release. */
+    fun swapStreaming(engine: StreamingEngine, hotwords: (List<String>) -> String): StreamingEngine {
+        val old = streaming
+        streaming = engine
+        streamingHotwords = hotwords
+        return old
+    }
+
     fun release() {
         vad.release()
         streaming.release()

@@ -113,7 +113,20 @@ class BillSmokeTest {
             shell.keys.save(key!!, KeyCheck.Valid)
             // Not shell.onSettingsChanged(): that would auto-prepare (about 285 TTS requests). Stock
             // lines are therefore not cached here: their latency is an upper bound.
-            g.settings.update { it.copy(voiceEngine = VoiceEngine.Cascade, startOnOpen = false) }
+            // `-e speech cloud`: Speech recognition "Cloud when online" (the default model); else on device.
+            val cloud = args.getString("speech") == "cloud"
+            result.put("speech", if (cloud) "cloud" else "device")
+            g.settings.update {
+                it.copy(
+                    voiceEngine = VoiceEngine.Cascade, startOnOpen = false,
+                    speechRecognition = if (cloud) com.folio.hermeslive.data.SpeechRecognition.Cloud else com.folio.hermeslive.data.SpeechRecognition.OnDevice,
+                    // What a new install gets (`-e live` / `-e accurate` override), not what this emulator had first.
+                    liveModel = args.getString("live") ?: com.folio.hermeslive.data.SpeechModelChoice.DEFAULT_LIVE.id,
+                    accurateModel = args.getString("accurate") ?: com.folio.hermeslive.data.SpeechModelChoice.DEFAULT_ACCURATE.id,
+                )
+            }
+            result.put("live_model", com.folio.hermeslive.data.SpeechModelChoice.live(g.settings.settings.value).id)
+                .put("accurate_model", com.folio.hermeslive.data.SpeechModelChoice.accurate(g.settings.settings.value).id)
             assertTrue("gate open", shell.gate.active)
 
             val wav = args.getString("wav") ?: if (dry) File(context.getExternalFilesDir(null), "stt-corpus/e14-sarah.wav").path else null
@@ -254,7 +267,9 @@ class BillSmokeTest {
             result.put("first_line_slot", synchronized(events) { events.firstNotNullOfOrNull { (t, e) -> (e as? CascadeEvent.LinePlayed)?.slot?.takeIf { t >= speechEnd } } })
             lineAt?.let { line -> result.put("tts_fetched_before_first_line", net.calls(OPENROUTER, "/audio/speech").count { it.startMs in speechEnd..line }) }
             // The writer's calls (the briefs before the task starts, then the spoken result).
-            result.put("writer_calls", org.json.JSONArray(net.calls(OPENROUTER, "/chat/completions").filter { it.startMs >= speechEnd }.map { row(it, speechEnd) }))
+            result.put("writer_calls", org.json.JSONArray(net.calls(OPENROUTER, "/chat/completions").filter { it.startMs >= speechEnd - 30_000 }.map { row(it, speechEnd) }))
+            // Cloud speech-to-text: each segment's upload (none on device).
+            result.put("stt_calls", org.json.JSONArray(net.calls(OPENROUTER, "/audio/transcriptions").map { row(it, speechEnd) }))
             net.calls(OPENROUTER, "/key").lastOrNull()?.let { result.put("warm", row(it, speechEnd)) }
             main { g.calls.end() }
             waitFor("call ended", 10_000) { !g.calls.state.value.inCall }

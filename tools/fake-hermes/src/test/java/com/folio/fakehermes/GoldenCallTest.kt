@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -101,9 +102,13 @@ class GoldenCallTest {
         /** Every brief request's prompt, in order. */
         val briefPrompts = CopyOnWriteArrayList<String>()
 
+        /** The words of every Jev call, in order (as routed on). */
+        val jevAsked = MutableStateFlow<List<String>>(emptyList())
+
         override suspend fun jev(state: JsonObject, questions: Map<String, JevQuestion>, timeoutMs: Long): OpenRouterResult<Map<String, JevAnswer>> {
             // The keep_listening recheck asks about the held words with nothing new (`latest` empty): route on all of them.
             val latest = state["latest"]?.jsonPrimitive?.contentOrNull.orEmpty().ifBlank { state["utterance"]?.jsonPrimitive?.contentOrNull.orEmpty() }
+            jevAsked.value = jevAsked.value + (state["utterance"]?.jsonPrimitive?.contentOrNull ?: latest)
             val route = routes.entries.firstOrNull { latest.contains(it.key, ignoreCase = true) }?.value ?: mapOf("action" to "reply")
             // A value may carry its confidence ("done@0.51"); 0.95 otherwise.
             return OpenRouterResult.Ok(
@@ -396,6 +401,61 @@ class GoldenCallTest {
         call.until("the result spoken") { call.resultsSpoken() }
         assertTrue(prompts().single().contains("So the thing about the Yes, check the Kestrel stock"))
         assertEquals(listOf(AppLines.HOLD_GO_ON, AppLines.HOLD_CONFIRM, "start.lookup"), call.heard().take(3))
+        noDoubles()
+    }
+
+    // ── 1d. cloud speech-to-text fixes a clipped fast text (cloud STT slice) ────────────────
+
+    /**
+     * Cloud mode as the app's STT sends it: the fast pass's `Final`, the end of speech, then the
+     * cloud's text for the same segment (`Revised`); the accurate pass is the cloud text.
+     */
+    private class ScriptedCloudStt(private val cloud: String) : SpeechToText {
+        private val channel = kotlinx.coroutines.channels.Channel<SttEvent>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        override val events: Flow<SttEvent> = channel.receiveAsFlow()
+        fun send(e: SttEvent) = channel.trySend(e)
+        override suspend fun accurate(turnId: String): Transcript? =
+            Transcript(cloud, cloud.split(' ').map { Word(it, confidence = null) }, TranscriptPass.Accurate)
+    }
+
+    /**
+     * The smoke's clipped "… we have in sto" (Jev unsure, `done` 0.51) with the cloud's "… in stock."
+     * arriving after the early Jev call: Jev is asked again about the cloud words, the turn commits
+     * on Jev's answer (not by the hold-silence rule), and the brief and Hermes's prompt carry the
+     * cloud words.
+     */
+    @Test fun theCloudTextFixesAClippedFastTextAndTheTurnCommits() {
+        h.signIn()
+        val fast = "Check how many Kestrel aviators we have in sto"
+        val cloud = "Check how many Kestrel aviators we have in stock."
+        val stt = ScriptedCloudStt(cloud)
+        val call = Call(
+            // Map order: the cloud words first ("in stock" also contains "in sto").
+            routes = linkedMapOf(
+                "in stock" to newTask(line = "start.lookup"),
+                "in sto" to newTask(line = "start.lookup") + ("turn" to "done@0.51") + ("action" to "new_task@0.98"),
+            ),
+            briefs = mapOf("aviators" to listOf("Check stock of the Kestrel aviators.")),
+            stt = stt,
+            // The hold-silence rule far away: only Jev's answer about the cloud words can commit the turn here.
+            settings = HOLD.copy(accuratePass = true, holdSilenceMs = 60_000),
+        )
+        call.start()
+        stt.send(SttEvent.SpeechStarted)
+        stt.send(SttEvent.Final(fast))
+        stt.send(SttEvent.SpeechEndedAt(System.nanoTime() / 1_000_000))
+        runBlocking { withTimeoutOrNull(5_000) { call.router.jevAsked.first { it.isNotEmpty() } } }
+        assertEquals("the early call judged the fast words", fast, call.router.jevAsked.value.first())
+        stt.send(SttEvent.Revised(fast, cloud, material = true))
+
+        call.until("the result spoken") { call.resultsSpoken() }
+        assertTrue("Jev judged the cloud words: ${call.router.jevAsked.value}", call.router.jevAsked.value.drop(1).any { it.contains("in stock") })
+        assertEquals("start.lookup", call.heard().first())
+        val brief = call.router.briefPrompts.single()
+        assertTrue(brief, brief.contains("we have in stock"))
+        val prompt = prompts().single()
+        assertTrue("Hermes got the cloud words: $prompt", prompt.contains("we have in stock"))
+        assertEquals(1, promptCount())
         noDoubles()
     }
 

@@ -27,6 +27,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
@@ -170,6 +171,13 @@ class CascadePropertyTest {
         }
 
         fun utterance(n: Int) = "item $n: please look after job number $n"
+
+        /**
+         * Cloud speech-to-text (cloud STT slice): about one utterance in three gets the cloud's text
+         * a seeded while after its end (sometimes after the early Jev call, sometimes after commit),
+         * mostly material. The cloud words keep the fast ones, so the lost-turn check still finds them.
+         */
+        val cloudTimes = Random(seed xor 0xc10d)
 
         /** Key-doubt questions Bill rendered in this world. */
         var questions = 0
@@ -421,6 +429,16 @@ class CascadePropertyTest {
                 runCurrent()
                 actor.speechEnded()
                 w.lastSpeechEnd = testScheduler.currentTime
+                if (w.cloudTimes.nextInt(3) == 0) {
+                    val after = w.cloudTimes.nextLong(0, 1_500)
+                    val material = w.cloudTimes.nextInt(4) != 0
+                    val proc = w.proc
+                    val fast = w.utterance(op.n)
+                    proc.scope.launch {
+                        delay(after)
+                        proc.actor.send(Event.Revised(fast, "$fast now", material))
+                    }
+                }
                 runCurrent()
             }
             is Op.Wait -> {

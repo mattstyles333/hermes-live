@@ -107,10 +107,18 @@ class FakeSpeech(val source: AudioSource, val highAccuracy: Boolean) : CallSpeec
 class FakeSpeechFactory(var failWith: Exception? = null) : CallSpeechFactory {
     val built = mutableListOf<FakeSpeech>()
     val hotwords = mutableListOf<() -> List<String>>()
-    override fun create(source: AudioSource, playback: PlaybackMonitor, settings: () -> CascadeSettings, hotwords: () -> List<String>, highAccuracy: Boolean): CallSpeech {
+    val clouds = mutableListOf<com.folio.hermeslive.stt.CloudStt?>()
+    val fallbacks = mutableListOf<(com.folio.hermeslive.stt.LiveFallback) -> Unit>()
+    override fun create(
+        source: AudioSource, playback: PlaybackMonitor, settings: () -> CascadeSettings, hotwords: () -> List<String>,
+        speech: com.folio.hermeslive.data.LiveSettings, cloud: com.folio.hermeslive.stt.CloudStt?, onFallback: (com.folio.hermeslive.stt.LiveFallback) -> Unit,
+    ): CallSpeech {
         failWith?.let { throw it }
         this.hotwords += hotwords
-        return FakeSpeech(source, highAccuracy).also { built += it }
+        clouds += cloud
+        fallbacks += onFallback
+        val big = com.folio.hermeslive.data.SpeechModelChoice.accurate(speech) != com.folio.hermeslive.stt.SttCatalog.parakeet110m
+        return FakeSpeech(source, big).also { built += it }
     }
 }
 

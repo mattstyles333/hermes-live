@@ -51,7 +51,7 @@ object Hotwords {
 
     /** The decoding method a model is built with: Nemotron supports only greedy in v1.13.8. */
     fun decodingFor(kind: ModelKind, requested: String): String = when {
-        kind == ModelKind.NEMOTRON_STREAMING -> GREEDY
+        kind == ModelKind.NEMOTRON_STREAMING || kind == ModelKind.MOONSHINE -> GREEDY
         requested == BEAM -> BEAM
         else -> GREEDY
     }

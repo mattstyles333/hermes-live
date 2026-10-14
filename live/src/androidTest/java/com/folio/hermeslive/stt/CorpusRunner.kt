@@ -25,10 +25,15 @@ class Utt(
     val firstPartialMs: Double? = null,
     /** At commit (SpeechEnded + pause), how long accurate() still took (paced runs only). */
     val commitWaitMs: Double? = null,
+    /** System.nanoTime() of the true end of speech (paced runs only). */
+    val clipEndNanos: Long? = null,
 ) {
     val fastText: String get() = events.mapNotNull { (it.event as? SttEvent.Final)?.text }.joinToString(" ")
+
+    /** The cloud's texts for this clip's segments, in order (cloud mode). */
+    val cloudText: String get() = events.mapNotNull { (it.event as? SttEvent.Revised)?.text }.joinToString(" ")
     val orderOk: Boolean get() {
-        val names = events.map { it.event }
+        val names = events.map { it.event }.filterNot { it is SttEvent.Revised } // cloud texts arrive whenever they do
         val lastEnd = names.indexOfLast { it.isSpeechEnd }
         // Nothing textual after the last SpeechEnded, and each Final directly precedes a SpeechEnded.
         if (lastEnd < 0) return names.isEmpty()
@@ -46,9 +51,11 @@ class CorpusRunner(
     private val hotwords: List<String>,
     private val pace: Double,
     private val settings: CascadeSettings = CascadeSettings(),
+    /** The cloud pass (used when [settings] has a `cloudSttModel`). */
+    cloud: CloudStt? = null,
 ) {
     val source = CorpusAudioSource(pace, if (pace > 0) CorpusAudioSource.Idle.SILENCE else CorpusAudioSource.Idle.WAIT)
-    val stt = SherpaSpeechToText(engines, source, settings = { settings.copy(vocabulary = hotwords) })
+    val stt = SherpaSpeechToText(engines, source, settings = { settings.copy(vocabulary = hotwords) }, cloud = cloud)
     private val log = EventLog(stt)
 
     init {
@@ -108,7 +115,7 @@ class CorpusRunner(
         val clip = start ?: 0L
         val endLag = span?.let { (endedAt - source.nanosAt(clip + it.second)) / 1e6 }
         val firstPartial = events.firstOrNull { it.event is SttEvent.Partial }?.let { p -> span?.let { (p.nanos - source.nanosAt(clip + it.first)) / 1e6 } }
-        Utt(item, events, finals(events), t, stt.secondPass.lastTiming, endLag, firstPartial, wait)
+        Utt(item, events, finals(events), t, stt.secondPass.lastTiming, endLag, firstPartial, wait, clipEndNanos = span?.let { source.nanosAt(clip + it.second) })
     }
 
     private fun finals(events: List<EventLog.Timed>) = events.flatMap { (it.event as? SttEvent.Final)?.words.orEmpty() }

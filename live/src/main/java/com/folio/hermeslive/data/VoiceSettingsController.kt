@@ -31,7 +31,7 @@ data class EngineStatus(val state: EngineState, val keyUnchecked: Boolean = fals
             if (settings.voiceEngine == VoiceEngine.GptLive) return EngineStatus(EngineState.GptLive)
             if (!key.saved) return EngineStatus(EngineState.NeedsKey)
             if (key.check == KeyCheck.Refused) return EngineStatus(EngineState.KeyRefused)
-            val modelsMissing = prep.models.any { it.state != ModelState.Ready && (it.role != ModelRole.HighAccuracy || settings.highAccuracySpeech) }
+            val modelsMissing = prep.models.any { it.state != ModelState.Ready }
             val state = if (prep.ready && !modelsMissing) EngineState.Ready else EngineState.NeedsVoice
             return EngineStatus(state, key.check == KeyCheck.Unchecked, prep.bytesToFetch)
         }
@@ -55,6 +55,8 @@ data class VoiceUi(
     val decisionTurns: Int? = null,
     val corrections: List<Correction> = emptyList(),
     val message: String? = null,
+    /** Every speech model the picker offers, with its state (Settings › Voice › Speech models). */
+    val speechModels: List<SpeechModelStatus> = emptyList(),
 ) {
     /** The cascade may run: Bill chosen and a usable key saved (the off-state gate's answer). */
     val cascadeActive: Boolean get() = engine.state == EngineState.NeedsVoice || engine.state == EngineState.Ready
@@ -77,9 +79,41 @@ class VoiceSettingsController(private val shell: VoiceShell, private val scope: 
 
     private val local = MutableStateFlow(Local())
 
-    val ui: StateFlow<VoiceUi> = combine(shell.settings.settings, shell.keys.status, shell.prep.state, local) { s, key, prep, l ->
-        VoiceUi(s, key, l.keyBusy, l.keyMessage, EngineStatus.of(s, key, prep), prep, l.metered, l.decisionTurns, l.corrections, l.message)
+    val ui: StateFlow<VoiceUi> = combine(shell.settings.settings, shell.keys.status, shell.prep.state, local, shell.speechModels.status) { s, key, prep, l, models ->
+        VoiceUi(s, key, l.keyBusy, l.keyMessage, EngineStatus.of(s, key, prep), prep, l.metered, l.decisionTurns, l.corrections, l.message, models)
     }.stateIn(scope, SharingStarted.Eagerly, VoiceUi(shell.settings.settings.value, shell.keys.status.value))
+
+    private val downloads = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
+
+    /** Choose the live model (Settings › Voice › Speech models). It downloads only when asked. */
+    fun chooseLive(id: String) = update { it.copy(liveModel = id, speechModelsCard = false) }
+
+    /** Choose the accurate model. */
+    fun chooseAccurate(id: String) = update { it.copy(accurateModel = id, speechModelsCard = false) }
+
+    /** Download (or resume) one model, with progress in [VoiceUi.speechModels]. */
+    fun downloadModel(id: String) {
+        if (downloads[id]?.isActive == true) return
+        downloads[id] = scope.launch { withContext(Dispatchers.IO) { shell.speechModels.download(id) } }
+    }
+
+    /** Pause a download (resumes from where it stopped). */
+    fun cancelModel(id: String) {
+        downloads.remove(id)?.cancel()
+    }
+
+    /** Delete a model, unless a call would need it: the chosen pair, and the fallbacks they need. */
+    fun deleteModel(id: String) {
+        if (!SpeechModelChoice.deletable(shell.settings.settings.value, id)) {
+            local.update { it.copy(message = "That model is in use. Choose another one first.") }
+            return
+        }
+        cancelModel(id)
+        scope.launch(Dispatchers.IO) { shell.speechModels.delete(id) }
+    }
+
+    /** The one-time "Better speech models available" card was seen. */
+    fun dismissModelsCard() = update { it.copy(speechModelsCard = false) }
 
     /** Re-read the log size, corrections and network (on opening the screen). */
     fun refresh() {

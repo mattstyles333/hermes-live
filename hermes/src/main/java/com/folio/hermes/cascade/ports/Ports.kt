@@ -79,6 +79,13 @@ sealed interface SttEvent {
 
     /** Hold-to-talk pressed or released (R-STT-8). */
     data class HoldToTalk(val pressed: Boolean) : SttEvent
+
+    /**
+     * Cloud speech-to-text (additive, cloud STT slice): the cloud's [text] for the segment whose
+     * fast [Final] read [fast]. [material]: the words differ beyond case, punctuation and fillers
+     * ("in sto" vs "in stock"), so Jev should judge the cloud words.
+     */
+    data class Revised(val fast: String, val text: String, val material: Boolean) : SttEvent
 }
 
 /**

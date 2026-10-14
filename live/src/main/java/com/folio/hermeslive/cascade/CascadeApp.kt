@@ -18,6 +18,7 @@ import com.folio.hermeslive.data.CascadeEnvironment
 import com.folio.hermeslive.data.CascadeFactory
 import com.folio.hermeslive.data.CascadeRuntime
 import com.folio.hermeslive.data.VoiceShell
+import com.folio.hermeslive.stt.OpenRouterCloudStt
 import com.folio.hermeslive.service.Briefing
 import com.folio.hermeslive.service.OffCallHooks
 import com.folio.hermeslive.service.ResultNotifications
@@ -74,7 +75,8 @@ class CascadeApp(
         val openRouter = LiveOpenRouter(openRouterClient, voice)
         val stt = SttSlot()
         val audio = AudioSlot()
-        val ports = CascadePorts.gateway(gateway, config, openRouter, audio, env.storage.store, Clock.System, AndroidNetwork(context), stt)
+        val network = AndroidNetwork(context)
+        val ports = CascadePorts.gateway(gateway, config, openRouter, audio, env.storage.store, Clock.System, network, stt)
         var core: CascadeCore? = null
         core = CascadeCore.create(
             scope = scope,
@@ -102,6 +104,8 @@ class CascadeApp(
             running = running,
             scope = scope,
             hotwordsOf = { vocabulary -> shell.vocabulary.hotwords(vocabulary) },
+            // Speech recognition "Cloud when online": the same key and connection pool as Jev.
+            cloudStt = OpenRouterCloudStt(openRouterClient.transcription, online = network::isOnline),
         )
     }
 

@@ -16,6 +16,13 @@ enum class ModelKind {
 
     /** NeMo TDT transducer, offline: hotwords with modified_beam_search + a tokens.txt vocab. */
     PARAKEET_TDT,
+
+    /**
+     * Moonshine v2 (encoder + merged decoder), offline in sherpa-onnx v1.13.8: as a live model it
+     * runs as simulated streaming ([MoonshineStreaming]: the open segment decoded again as it
+     * grows). Greedy only, no hotwords, no per-token confidence.
+     */
+    MOONSHINE,
 }
 
 /** How a model's bpe.vocab (needed to turn hotword text into tokens) is made on the phone. */
@@ -46,7 +53,7 @@ data class SttModel(
     val url: String get() = RELEASE_BASE + fileName
     val isArchive: Boolean get() = fileName.endsWith(".tar.bz2")
     val vocabFile: String get() = if (vocabSource == VocabSource.NONE) "" else BPE_VOCAB
-    val hotwords: Boolean get() = kind != ModelKind.NEMOTRON_STREAMING && vocabSource != VocabSource.NONE
+    val hotwords: Boolean get() = kind != ModelKind.NEMOTRON_STREAMING && kind != ModelKind.MOONSHINE && vocabSource != VocabSource.NONE
 
     companion object {
         const val RELEASE_BASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
@@ -141,7 +148,47 @@ object SttCatalog {
         vocabSource = VocabSource.TOKENS_EQUAL_SCORES,
     )
 
-    val all: List<SttModel> = listOf(zipformer, nemotron, parakeet110m, parakeet06b)
+    /** Nemotron's lower-latency chunking (80 ms; same weights). */
+    val nemotron80 = nemotron.copy(
+        id = "nemotron-0.6b-80ms",
+        fileName = "sherpa-onnx-nemotron-speech-streaming-en-0.6b-80ms-int8-2026-04-25.tar.bz2",
+        sha256 = "caaf92069dbd1ca054f8e17cab179813bc28b4585f5c392540357ece4722333d",
+        bytes = 463_945_379,
+    )
+
+    /** Nemotron 3.5 ASR streaming (multilingual, 2026-06-11), 160 ms chunks. */
+    val nemotron35 = nemotron.copy(
+        id = "nemotron-3.5-0.6b-160ms",
+        fileName = "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-160ms-int8-2026-06-11.tar.bz2",
+        sha256 = "a81909a1780d84cff16d73c15e13e67d9d81d8839faf14870d507d8499f7a61a",
+        bytes = 475_273_363,
+    )
+
+    val parakeet06bV3 = parakeet06b.copy(
+        id = "parakeet-tdt-0.6b-v3",
+        fileName = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
+        sha256 = "5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf",
+        bytes = 487_170_055,
+    )
+
+    private fun moonshine(size: String, sha256: String, bytes: Long) = SttModel(
+        id = "moonshine-$size-en-2026-02-27",
+        role = ModelRole.STREAMING,
+        kind = ModelKind.MOONSHINE,
+        fileName = "sherpa-onnx-moonshine-$size-en-quantized-2026-02-27.tar.bz2",
+        sha256 = sha256,
+        bytes = bytes,
+        license = "MIT",
+        keep = listOf("encoder_model.ort", "decoder_model_merged.ort", "tokens.txt"),
+        encoder = "encoder_model.ort",
+        decoder = "decoder_model_merged.ort",
+        joiner = "",
+    )
+
+    val moonshineTiny = moonshine("tiny", "9ec31b342d8fa3240c3b81b8f82e1cf7e3ac467c93ca5a999b741d5887164f8d", 29_858_559)
+    val moonshineBase = moonshine("base", "43232c1d13013d37317163baec3135bd771a186a4356f28c889bab453bb0e891", 111_266_225)
+
+    val all: List<SttModel> = listOf(zipformer, nemotron, nemotron80, nemotron35, moonshineTiny, moonshineBase, parakeet110m, parakeet06b, parakeet06bV3)
 
     fun byId(id: String): SttModel? = all.firstOrNull { it.id == id }
 }

@@ -140,7 +140,7 @@ class LiveGraph(private val app: Context) {
                 )
             },
             cascadeActive = { VoiceShell.of(app).gate.active },
-            modelsReady = { CallSpeechFactory.ready(modelManager) },
+            modelsReady = { CallSpeechFactory.ready(modelManager, settings.settings.value) },
         )
     }
 
