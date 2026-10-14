@@ -31,8 +31,9 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Test, lint, and assemble debug
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon
+      # Build only: tests and lint run locally before every merge (user, 2026-10-14).
+      - name: Assemble debug
+        run: ./gradlew assembleDebug --no-daemon
 
       - uses: actions/upload-artifact@v4
         if: failure()

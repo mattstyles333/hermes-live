@@ -29,7 +29,8 @@ export JAVA_HOME=... ANDROID_HOME=...
   - The kotlinx-serialization `$$serializer` classes.
   - Keep every decode on the compile-time serializer.
 - **Where releases come from today:** folio-launcher's release workflow builds `:live` from its `hermes-live/` submodule pin and attaches `hermes-live-X.Y.Z.apk` to the Folio Release. To ship a Hermes Live change: merge here, bump the pin in folio-launcher, bump Folio's version, tag Folio.
-- **Release workflow:** `.github/workflows/release.yml` runs on a `vX.Y.Z` tag that must match `:live`'s versionName. It tests, signs `hermes-live-X.Y.Z.apk` with Folio's release key, and publishes the GitHub Release plus a SHA-256. Bump `versionCode` / `versionName` in `live/build.gradle.kts` first. Don't `gh release create` by hand.
+- **CI and CD run no tests** (user, 2026-10-14): `ci.yml` only assembles debug, and the release only assembles and signs. Tests, lint and `tools/release-check.sh` run locally before merging.
+- **Release workflow:** `.github/workflows/release.yml` runs on a `vX.Y.Z` tag that must match `:live`'s versionName. It builds and signs `hermes-live-X.Y.Z.apk` with Folio's release key, and publishes the GitHub Release plus a SHA-256. Bump `versionCode` / `versionName` in `live/build.gradle.kts` first. Don't `gh release create` by hand.
 - **Signing:** Folio's key, always. Both apps declare the signature permission `com.folio.permission.HERMES`; with different keys the second install fails and Folio can't read the connection. CI secrets: `FOLIO_KEYSTORE_BASE64`, `FOLIO_STORE_PASSWORD`, `FOLIO_KEY_PASSWORD` (same values as folio-launcher's). This repo doesn't have them yet (only the owner can copy them), so don't tag here until it does.
 - **WebRTC:** `io.getstream:stream-webrtc-android:1.3.10`, the latest on Maven Central in 2026-10. It is declared inline in `live/build.gradle.kts`, not in the version catalog.
 
