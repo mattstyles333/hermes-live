@@ -1,10 +1,13 @@
 package com.folio.hermes.cascade.routing
 
+import com.folio.hermes.TurnStatus
+import com.folio.hermes.TurnUpdate
 import com.folio.hermes.cascade.AppLines
 import com.folio.hermes.cascade.CascadeEvent
 import com.folio.hermes.cascade.CascadeSettings
 import com.folio.hermes.cascade.Effect
 import com.folio.hermes.cascade.Event
+import com.folio.hermes.cascade.TaskState
 import com.folio.hermes.cascade.Timer
 import com.folio.hermes.cascade.Tx
 import com.folio.hermes.cascade.Word
@@ -96,6 +99,29 @@ class CeoTurnTest {
         startDoubted(h2)
         h2.turn("Sapphire, yeah.", 3_000, "action" to answer("reply"))
         assertEquals(1, h2.submits().size)
+    }
+
+    /** A fast task is often done before the user answers: the answer still belongs to it. */
+    @Test fun anAnswerAfterTheTaskFinishedStillBelongsToIt() {
+        val yes = CeoHarness()
+        val first = startDoubted(yes)
+        yes.on(Event.TaskUpdated("t1", first.runId, TurnUpdate.Completed("Emailed Sapphire.", TurnStatus.Complete, null)))
+        yes.on(Event.TaskRunEnded("t1", first.runId))
+        assertEquals(TaskState.Done, yes.s.tasks["t1"]!!.state)
+        yes.turn("Yes, that's right.", 3_000, "action" to answer("update_task"), "task" to answer("t1"))
+        yes.drain()
+        assertEquals("a yes to a finished task sends nothing", 1, yes.submits().size)
+        assertEquals(KeyDoubt.CONFIRMED_SLOT, yes.slotsSaid().last())
+
+        val no = CeoHarness()
+        val second = startDoubted(no)
+        no.on(Event.TaskUpdated("t1", second.runId, TurnUpdate.Completed("Emailed Sapphire.", TurnStatus.Complete, null)))
+        no.on(Event.TaskRunEnded("t1", second.runId))
+        no.turn("No, Safilo.", 3_000, "action" to answer("reply"))
+        assertEquals(2, no.submits().size)
+        val follow = no.submits().last()
+        assertEquals("t1", follow.taskId)
+        assertTrue(follow.text, follow.text.startsWith("Correction: I asked the user \"Sapphire, right?\""))
     }
 
     @Test fun noAnswerLeavesTheTaskRunningUnchanged() {

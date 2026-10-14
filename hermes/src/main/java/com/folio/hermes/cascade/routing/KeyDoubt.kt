@@ -20,8 +20,9 @@ import com.folio.hermes.cascade.writer.WrittenDoubt
  *   notes go to the agent silently;
  * - the user's next committed turn, within `keyDoubtWaitMs` of the question, is its answer
  *   ([answer]): a correction becomes a redirect `update_task` to the task (seconds old, so the
- *   R-RT-7 window holds), a confirmation becomes nothing more than "Got it." (a queued note
- *   would make Hermes answer it as a second result), and no answer leaves the task as it is.
+ *   R-RT-7 window holds; a task already finished takes it as a follow-up), a confirmation becomes
+ *   nothing more than "Got it." (a queued note would make Hermes answer it as a second result),
+ *   and no answer leaves the task as it is.
  *
  * The question waits in [State.marks] (durable, wall clock), one at a time, and the next
  * committed turn clears it whether or not it was the answer.
@@ -102,7 +103,9 @@ object KeyDoubt {
         val p = pending(tx) ?: return next
         clear(tx)
         if (p.turnId == next.turnId || tx.s.wallMs - p.askedAt > tx.s.settings.keyDoubtWaitMs) return next
-        val task = tx.s.tasks[p.taskId]?.takeIf { it.state == TaskState.Running } ?: return next
+        // A fast task may already be done when the answer comes: a yes still sends nothing, and a
+        // correction still reaches it (as a follow-up). Only a cancelled task ("scrap that") lets the turn route on its own.
+        val task = tx.s.tasks[p.taskId]?.takeIf { it.state != TaskState.Cancelled } ?: return next
         if (!answerLike(p, next)) return next
         val confirmed = confirms(p.word, next.text)
         // "Yes, and also email Bob": a yes with a new request after it is that request.
@@ -113,8 +116,10 @@ object KeyDoubt {
             next.copy(decision = Decision(Route.Reply, CONFIRMED_SLOT, writer = false), data = data, record = next.record.copy(route = Route.Reply.wire))
         } else {
             tx.report("cascade.key_doubt", mapOf("event" to "corrected"))
-            val route = Route.UpdateTask(task.id, UpdateMode.Redirect)
-            next.copy(decision = Decision(route, CORRECTED_SLOT, writer = false), data = data, record = next.record.copy(route = route.wire))
+            val running = task.state == TaskState.Running
+            val route = Route.UpdateTask(task.id, if (running) UpdateMode.Redirect else UpdateMode.Queue)
+            val slot = if (running) CORRECTED_SLOT else "update.queued"
+            next.copy(decision = Decision(route, slot, writer = false), data = data, record = next.record.copy(route = route.wire))
         }
     }
 
