@@ -133,6 +133,8 @@ fun SettingsScreen(
                 }
             }
             voiceSettings?.let { VoiceSettingsWired(it) }
+            // Settings › Meeting mode (its own prefs; off by default).
+            if (voiceSettings != null) com.folio.hermeslive.ui.meeting.MeetingSettingsWired()
             Section("Calls") {
                 Toggle("Start talking when opened", "Opening Hermes Live starts a call.", settings.startOnOpen, "start-on-open") { v -> actions.onChange { it.copy(startOnOpen = v) } }
                 Toggle("Keep the screen on", "During a call.", settings.keepScreenOn, "keep-screen-on") { v -> actions.onChange { it.copy(keepScreenOn = v) } }

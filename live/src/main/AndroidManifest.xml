@@ -103,6 +103,12 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- Meeting mode: the mic stays on (screen off too) while it takes meeting notes; text only, no audio kept. -->
+        <service
+            android:name=".meeting.MeetingService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <service
             android:name=".service.CallTileService"
             android:exported="true"
