@@ -29,6 +29,8 @@ import com.folio.hermeslive.call.CallRequest
 import com.folio.hermeslive.call.CallUiState
 import com.folio.hermeslive.cascade.CascadeAppRuntime
 import com.folio.hermeslive.cascade.CascadeCallEngine
+import com.folio.hermeslive.grok.GrokCallEngine
+import com.folio.hermeslive.ui.GrokCallRoute
 import com.folio.hermeslive.cascade.CascadeSignOut
 import com.folio.hermeslive.cascade.appRuntime
 import com.folio.hermeslive.data.VoiceShell
@@ -223,6 +225,10 @@ class LiveActivity : ComponentActivity() {
             val prep by shell.prep.state.collectAsStateWithLifecycle()
             val models by shell.speechModels.status.collectAsStateWithLifecycle()
             HomeVoiceLine.of(settings, voice, key, prep, models)
+        } else if (settings.voiceEngine == VoiceEngine.Grok) {
+            val shell = remember { VoiceShell.of(this@LiveActivity) }
+            val xai by (shell.xaiKeys?.status ?: kotlinx.coroutines.flow.MutableStateFlow(KeyStatus())).collectAsStateWithLifecycle()
+            HomeVoiceLine.of(settings, voice, KeyStatus(), PrepState(), emptyList(), xai)
         } else {
             HomeVoiceLine.of(settings, voice, KeyStatus(), PrepState(), emptyList())
         }
@@ -306,8 +312,11 @@ class LiveActivity : ComponentActivity() {
                 )
             }
             else -> {
-                val billActive = active is CascadeCallEngine
-                val screen = mainScreen(billActive, call.inCall, (active as? CascadeCallEngine)?.session != null, billOutro, viewingTask != null)
+                // Grok's call uses Bill's screen too (grok-voice slice).
+                val grokCall = active as? GrokCallEngine
+                val billActive = active is CascadeCallEngine || grokCall != null
+                val hasSession = (active as? CascadeCallEngine)?.session != null || grokCall?.session != null
+                val screen = mainScreen(billActive, call.inCall, hasSession, billOutro, viewingTask != null)
                 LaunchedEffect(screen) { if (screen == MainScreen.Bill) billOutro = true }
                 // Bill's end fades into home; every other change cuts as before. Bill's three screens are one
                 // content, so the call screen (its scene and memory) carries on into its end transition.
@@ -323,7 +332,11 @@ class LiveActivity : ComponentActivity() {
                     contentKey = { it == MainScreen.Home },
                     label = "main",
                 ) { shown ->
-                    if (shown == MainScreen.Home) Home(call, elapsed, voiceLine) else BillScreen(shown, call, settings.pauseMs, settings.haptics)
+                    when {
+                        shown == MainScreen.Home -> Home(call, elapsed, voiceLine)
+                        grokCall != null && shown != MainScreen.BillViewer -> GrokScreen(grokCall, shown, call, settings.haptics)
+                        else -> BillScreen(shown, call, settings.pauseMs, settings.haptics)
+                    }
                 }
             }
         }
@@ -355,6 +368,31 @@ class LiveActivity : ComponentActivity() {
             ending = shown == MainScreen.BillEnded && !call.inCall,
             onCloseEnded = ::closeBillOutro,
             onCallAgain = { requestStart(CallRequest()) },
+        )
+    }
+
+    /** Grok's call on Bill's screen, and its end transition. */
+    @Composable
+    private fun GrokScreen(engine: GrokCallEngine, shown: MainScreen, call: CallUiState, haptics: Boolean) {
+        val g = graph
+        val rt = engine.session
+        if (rt == null) {
+            LaunchedEffect(Unit) { billOutro = false }
+            return
+        }
+        GrokCallRoute(
+            engine = engine,
+            runtime = rt,
+            onHaptic = { if (haptics) g.haptic() },
+            ending = shown == MainScreen.BillEnded && !call.inCall,
+            onCloseEnded = ::closeBillOutro,
+            onCallAgain = { requestStart(CallRequest()) },
+            onUseBill = {
+                // Grok is offline: Bill takes notes offline and sends them once the network is back.
+                engine.end()
+                billOutro = false
+                requestStart(CallRequest(memo = true, forceBill = true, entry = "grok_offline"))
+            },
         )
     }
 

@@ -84,7 +84,7 @@ object OffCall {
         keepAliveMs: Long = CascadeSettings().offCallKeepAliveMs,
         telemetry: TelemetrySink = SafeTelemetry(),
     ): Boolean {
-        if (!OffCallPolicy.shouldStart(gate.active, tasksRunning)) return false
+        if (!OffCallPolicy.shouldStart(gate.tasksActive, tasksRunning)) return false
         val intent = Intent(context, OffCallService::class.java).setAction(OffCallService.ACTION_START)
             .putExtra(OffCallService.EXTRA_KEEP_ALIVE_MS, keepAliveMs)
             .putExtra(OffCallService.EXTRA_TASKS, tasksRunning)

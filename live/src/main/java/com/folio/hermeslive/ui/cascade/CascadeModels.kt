@@ -73,6 +73,12 @@ data class CascadeChrome(
     val muted: Boolean = false,
     val speakerOn: Boolean = true,
     val engine: String = "BILL · CASCADE",
+    /**
+     * Another engine's strip in place of Jev's answers (Grok's tool calls; grok-voice slice), with
+     * [stripLabel] in the badge. Null: Jev's chips.
+     */
+    val tools: List<JevChip>? = null,
+    val stripLabel: String = "JEV",
 )
 
 /** The derived sections of one state stream. */

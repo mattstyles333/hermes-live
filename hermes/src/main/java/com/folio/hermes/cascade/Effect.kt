@@ -132,4 +132,7 @@ sealed interface Effect {
 
     /** The user corrected [heard] to [chosen] on screen: the app adds it to the vocabulary (`VocabularyStore.learn`). */
     data class LearnWord(val heard: String, val chosen: String) : Effect
+
+    /** The reply to [Event.TaskApi] [requestId] (not durable: it runs after the step's stored writes). Additive, grok-voice slice. */
+    data class TaskApiReply(val requestId: Long, val reply: TaskReply) : Effect
 }

@@ -10,7 +10,11 @@ import com.folio.hermeslive.call.CallEngine
 import com.folio.hermeslive.call.CallSwitch
 import com.folio.hermeslive.cascade.CallSpeechFactory
 import com.folio.hermeslive.cascade.CascadeApp
+import com.folio.hermeslive.cascade.AndroidNetwork
 import com.folio.hermeslive.cascade.CascadeCallEngine
+import com.folio.hermeslive.grok.GrokAudioFactory
+import com.folio.hermeslive.grok.GrokCallEngine
+import com.folio.hermeslive.grok.GrokNetwork
 import com.folio.hermeslive.cascade.SttSpeechModels
 import com.folio.hermeslive.cascade.appRuntime
 import com.folio.hermeslive.data.CascadeFactory
@@ -142,6 +146,29 @@ class LiveGraph(private val app: Context) {
             },
             cascadeActive = { VoiceShell.of(app).gate.active },
             modelsReady = { CallSpeechFactory.ready(modelManager, settings.settings.value) },
+            grok = {
+                val shell = VoiceShell.of(app)
+                val network = AndroidNetwork(app)
+                GrokCallEngine(
+                    scope = mainScope,
+                    settings = { settings.settings.value },
+                    runtime = { shell.shell.appRuntime() },
+                    key = { shell.xaiKeys?.key() },
+                    client = client,
+                    audioFactory = { GrokAudioFactory.Device },
+                    audio = AndroidCallAudio(app),
+                    effects = cascadeEffects,
+                    offCall = { running -> OffCall.afterHangUp(app, running) },
+                    network = object : GrokNetwork {
+                        override fun online(): Boolean = network.isOnline()
+                        override val changes = network.online
+                    },
+                    billMemo = { shell.gate.billAvailable && CallSpeechFactory.ready(modelManager, settings.settings.value) },
+                    onLive = { cascadeApp.grokLive = it },
+                )
+            },
+            grokActive = { VoiceShell.of(app).gate.grokActive },
+            billAvailable = { VoiceShell.of(app).gate.billAvailable },
         )
     }
 

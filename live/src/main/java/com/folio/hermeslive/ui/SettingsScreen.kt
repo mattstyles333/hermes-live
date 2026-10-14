@@ -65,6 +65,8 @@ import com.folio.hermeslive.data.SpeechRecognition
 import com.folio.hermeslive.data.TranscriptCleanupMode
 import com.folio.hermeslive.stt.SttModel
 import com.folio.hermeslive.data.VoiceEngine
+import com.folio.hermes.realtime.GrokPricing
+import com.folio.hermes.realtime.GrokVoices
 import com.folio.hermeslive.data.VoiceSettingsController
 import com.folio.hermeslive.data.VoiceShell
 import com.folio.hermeslive.data.VoiceUi
@@ -300,6 +302,9 @@ data class VoiceActions(
     val onCancelModel: (String) -> Unit = {},
     val onDeleteModel: (String) -> Unit = {},
     val onDismissModelsCard: () -> Unit = {},
+    val onPasteXaiKey: () -> Unit = {},
+    val onCheckXaiKey: () -> Unit = {},
+    val onRemoveXaiKey: () -> Unit = {},
 )
 
 /** [VoiceSettingsSection] on the controller: clipboard, share sheet and the memo shortcut. */
@@ -333,6 +338,13 @@ private fun VoiceSettingsWired(controller: VoiceSettingsController) {
             onCancelModel = controller::cancelModel,
             onDeleteModel = controller::deleteModel,
             onDismissModelsCard = controller::dismissModelsCard,
+            onPasteXaiKey = {
+                val clipboard = context.getSystemService(ClipboardManager::class.java)
+                val text = clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)
+                controller.pasteXaiKey(text) { runCatching { clipboard?.clearPrimaryClip() } }
+            },
+            onCheckXaiKey = controller::recheckXaiKey,
+            onRemoveXaiKey = controller::removeXaiKey,
         ),
     )
 }
@@ -345,10 +357,25 @@ fun VoiceSettingsSection(ui: VoiceUi, actions: VoiceActions) {
         Line("Engine", ui.engine.text, Modifier.testTag("engine-status"))
         Choice(
             "Voice engine",
-            if (cascade) "Bill: on-phone speech, Jev and Hermes agents (OpenRouter)" else "GPT-Live, through Hermes (default)",
+            when (s.voiceEngine) {
+                VoiceEngine.Cascade -> "Bill: on-phone speech, Jev and Hermes agents (OpenRouter)"
+                VoiceEngine.Grok -> "Grok: xAI's speech-to-speech voice, delegating to Hermes agents"
+                VoiceEngine.GptLive -> "GPT-Live, through Hermes (default)"
+            },
             "engine",
-        ) { actions.onChange { it.copy(voiceEngine = if (it.voiceEngine == VoiceEngine.Cascade) VoiceEngine.GptLive else VoiceEngine.Cascade) } }
+        ) {
+            actions.onChange {
+                it.copy(
+                    voiceEngine = when (it.voiceEngine) {
+                        VoiceEngine.GptLive -> VoiceEngine.Cascade
+                        VoiceEngine.Cascade -> VoiceEngine.Grok
+                        VoiceEngine.Grok -> VoiceEngine.GptLive
+                    },
+                )
+            }
+        }
 
+        if (s.voiceEngine == VoiceEngine.Grok) GrokBlock(ui, actions)
         KeyBlock(ui, actions)
 
         if (cascade) {
@@ -406,6 +433,50 @@ private fun KeyBlock(ui: VoiceUi, actions: VoiceActions) {
     Text(
         "Your own OpenRouter key, sealed on this phone with the Android Keystore. It is only sent to OpenRouter, never logged.",
         style = SmallStyle, color = PrintMute, modifier = Modifier.padding(top = 6.dp),
+    )
+}
+
+/** Settings › Voice with Grok chosen: the xAI key, the voice (or a custom voice id), the model and the cost. */
+@Composable
+private fun GrokBlock(ui: VoiceUi, actions: VoiceActions) {
+    var confirmRemove by remember { mutableStateOf(false) }
+    val s = ui.settings
+    val key = ui.xaiKey
+    val state = when {
+        !key.saved -> "Not saved"
+        else -> "Saved" + (key.hint?.let { " · ends …$it" } ?: "") + " · " + when (key.check) {
+            KeyCheck.Valid -> "checked"
+            KeyCheck.Refused -> "refused by xAI"
+            KeyCheck.Unchecked -> "not checked yet"
+        }
+    }
+    Line("xAI key", state, Modifier.testTag("xai-key-status"))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Pill(if (key.saved) "Replace from clipboard" else "Paste from clipboard", filled = !key.saved, tag = "xai-key-paste") { if (!ui.xaiBusy) actions.onPasteXaiKey() }
+        if (key.saved) {
+            Pill("Check", filled = false, tag = "xai-key-check") { if (!ui.xaiBusy) actions.onCheckXaiKey() }
+            Pill(if (confirmRemove) "Tap to remove" else "Remove", filled = false, tag = "xai-key-remove") {
+                if (confirmRemove) actions.onRemoveXaiKey()
+                confirmRemove = !confirmRemove
+            }
+        }
+    }
+    ui.xaiMessage?.let { Text(it, style = SmallStyle, color = if (key.check == KeyCheck.Refused) EndRed else PrintMute, modifier = Modifier.padding(top = 6.dp).testTag("xai-key-message")) }
+    Text(
+        "Your own xAI key, sealed on this phone with the Android Keystore. It is only sent to xAI, never logged. " +
+            "OpenRouter has no realtime voice, so Grok needs an xAI key.",
+        style = SmallStyle, color = PrintMute, modifier = Modifier.padding(top = 6.dp),
+    )
+    Choice("Grok's voice", s.grokVoice.replaceFirstChar { it.uppercase() } + if (s.grokCustomVoice.isNotEmpty()) " (custom voice in use)" else "", "grok-voice") {
+        actions.onChange { it.copy(grokVoice = GrokVoices.BUILT_IN[(GrokVoices.BUILT_IN.indexOf(it.grokVoice) + 1) % GrokVoices.BUILT_IN.size]) }
+    }
+    TextSetting("Custom voice id (optional)", s.grokCustomVoice, "grok-custom-voice", valid = { it.isEmpty() || GrokVoices.isCustomId(it) }) { v ->
+        actions.onChange { it.copy(grokCustomVoice = v) }
+    }
+    TextSetting("Grok model", s.grokModel, "grok-model", valid = { it.startsWith("grok-voice") && it.none(Char::isWhitespace) }) { v -> actions.onChange { it.copy(grokModel = v) } }
+    Text(
+        "About \$${GrokPricing.USD_PER_MINUTE} a minute while a Grok call is open (xAI's price). Tasks run on your Hermes server as with Bill.",
+        style = SmallStyle, color = Ember, modifier = Modifier.padding(top = 6.dp).testTag("grok-cost"),
     )
 }
 

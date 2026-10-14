@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /** Which engine runs a call. */
-enum class Engine { GptLive, Cascade }
+enum class Engine { GptLive, Cascade, Grok }
 
 /** Can a call start now, and on which engine. */
 sealed interface CallPlan {
@@ -23,6 +23,8 @@ sealed interface CallPlan {
  *
  * R-Q-1: Bill is chosen only while [cascadeActive] (engine `cascade` **and** a usable key). With
  * GPT-Live nothing cascade-related is built: [cascade] is never called (`EngineSwitchTest`).
+ * Grok (grok-voice slice) only while [grokActive] (engine Grok **and** a usable xAI key); otherwise
+ * [grok] is never called (`GrokOffStateTest`).
  *
  * [state] is the active engine's own `StateFlow`, read when asked: the call service reads it right
  * after [start] and so watches the engine that took the call (a mirrored flow could hand it the
@@ -34,19 +36,32 @@ class CallSwitch(
     private val cascadeActive: () -> Boolean,
     /** True when Bill's speech models are ready for a call. Asked only when Bill is chosen. */
     private val modelsReady: () -> Boolean,
+    /** Grok Voice's engine (built on first use, only while [grokActive]). */
+    private val grok: () -> VoiceCall = { error("no Grok engine") },
+    /** Engine Grok **and** a usable xAI key (grok-voice slice; off by default). */
+    private val grokActive: () -> Boolean = { false },
+    /** Bill could take a call now even with another engine chosen (a usable OpenRouter key): Grok's offline fallback. */
+    private val billAvailable: () -> Boolean = { false },
 ) : VoiceCall {
     private val _active = MutableStateFlow<VoiceCall?>(null)
     private var builtCascade: VoiceCall? = null
+    private var builtGrok: VoiceCall? = null
 
     /** The engine of the current (or last) call, null before the first. */
     val active: StateFlow<VoiceCall?> = _active.asStateFlow()
 
     /** The engine that would run [request] now. */
     fun plan(request: CallRequest = CallRequest()): CallPlan = when {
-        request.forceGptLive || !cascadeActive() -> CallPlan.Ready(Engine.GptLive)
+        request.forceGptLive -> CallPlan.Ready(Engine.GptLive)
+        request.forceBill && (cascadeActive() || billAvailable()) && modelsReady() -> CallPlan.Ready(Engine.Cascade)
+        grokActive() -> CallPlan.Ready(Engine.Grok)
+        !cascadeActive() -> CallPlan.Ready(Engine.GptLive)
         !modelsReady() -> CallPlan.PreparingBill
         else -> CallPlan.Ready(Engine.Cascade)
     }
+
+    /** The Grok engine if a Grok call ever ran in this process (tests). */
+    val grokEngine: VoiceCall? get() = builtGrok
 
     /** The cascade engine if a cascade call ever ran in this process (tests, the e2e hooks). */
     val cascadeEngine: VoiceCall? get() = builtCascade
@@ -71,7 +86,11 @@ class CallSwitch(
             is CallPlan.Ready -> p.engine
             CallPlan.PreparingBill -> return
         }
-        val call = if (engine == Engine.Cascade) builtCascade ?: cascade().also { builtCascade = it } else gptLive()
+        val call = when (engine) {
+            Engine.Cascade -> builtCascade ?: cascade().also { builtCascade = it }
+            Engine.Grok -> builtGrok ?: grok().also { builtGrok = it }
+            Engine.GptLive -> gptLive()
+        }
         _active.value?.takeIf { it !== call }?.dismissSummary()
         _active.value = call
         call.start(request)

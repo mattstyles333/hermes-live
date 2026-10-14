@@ -1,6 +1,7 @@
 package com.folio.hermes.cascade
 
 import com.folio.hermes.cascade.routing.ActionResult
+import com.folio.hermes.cascade.routing.ApiTasks
 import com.folio.hermes.cascade.routing.Next
 import com.folio.hermes.openrouter.FailureKind
 import com.folio.hermes.openrouter.JevAnswer
@@ -140,6 +141,8 @@ class CascadeReducer(val env: CascadeEnv) {
             is Event.Restore -> restore(event.restored, call = false)
             // Only once the store is read back: before that, the first save would overwrite it.
             is Event.OpenConversation -> if (s.restored) env.conversation.open(this, event.loaded)
+            // The shared task API (grok-voice slice): the same task operations as the routes and taps.
+            is Event.TaskApi -> ApiTasks.apply(this, event)
         }
     }
 

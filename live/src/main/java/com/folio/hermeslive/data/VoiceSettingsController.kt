@@ -13,7 +13,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** Where the voice engine stands, for the top of Settings › Voice. */
-enum class EngineState { GptLive, NeedsKey, KeyRefused, NeedsVoice, Ready }
+enum class EngineState { GptLive, NeedsKey, KeyRefused, NeedsVoice, Ready, GrokNeedsKey, GrokKeyRefused, GrokReady }
 
 data class EngineStatus(val state: EngineState, val keyUnchecked: Boolean = false, val bytesToFetch: Long = 0) {
     val text: String
@@ -24,11 +24,21 @@ data class EngineStatus(val state: EngineState, val keyUnchecked: Boolean = fals
             EngineState.NeedsVoice -> "Bill is on. Prepare his voice before the first call" +
                 (if (bytesToFetch > 0) " (about ${megabytes(bytesToFetch)} to download)." else ".")
             EngineState.Ready -> "Bill is ready." + if (keyUnchecked) " The key hasn't been checked yet." else ""
+            EngineState.GrokNeedsKey -> "Grok is off until you paste an xAI key."
+            EngineState.GrokKeyRefused -> "xAI refused the saved key. Paste a new one."
+            EngineState.GrokReady -> "Grok is ready." + if (keyUnchecked) " The key hasn't been checked yet." else ""
         }
 
     companion object {
-        fun of(settings: LiveSettings, key: KeyStatus, prep: PrepState): EngineStatus {
+        fun of(settings: LiveSettings, key: KeyStatus, prep: PrepState, xaiKey: KeyStatus = KeyStatus()): EngineStatus {
             if (settings.voiceEngine == VoiceEngine.GptLive) return EngineStatus(EngineState.GptLive)
+            if (settings.voiceEngine == VoiceEngine.Grok) {
+                return when {
+                    !xaiKey.saved -> EngineStatus(EngineState.GrokNeedsKey)
+                    xaiKey.check == KeyCheck.Refused -> EngineStatus(EngineState.GrokKeyRefused)
+                    else -> EngineStatus(EngineState.GrokReady, xaiKey.check == KeyCheck.Unchecked)
+                }
+            }
             if (!key.saved) return EngineStatus(EngineState.NeedsKey)
             if (key.check == KeyCheck.Refused) return EngineStatus(EngineState.KeyRefused)
             val modelsMissing = prep.models.any { it.state != ModelState.Ready }
@@ -57,6 +67,10 @@ data class VoiceUi(
     val message: String? = null,
     /** Every speech model the picker offers, with its state (Settings › Voice › Speech models). */
     val speechModels: List<SpeechModelStatus> = emptyList(),
+    /** The xAI key for Grok (never the key itself). */
+    val xaiKey: KeyStatus = KeyStatus(),
+    val xaiBusy: Boolean = false,
+    val xaiMessage: String? = null,
 ) {
     /** The cascade may run: Bill chosen and a usable key saved (the off-state gate's answer). */
     val cascadeActive: Boolean get() = engine.state == EngineState.NeedsVoice || engine.state == EngineState.Ready
@@ -75,13 +89,19 @@ class VoiceSettingsController(private val shell: VoiceShell, private val scope: 
         val corrections: List<Correction> = emptyList(),
         val message: String? = null,
         val metered: Boolean = false,
+        val xaiBusy: Boolean = false,
+        val xaiMessage: String? = null,
     )
+
+    private val xaiStatus: StateFlow<KeyStatus> = shell.xaiKeys?.status ?: MutableStateFlow(KeyStatus())
 
     private val local = MutableStateFlow(Local())
 
-    val ui: StateFlow<VoiceUi> = combine(shell.settings.settings, shell.keys.status, shell.prep.state, local, shell.speechModels.status) { s, key, prep, l, models ->
-        VoiceUi(s, key, l.keyBusy, l.keyMessage, EngineStatus.of(s, key, prep), prep, l.metered, l.decisionTurns, l.corrections, l.message, models)
-    }.stateIn(scope, SharingStarted.Eagerly, VoiceUi(shell.settings.settings.value, shell.keys.status.value))
+    private val keys = combine(shell.keys.status, xaiStatus) { a, b -> a to b }
+
+    val ui: StateFlow<VoiceUi> = combine(shell.settings.settings, keys, shell.prep.state, local, shell.speechModels.status) { s, (key, xai), prep, l, models ->
+        VoiceUi(s, key, l.keyBusy, l.keyMessage, EngineStatus.of(s, key, prep, xai), prep, l.metered, l.decisionTurns, l.corrections, l.message, models, xai, l.xaiBusy, l.xaiMessage)
+    }.stateIn(scope, SharingStarted.Eagerly, VoiceUi(shell.settings.settings.value, shell.keys.status.value, xaiKey = xaiStatus.value))
 
     private val downloads = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
 
@@ -181,6 +201,56 @@ class VoiceSettingsController(private val shell: VoiceShell, private val scope: 
         shell.keys.remove()
         shell.onSettingsChanged()
         local.update { it.copy(keyMessage = "Key removed from this phone.") }
+    }
+
+    /** Check [clip] with xAI (`GET /v1/api-key`) and save it sealed. [onSaved] runs once it is saved (clear the clipboard there). */
+    fun pasteXaiKey(clip: CharSequence?, onSaved: () -> Unit = {}) {
+        val store = shell.xaiKeys ?: return
+        when (val parsed = XaiKeys.paste(clip)) {
+            is KeyPaste.Parsed.Problem -> local.update { it.copy(xaiMessage = parsed.message) }
+            is KeyPaste.Parsed.Key -> {
+                local.update { it.copy(xaiBusy = true, xaiMessage = "Checking with xAI…") }
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) { shell.xaiChecker.check(parsed.key) }
+                    val message = withContext(Dispatchers.IO) {
+                        when (result) {
+                            KeyCheckResult.Valid -> "Saved and checked.".also { store.save(parsed.key, KeyCheck.Valid) }
+                            KeyCheckResult.Refused -> "xAI refused that key. Nothing was saved."
+                            is KeyCheckResult.Unreachable -> {
+                                store.save(parsed.key, KeyCheck.Unchecked)
+                                "Saved. xAI couldn't be reached to check it (${result.kind}); check again later."
+                            }
+                        }
+                    }
+                    if (result != KeyCheckResult.Refused) onSaved()
+                    shell.onSettingsChanged()
+                    local.update { it.copy(xaiBusy = false, xaiMessage = message) }
+                }
+            }
+        }
+    }
+
+    fun recheckXaiKey() {
+        val store = shell.xaiKeys ?: return
+        local.update { it.copy(xaiBusy = true, xaiMessage = "Checking with xAI…") }
+        scope.launch {
+            val message = withContext(Dispatchers.IO) {
+                val key = store.key() ?: return@withContext "No key saved."
+                when (val r = shell.xaiChecker.check(key)) {
+                    KeyCheckResult.Valid -> "xAI accepts the key.".also { store.setCheck(KeyCheck.Valid) }
+                    KeyCheckResult.Refused -> "xAI refused the key.".also { store.setCheck(KeyCheck.Refused) }
+                    is KeyCheckResult.Unreachable -> "xAI couldn't be reached (${r.kind})."
+                }
+            }
+            shell.onSettingsChanged()
+            local.update { it.copy(xaiBusy = false, xaiMessage = message) }
+        }
+    }
+
+    fun removeXaiKey() {
+        shell.xaiKeys?.remove()
+        shell.onSettingsChanged()
+        local.update { it.copy(xaiMessage = "xAI key removed from this phone.") }
     }
 
     fun prepare() {

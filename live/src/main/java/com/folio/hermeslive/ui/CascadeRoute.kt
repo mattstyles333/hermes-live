@@ -120,18 +120,23 @@ fun CascadeCallRoute(
         pauseMs = pauseMs,
         decisions = decisions,
         history = history,
-        approvals = approvalsSlot(approvals, clarify, engine),
+        approvals = approvalsSlot(approvals, clarify, engine::answerApproval, engine::answerClarify),
         ended = if (ending) callEndOf(call) else null,
     )
 }
 
 /** The approvals slot: the first approval (with how many more wait), then a clarify question. Null: none. */
-private fun approvalsSlot(approvals: List<ApprovalCard>, clarify: ClarifyCard?, engine: CascadeCallEngine): (@Composable () -> Unit)? {
+internal fun approvalsSlot(
+    approvals: List<ApprovalCard>,
+    clarify: ClarifyCard?,
+    onApprove: (String, ApprovalChoice) -> Unit,
+    onClarify: (String, Map<String, String?>) -> Unit,
+): (@Composable () -> Unit)? {
     if (approvals.isEmpty() && clarify == null) return null
     return {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            approvals.firstOrNull()?.let { ApprovalCardView(it, { id, choice: ApprovalChoice -> engine.answerApproval(id, choice) }, approvals.size - 1) }
-            clarify?.let { ClarifyCardView(it, engine::answerClarify) }
+            approvals.firstOrNull()?.let { ApprovalCardView(it, { id, choice: ApprovalChoice -> onApprove(id, choice) }, approvals.size - 1) }
+            clarify?.let { ClarifyCardView(it, onClarify) }
         }
     }
 }

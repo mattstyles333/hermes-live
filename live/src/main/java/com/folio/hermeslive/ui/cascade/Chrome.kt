@@ -116,11 +116,12 @@ private fun ConnectionDot(top: State<TopModel>) {
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun JevStrip(jev: State<JevModel>, epoch: Int, motion: CascadeMotion, onAnchor: (Offset) -> Unit, onLongPress: () -> Unit) {
+internal fun JevStrip(jev: State<JevModel>, epoch: Int, motion: CascadeMotion, label: String = "JEV", onAnchor: (Offset) -> Unit, onLongPress: () -> Unit) {
     Probe("jev")
     val model = jev.value
     val ring by animateColorAsState(if (model.inFlight) Ember else Hairline, tween(150), label = "jev")
-    val description = if (model.chips.isEmpty()) "Jev, no decision yet" else "Jev decided: " + model.chips.joinToString(", ") { it.text }
+    val who = label.lowercase().replaceFirstChar { it.uppercase() }
+    val description = if (model.chips.isEmpty()) "$who, no decision yet" else "$who: " + model.chips.joinToString(", ") { it.text }
     Row(
         Modifier.fillMaxWidth().height(58.dp).padding(horizontal = 18.dp)
             .combinedClickable(onClick = {}, onLongClick = onLongPress, onLongClickLabel = "Show Jev's last 20 decisions")
@@ -137,7 +138,7 @@ internal fun JevStrip(jev: State<JevModel>, epoch: Int, motion: CascadeMotion, o
                 .clip(CircleShape).background(if (model.inFlight) Ember.copy(alpha = 0.12f) else Color.Transparent)
                 .border(1.dp, ring, CircleShape),
             contentAlignment = Alignment.Center,
-        ) { Text("JEV", style = SmallStyle.copy(fontSize = 9.sp, letterSpacing = 0.5.sp), color = if (model.inFlight) Ember else PrintMute) }
+        ) { Text(label, style = SmallStyle.copy(fontSize = 9.sp, letterSpacing = 0.5.sp), color = if (model.inFlight) Ember else PrintMute) }
         Spacer(Modifier.width(10.dp))
         Chips(model, epoch, motion)
     }

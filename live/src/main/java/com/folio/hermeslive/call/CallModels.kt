@@ -46,6 +46,8 @@ data class CallRequest(
     val memo: Boolean = false,
     /** Use GPT-Live for this call even with Bill chosen (the "Preparing Bill…" fallback). */
     val forceGptLive: Boolean = false,
+    /** Use Bill for this call even with Grok chosen (Grok offline: "Continue in Bill's memo mode"). */
+    val forceBill: Boolean = false,
 )
 
 /** One caption line: a speaker's turn, merged from transcript deltas. */
@@ -105,6 +107,8 @@ data class CallUiState(
     val startedAtMs: Long? = null,
     val summary: CallSummary? = null,
     val error: String? = null,
+    /** Grok can't reach xAI and the phone is offline: offer Bill's offline memo mode (his models are on the phone). */
+    val offerBillMemo: Boolean = false,
 ) {
     /** True from Connecting to Ending: the service stays in the foreground. */
     val inCall: Boolean get() = phase == CallPhase.Connecting || phase == CallPhase.Live || phase == CallPhase.Reconnecting || phase == CallPhase.Ending
