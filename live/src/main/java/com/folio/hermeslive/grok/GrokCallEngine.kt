@@ -154,7 +154,7 @@ class GrokCallEngine(
         callSettings = settings()
         val r = runtime()
         if (r == null) {
-            _state.value = CallUiState(phase = CallPhase.Failed, error = "Grok can't start. Sign in to Hermes, and check the xAI key in Settings › Voice.")
+            _state.value = CallUiState(phase = CallPhase.Failed, error = "Grok Voice can't start. Sign in to Hermes, and check the xAI key in Settings › Voice.")
             return
         }
         rt = r
@@ -163,7 +163,7 @@ class GrokCallEngine(
         autoMuted = false
         liveAtMs = null
         micMuted = request.muted
-        _state.value = CallUiState(phase = CallPhase.Connecting, muted = request.muted, notice = "Connecting to Grok…")
+        _state.value = CallUiState(phase = CallPhase.Connecting, muted = request.muted, notice = "Connecting to Grok Voice…")
         audio.begin(this)
         devices = audio.devices()
         route = RouteChoice(RouteSelector.auto(devices, callSettings.fallbackRoute), manual = false)
@@ -215,7 +215,7 @@ class GrokCallEngine(
             }
         }
         if (!s.start()) {
-            finish("failed", error = "Add your xAI key in Settings › Voice to talk to Grok.")
+            finish("failed", error = "Add your xAI key in Settings › Voice to use Grok Voice.")
             return
         }
         ctl.start()
@@ -363,16 +363,16 @@ class GrokCallEngine(
                 }
                 _state.update { it.copy(phase = CallPhase.Live, startedAtMs = liveAtMs, notice = null, offerBillMemo = false) }
             }
-            is LinkState.Reconnecting -> _state.update { it.copy(phase = CallPhase.Reconnecting, notice = "Reconnecting to Grok…") }
+            is LinkState.Reconnecting -> _state.update { it.copy(phase = CallPhase.Reconnecting, notice = "Reconnecting to Grok Voice…") }
             LinkState.Offline -> {
-                _state.update { it.copy(phase = CallPhase.Reconnecting, notice = "You're offline. Grok needs the internet; it reconnects when you're back.", offerBillMemo = billMemo()) }
+                _state.update { it.copy(phase = CallPhase.Reconnecting, notice = "You're offline. Grok Voice needs the internet; it reconnects when you're back.", offerBillMemo = billMemo()) }
                 Telemetry.event("grok.offline_offer", mapOf("bill" to billMemo()))
             }
             is LinkState.Failed -> when {
                 link.code == GrokRealtime.UNAUTHORIZED -> finish("failed", error = "xAI refused the key. Check it in Settings › Voice.")
-                link.code == GrokRealtime.NO_KEY -> finish("failed", error = "Add your xAI key in Settings › Voice to talk to Grok.")
-                !network.online() -> _state.update { it.copy(phase = CallPhase.Reconnecting, notice = "You're offline. Grok needs the internet.", offerBillMemo = billMemo()) }
-                else -> finish("failed", error = "Grok can't be reached right now.")
+                link.code == GrokRealtime.NO_KEY -> finish("failed", error = "Add your xAI key in Settings › Voice to use Grok Voice.")
+                !network.online() -> _state.update { it.copy(phase = CallPhase.Reconnecting, notice = "You're offline. Grok Voice needs the internet.", offerBillMemo = billMemo()) }
+                else -> finish("failed", error = "Grok Voice can't be reached right now.")
             }
             // Parked on purpose (save cost): the call is still live; offline, the offline notice stays.
             LinkState.Parked -> if (network.online()) _state.update { it.copy(phase = CallPhase.Live, notice = null, offerBillMemo = false) }
@@ -442,7 +442,7 @@ class GrokCallEngine(
         val duration = liveAtMs?.let { endedAt - it }
         val summary = duration?.let {
             val cost = String.format(Locale.UK, "%.2f", it / 60_000.0 * GrokPricing.USD_PER_MINUTE)
-            val tasks = if (running > 0) " Grok's tasks carry on and you'll get a notification." else ""
+            val tasks = if (running > 0) " Your tasks carry on and you'll get a notification." else ""
             CallSummary(it, null, "Call ended. About \$$cost of Grok Voice.$tasks")
         }
         _state.value = CallUiState(phase = if (error != null && liveAtMs == null) CallPhase.Failed else CallPhase.Ended, summary = summary, error = error)

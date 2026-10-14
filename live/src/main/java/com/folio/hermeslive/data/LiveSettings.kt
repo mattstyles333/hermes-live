@@ -104,7 +104,8 @@ data class LiveSettings(
         ttsModel = ttsModel.trim().ifEmpty { DEFAULT_TTS_MODEL },
         vocabulary = cleanVocabulary(vocabulary),
         cloudSttModel = cloudSttModel.trim().takeIf(::isModelId) ?: CloudSttModels.DEFAULT.id,
-        grokVoice = GrokVoices.of(grokVoice).takeIf { it in GrokVoices.BUILT_IN } ?: GrokVoices.DEFAULT,
+        // A built-in voice or one from xAI's live list (`GET /v1/tts/voices`); a custom id goes in grokCustomVoice.
+        grokVoice = grokVoice.trim().lowercase().takeIf { VOICE_ID.matches(it) } ?: GrokVoices.DEFAULT,
         grokCustomVoice = grokCustomVoice.trim().lowercase().takeIf(GrokVoices::isCustomId).orEmpty(),
         grokModel = grokModel.trim().takeIf { GROK_MODEL.matches(it) } ?: GrokModels.DEFAULT,
     )
@@ -185,6 +186,7 @@ data class LiveSettings(
         private val WHITESPACE = Regex("\\s+")
         private val MODEL_ID = Regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$")
         private val GROK_MODEL = Regex("^grok-voice[A-Za-z0-9._-]*$")
+        private val VOICE_ID = Regex("^[a-z0-9][a-z0-9_-]{0,39}$")
 
         /** An OpenRouter model id's shape (`vendor/model`). */
         fun isModelId(s: String): Boolean = MODEL_ID.matches(s)

@@ -111,7 +111,7 @@ class BriefingService : Service() {
         }
         val s = session ?: newSession().also { session = it }
         try {
-            startForeground(NOTIFICATION_ID, notification(this, s, "Bill · result"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            startForeground(NOTIFICATION_ID, notification(this, s, "Hermes Live · result"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         } catch (e: RuntimeException) {
             runCatching { telemetry.event("briefing.play", mapOf("outcome" to "refused", "type" to e.javaClass.simpleName.lowercase()), true) }
             done("refused")

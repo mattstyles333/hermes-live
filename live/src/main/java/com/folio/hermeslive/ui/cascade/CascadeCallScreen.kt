@@ -374,7 +374,7 @@ private fun HoldTarget(modifier: Modifier, memory: ScreenMemory, intents: Cascad
                 }
             }
             .semantics {
-                contentDescription = if (holding.value || holdingNow) "Bill, listening while you hold" else "Bill. Hold to talk"
+                contentDescription = if (holding.value || holdingNow) "Listening while you hold" else "Hold to talk"
                 customActions = listOf(
                     if (holdingNow) CustomAccessibilityAction("Stop and send") { stop(); true }
                     else CustomAccessibilityAction("Start talking") { start(); true },

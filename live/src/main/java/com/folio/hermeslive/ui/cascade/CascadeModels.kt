@@ -72,7 +72,7 @@ data class CascadeChrome(
     val callStartedAtMs: Long? = null,
     val muted: Boolean = false,
     val speakerOn: Boolean = true,
-    val engine: String = "CUSTOM · CASCADE",
+    val engine: String = "CUSTOM",
     /**
      * Another engine's strip in place of Jev's answers (Grok's tool calls; grok-voice slice), with
      * [stripLabel] in the badge. Null: Jev's chips.

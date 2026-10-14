@@ -19,14 +19,14 @@ data class EngineStatus(val state: EngineState, val keyUnchecked: Boolean = fals
     val text: String
         get() = when (state) {
             EngineState.GptLive -> "GPT-Live, through your Hermes server."
-            EngineState.NeedsKey -> "Bill is off until you paste an OpenRouter key."
+            EngineState.NeedsKey -> "Custom is off until you paste an OpenRouter key."
             EngineState.KeyRefused -> "OpenRouter refused the saved key. Paste a new one."
-            EngineState.NeedsVoice -> "Bill is on. Prepare his voice before the first call" +
+            EngineState.NeedsVoice -> "Custom is on. Prepare the voice before the first call" +
                 (if (bytesToFetch > 0) " (about ${megabytes(bytesToFetch)} to download)." else ".")
-            EngineState.Ready -> "Bill is ready." + if (keyUnchecked) " The key hasn't been checked yet." else ""
-            EngineState.GrokNeedsKey -> "Grok is off until you paste an xAI key."
+            EngineState.Ready -> "Custom is ready." + if (keyUnchecked) " The key hasn't been checked yet." else ""
+            EngineState.GrokNeedsKey -> "Grok Voice is off until you paste an xAI key."
             EngineState.GrokKeyRefused -> "xAI refused the saved key. Paste a new one."
-            EngineState.GrokReady -> "Grok is ready." + if (keyUnchecked) " The key hasn't been checked yet." else ""
+            EngineState.GrokReady -> "Grok Voice is ready." + if (keyUnchecked) " The key hasn't been checked yet." else ""
         }
 
     companion object {
@@ -254,7 +254,7 @@ class VoiceSettingsController(private val shell: VoiceShell, private val scope: 
     }
 
     fun prepare() {
-        if (!shell.prep.start()) local.update { it.copy(message = if (!shell.gate.active) "Choose Bill and save a key first." else null) }
+        if (!shell.prep.start()) local.update { it.copy(message = if (!shell.gate.active) "Choose Custom and save a key first." else null) }
     }
 
     fun cancelPrepare() = shell.prep.cancel()
@@ -289,4 +289,14 @@ class VoiceSettingsController(private val shell: VoiceShell, private val scope: 
     }
 
     fun dismissMessage() = local.update { it.copy(message = null) }
+
+    /** The voice pickers over this shell (lists, previews; a voice change goes through [update]). */
+    fun pickers(): VoicePickerController = VoicePickerController(
+        scope = scope,
+        catalog = shell.catalog,
+        preview = shell.preview,
+        settings = { shell.settings.settings.value },
+        update = ::update,
+        xaiKey = { shell.xaiKeys?.takeIf { it.status.value.usable }?.key() },
+    )
 }

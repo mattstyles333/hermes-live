@@ -151,7 +151,7 @@ class EndTransitionScreenTest {
         start.value = null
         ended.value = null
         advance(50)
-        ended.value = CallEnd(EndReason.Error, null, "The microphone or Bill's speech models could not start.")
+        ended.value = CallEnd(EndReason.Error, null, "The microphone or the speech models could not start.")
         advance(EndTimeline.WIND_MS + 300)
         compose.onNodeWithTag("call-time").assertDoesNotExist()
         compose.onNodeWithText("Call dropped · 2 tasks still running").assertIsDisplayed()
@@ -177,7 +177,7 @@ class EndTransitionScreenTest {
 
     @Test fun anErrorShowsTheCalmDroppedCardWithReconnect() {
         show(FakeCascadeUi.Moments.endedDropped())
-        end(EndReason.Error, error = "The microphone or Bill's speech models could not start.")
+        end(EndReason.Error, error = "The microphone or the speech models could not start.")
         compose.onNodeWithTag("cascade-screen").assert(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "Call dropped"))
         advance(EndTimeline.WIND_MS + 300)
         compose.onNodeWithText("Call dropped · 2 tasks still running").assertIsDisplayed()

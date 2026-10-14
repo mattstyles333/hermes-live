@@ -103,13 +103,13 @@ class CascadeCallEngine(
         if (_state.value.inCall) {
             if (request.muted && !_state.value.muted) toggleMute()
             // During a call a typed request could interleave with speech: Bill takes it by voice.
-            if (request.prompt != null) _state.update { it.copy(notice = "Bill takes requests by voice. Say it, and he'll pass it on.") }
+            if (request.prompt != null) _state.update { it.copy(notice = "Custom takes requests by voice. Say it, and it goes to your agents.") }
             return
         }
         callSettings = settings()
         val r = runtime()
         if (r == null) {
-            _state.value = CallUiState(phase = CallPhase.Failed, error = "Bill can't start. Sign in to Hermes, and check the OpenRouter key in Settings › Voice.")
+            _state.value = CallUiState(phase = CallPhase.Failed, error = "Custom can't start. Sign in to Hermes, and check the OpenRouter key in Settings › Voice.")
             return
         }
         rt = r
@@ -119,7 +119,7 @@ class CascadeCallEngine(
         autoMuted = false
         liveAtMs = null
         lastRouteKind = null
-        _state.value = CallUiState(phase = CallPhase.Connecting, muted = request.muted, notice = "Getting Bill ready…")
+        _state.value = CallUiState(phase = CallPhase.Connecting, muted = request.muted, notice = "Getting ready…")
         audio.begin(this)
         devices = audio.devices()
         route = RouteChoice(RouteSelector.auto(devices, callSettings.fallbackRoute), manual = false)
@@ -167,9 +167,9 @@ class CascadeCallEngine(
                 if (attempt != epoch) return@launch
                 Telemetry.warn("call.failed", null, mapOf("engine" to "cascade", "type" to e.javaClass.simpleName))
                 finish("failed", error = if (e is IllegalStateException && e.message?.contains("model", true) == true) {
-                    "Bill's speech models are missing. Prepare Bill's voice in Settings › Voice."
+                    "The speech models are missing. Prepare the voice in Settings › Voice."
                 } else {
-                    "The microphone or Bill's speech models could not start."
+                    "The microphone or the speech models could not start."
                 })
             }
         }
@@ -226,7 +226,7 @@ class CascadeCallEngine(
     }
 
     override fun submitText(text: String) {
-        if (text.isNotBlank() && _state.value.inCall) _state.update { it.copy(notice = "Bill takes requests by voice. Say it, and he'll pass it on.") }
+        if (text.isNotBlank() && _state.value.inCall) _state.update { it.copy(notice = "Custom takes requests by voice. Say it, and it goes to your agents.") }
     }
 
     override fun answerApproval(id: String, choice: ApprovalChoice) {
@@ -412,7 +412,7 @@ class CascadeCallEngine(
         val wasLive = liveAtMs != null
         val endedAt = clock()
         val summary = liveAtMs?.let {
-            CallSummary(endedAt - it, null, if (running > 0) "Call ended. Bill's tasks carry on and you'll get a notification." else "Call ended.")
+            CallSummary(endedAt - it, null, if (running > 0) "Call ended. Your tasks carry on and you'll get a notification." else "Call ended.")
         }
         _state.value = CallUiState(phase = if (error != null && liveAtMs == null) CallPhase.Failed else CallPhase.Ended, summary = summary, error = error)
         effects.proximity(false)

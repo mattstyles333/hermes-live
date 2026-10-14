@@ -95,7 +95,7 @@ internal fun sceneDescription(s: CascadeUiState, ended: EndRun? = null): String 
             1 -> " One agent still working."
             else -> " $running agents still working."
         }
-        return "Bill: ${ended.announcement.lowercase()}.$still"
+        return "Call: ${ended.announcement.lowercase()}.$still"
     }
     val who = orbStatus(s)
     val running = s.tasks.count { it.status.live }
@@ -105,5 +105,5 @@ internal fun sceneDescription(s: CascadeUiState, ended: EndRun? = null): String 
         else -> " $running agents working."
     }
     val offline = if (!s.connection.online) " Offline." else ""
-    return "Bill: $who.$agents$offline"
+    return "Call: $who.$agents$offline"
 }

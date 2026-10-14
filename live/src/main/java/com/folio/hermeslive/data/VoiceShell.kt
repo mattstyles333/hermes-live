@@ -131,6 +131,34 @@ class VoiceShell(
 
     @Volatile private var wasActive: Boolean? = null
 
+    /** The voice and model the stock lines were last asked for (a change re-renders them). */
+    @Volatile private var lastVoice: String? = null
+
+    /** The voices each engine offers (Settings › Voice pickers; ondemand slice). */
+    val catalog: VoiceCatalog by lazy { VoiceCatalog(client, java.io.File(context.cacheDir, "voices"), telemetry = telemetry) }
+
+    /** "Preview" in the voice pickers: one cached sample line through the engine's TTS. */
+    val preview: VoicePreview by lazy {
+        val player = com.folio.hermeslive.service.TrackBriefingPlayer()
+        VoicePreview(
+            cache = { storage.ttsCache(cascadeSettings().ttsCacheBytes) },
+            openRouterClip = { model, voice, text ->
+                if (!keys.status.value.usable) {
+                    null
+                } else {
+                    val v = BillVoice(openRouters(keys::key).speech, storage.ttsCache(cascadeSettings().ttsCacheBytes), { voice }, { model })
+                    (v.clip(text) as? com.folio.hermes.openrouter.OpenRouterResult.Ok)?.value
+                }
+            },
+            xaiKey = { xaiKeys?.takeIf { it.status.value.usable }?.key() },
+            xai = XaiTts(client, telemetry = telemetry),
+            play = { player.play(it) },
+        )
+    }
+
+    /** An OpenRouter key is saved and not refused (the Custom voice preview needs it). */
+    val canPreviewCustom: Boolean get() = keys.status.value.usable
+
     /** The speech-model ids the current settings want on the phone. */
     fun wantedModels(): Set<String> = SpeechModelChoice.wanted(settings.settings.value).map { it.id }.toSet()
 
@@ -156,7 +184,22 @@ class VoiceShell(
         prep.refresh()
         val opened = active && wasActive != true
         wasActive = active
-        if (opened) autoPrepare()
+        val voice = fingerprint()
+        val voiceChanged = lastVoice != null && lastVoice != voice
+        lastVoice = voice
+        if (opened) autoPrepare() else if (voiceChanged) rerender()
+    }
+
+    /**
+     * The voice or TTS model changed: render the stock lines again in it (only the missing ones;
+     * the old voice's stay cached), with progress in [prep]. Needs Custom on with a usable key;
+     * when speech models are also missing, only on Wi-Fi.
+     */
+    fun rerender(): Boolean {
+        if (!gate.active) return false
+        if (speechModels.wanted(wantedModels()).isNotEmpty() && !network.wifi()) return false
+        prep.cancel()
+        return prep.start()
     }
 
     /** Start "Prepare Bill's voice" if it is needed and the phone is on Wi-Fi. True if it started. */

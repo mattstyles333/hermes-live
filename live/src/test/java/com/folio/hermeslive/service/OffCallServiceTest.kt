@@ -232,7 +232,7 @@ class OffCallServiceTest {
         val n = shown!!
         assertTrue("a media session for the lock screen", n.extras.containsKey(Notification.EXTRA_MEDIA_SESSION))
         assertEquals(Notification.VISIBILITY_PUBLIC, n.visibility)
-        assertEquals("Bill · result", n.extras.getString(Notification.EXTRA_TITLE))
+        assertEquals("Hermes Live · result", n.extras.getString(Notification.EXTRA_TITLE))
         assertTrue(shadowOf(service).isStoppedBySelf)
     }
 

@@ -171,7 +171,7 @@ class CascadeScreenshotRender {
         for ((i, at) in listOf(0L, 400L, 800L, 1_200L).withIndex()) endFrame("end-none-${i + 1}", done, bye, at, 22_000)
         // An error: the calm "Call dropped" card with Reconnect; the tasks still run.
         val dropped = FakeCascadeUi.Moments.endedDropped()
-        val error = CallEnd(EndReason.Error, durationMs = 9_000, error = "The microphone or Bill's speech models could not start.")
+        val error = CallEnd(EndReason.Error, durationMs = 9_000, error = "The microphone or the speech models could not start.")
         for ((i, at) in listOf(0L, 500L, 1_200L).withIndex()) endFrame("end-dropped-${i + 1}", dropped, error, at, 9_000)
     }
 
