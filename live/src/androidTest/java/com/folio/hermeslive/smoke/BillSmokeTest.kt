@@ -223,6 +223,11 @@ class BillSmokeTest {
             result.put("jev_calls", org.json.JSONArray(jev.map { row(it, speechEnd) }))
             net.calls(OPENROUTER, "/audio/speech").firstOrNull { it.startMs >= speechEnd }?.let { result.put("first_tts_after_speech_end", row(it, speechEnd)) }
             result.put("tts_fetches_during_call", net.calls(OPENROUTER, "/audio/speech").count { it.startMs >= t0 })
+            // The first stock line: its slot id (not content), and whether it had to be fetched after speech end (a cache miss).
+            result.put("first_line_slot", synchronized(events) { events.firstNotNullOfOrNull { (t, e) -> (e as? CascadeEvent.LinePlayed)?.slot?.takeIf { t >= speechEnd } } })
+            played.firstOrNull()?.let { line -> result.put("tts_fetched_before_first_line", net.calls(OPENROUTER, "/audio/speech").count { it.startMs in speechEnd..line.startedAtMs }) }
+            // The writer's calls (the briefs before the task starts, then the spoken result).
+            result.put("writer_calls", org.json.JSONArray(net.calls(OPENROUTER, "/chat/completions").filter { it.startMs >= speechEnd }.map { row(it, speechEnd) }))
             net.calls(OPENROUTER, "/key").lastOrNull()?.let { result.put("warm", row(it, speechEnd)) }
             main { g.calls.end() }
             waitFor("call ended", 10_000) { !g.calls.state.value.inCall }
