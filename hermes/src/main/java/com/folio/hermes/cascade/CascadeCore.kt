@@ -92,6 +92,13 @@ class CascadeCore private constructor(
     private var recoveryJob: Job? = null
 
     /**
+     * The shared task API (grok-voice slice): start, update, cancel and read Hermes tasks from a
+     * front end that is not Jev, through this core's actor. Each command reads the stored state
+     * back first ([restore]: no call, nothing spoken); during a Bill call that does nothing.
+     */
+    val tasks: CascadeTasks = CascadeTasks(actor, ::restore)
+
+    /**
      * A call starts (mic on): open the OpenRouter connection ahead of the first turn, restore if
      * needed, recover tasks once, listen to the ports, and fetch the likely first stock lines
      * ahead ([LIKELY_SLOTS]) if they are not cached yet.

@@ -158,10 +158,18 @@ sealed interface Event {
      * hit even before "Prepare Bill's voice" has finished. Sent by `CascadeCore.start`.
      */
     data class PrimeLines(val slots: List<String>) : Event
+
+    /**
+     * The shared task API (grok-voice slice, additive): [command] from a front end that is not Jev
+     * ([CascadeTasks]). Handled with or without a call, once the store is read back; the reply is
+     * [Effect.TaskApiReply] with [requestId].
+     */
+    data class TaskApi(val requestId: Long, val command: TaskCommand) : Event
 }
 
 /** Events handled with no call open: tasks belong to the user and keep running between calls (R-CONV-3). */
 val Event.offCall: Boolean
     get() = this is Event.Start || this is Event.TaskUpdated || this is Event.TaskRunEnded || this is Event.TaskInterrupted ||
         this is Event.TaskSessionBound || this is Event.HermesConnection || this is Event.RenderProgressed ||
-        this is Event.TaskSessionOpened || this is Event.RunNotReceived || this is Event.Restore || this is Event.OpenConversation
+        this is Event.TaskSessionOpened || this is Event.RunNotReceived || this is Event.Restore || this is Event.OpenConversation ||
+        this is Event.TaskApi
