@@ -127,6 +127,9 @@ internal class SceneModel(seed: Long = 7L) {
 
     var reduceMotion: Boolean = false
 
+    /** The call ended: satellites stop on their orbits (the draw pass moves them to the row). */
+    var ending: Boolean = false
+
     // Geometry (px), set by the draw pass.
     var cx: Float = 0f
         private set
@@ -326,10 +329,10 @@ internal class SceneModel(seed: Long = 7L) {
             SatPhase.Free -> return
             SatPhase.Live -> {
                 sat.appear = min(1f, sat.appear + dt * 3f)
-                if (!reduceMotion && sat.moves) sat.angle += dt * (0.55f - sat.orbit / 600f)
+                if (!reduceMotion && sat.moves && !ending) sat.angle += dt * (0.55f - sat.orbit / 600f)
                 sat.flash = (sat.flash - dt * 2.5f).coerceAtLeast(0f)
                 place(sat)
-                if (!reduceMotion) sat.pushTrail(sat.x - cx, sat.y - cy, trailMax(sat.steps))
+                if (!reduceMotion && !ending) sat.pushTrail(sat.x - cx, sat.y - cy, trailMax(sat.steps))
             }
             SatPhase.Flying -> {
                 sat.k = min(1f, sat.k + dt * 1.4f)
@@ -409,7 +412,7 @@ internal class SceneModel(seed: Long = 7L) {
         val transient = hasTransient()
         if (reduceMotion) return if (transient) FrameNeed.Full else FrameNeed.None
         if (transient || speaking || pausing || jevInFlight) return FrameNeed.Full
-        for (sat in sats) if (sat.phase == SatPhase.Live && sat.moves) return FrameNeed.Full
+        for (sat in sats) if (sat.phase == SatPhase.Live && sat.moves && !ending) return FrameNeed.Full
         return FrameNeed.Calm
     }
 

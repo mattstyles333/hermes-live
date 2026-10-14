@@ -313,5 +313,14 @@ class FakeCascadeUi(val pauseMs: Int = 1000) {
 
         /** After a commit with two uncertain words. */
         fun uncertainWords(): CascadeUiState = FakeCascadeUi().stateAt(5_900)
+
+        /** The moment a call ends with three agents still working (the call's start is script time 0). */
+        fun endedWithTasks(): CascadeUiState = threeAgents()
+
+        /** The moment a call ends with both agents done, one result not heard yet (Bill was reading it). */
+        fun endedAllDone(): CascadeUiState = FakeCascadeUi().stateAt(22_000)
+
+        /** The moment a call drops with two agents still working. */
+        fun endedDropped(): CascadeUiState = FakeCascadeUi().stateAt(9_000)
     }
 }
