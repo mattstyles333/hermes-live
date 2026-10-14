@@ -36,6 +36,9 @@ object TranscriptCleanup {
     /** The gate a committed turn waits behind until its cleanup is back. */
     const val GATE = "cleanup"
 
+    /** Action data: a hook (the key-doubt answer) chose the route, so a re-ask never replaces it. */
+    const val LOCKED = "cleanup.locked"
+
     private const val OTHER = "cleanup.other"
     private const val JEV = "cleanup.jev"
 
@@ -95,7 +98,7 @@ object TranscriptCleanup {
             val fresh = CeoRouter.withWords(tx.s, result.value, a.text, tx.env.handlers.hooks.decide(tx.s, result.value, tx.env.bank))
             val played = a.slot != null || a.utteranceId != 0L
             val sameRoute = fresh.route.wire == a.decision.route.wire
-            val take = !played || sameRoute
+            val take = LOCKED !in a.data && (!played || sameRoute)
             if (take) {
                 val decision = if (played) fresh.copy(slot = a.decision.slot) else fresh
                 update(tx, a.turnId) { it.copy(decision = decision, record = it.record.copy(route = decision.route.wire)) }

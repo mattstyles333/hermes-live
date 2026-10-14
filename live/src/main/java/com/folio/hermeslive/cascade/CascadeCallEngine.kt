@@ -371,22 +371,25 @@ class CascadeCallEngine(
     }
 
     /** What the goodbye does at hang-up: nothing, wait for Bill's queued `end.bye*`, or say one (the End button). */
-    enum class Goodbye { None, Queued, Say }
+    enum class Goodbye(val wire: String) { None("none"), Queued("queued"), Say("say") }
 
     /** One call's audio and speaker, released once (after the goodbye, or at once). */
     private inner class Teardown(val runtime: CascadeAppRuntime?, val io: CascadeAudioIo?, val earcon: Boolean) {
         var job: Job? = null
         private var done = false
 
-        /** Bill stops, the speaker and the call audio mode go. Any thread; runs once. */
+        /**
+         * Bill stops, the speaker and the call audio mode go. Any thread; runs once. Holds the lock
+         * throughout, so a new call ([releaseNow] from [start]) waits for a release already under way.
+         */
         fun release() {
             synchronized(this) {
                 if (done) return
                 done = true
+                runCatching { runtime?.endCall() }
+                runCatching { io?.release?.invoke() }
+                runCatching { audio.end() }
             }
-            runCatching { runtime?.endCall() }
-            runCatching { io?.release?.invoke() }
-            runCatching { audio.end() }
         }
     }
 
@@ -443,14 +446,14 @@ class CascadeCallEngine(
                 if (actor != null && bye != Goodbye.None) {
                     if (bye == Goodbye.Say) actor.send(Event.Say(Goodbyes.slot(running > 0), SpeechKind.Reply))
                     val heard = Goodbyes.awaitPlayed(actor.state, GOODBYE_CAP_MS, waitForStart = bye == Goodbye.Say)
-                    Telemetry.event("cascade.goodbye", mapOf("how" to bye.name.lowercase(), "played" to heard))
+                    Telemetry.event("cascade.goodbye", mapOf("how" to bye.wire, "played" to heard))
                 }
             } finally {
-                val released = teardown === t
-                if (released) teardown = null
                 withContext(this@CascadeCallEngine.io + NonCancellable) { t.release() }
-                // Not after releaseNow: a new call may already be starting.
-                if (released && t.earcon) effect(Earcon.Ended)
+                // Cleared only once released; not after releaseNow (a new call may already be starting).
+                val mine = teardown === t
+                if (mine) teardown = null
+                if (mine && t.earcon) effect(Earcon.Ended)
             }
         }
     }

@@ -88,7 +88,9 @@ class CeoHooks(private val memo: MemoRouting, private val summaries: BackgroundS
         val decision = CeoRouter.withWords(tx.s, event.answers, action.text, action.decision)
         val withTranscript = action.copy(transcript = transcript, decision = decision)
         summaries.afterTurn(tx)
-        return KeyDoubt.answer(tx, withTranscript)
+        val answered = KeyDoubt.answer(tx, withTranscript)
+        // The turn answered Bill's question: a cleanup's re-ask must not route it afresh.
+        return if (answered.decision != withTranscript.decision) answered.copy(data = answered.data + (TranscriptCleanup.LOCKED to "1")) else answered
     }
 
     /** R-CTX-2: a whole-writer answer no action waited for (the reducer routes it here). True if it was ours. */

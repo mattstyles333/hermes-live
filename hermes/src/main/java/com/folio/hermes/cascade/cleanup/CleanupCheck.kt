@@ -73,9 +73,12 @@ object CleanupCheck {
             }
             val reason = refusal(from, to, j0 == 0, otherWords, vocab)
             if (reason != null) return Verdict.Rejected(reason, change)
-            if (isKey(from, false, vocab) || isKey(to, j0 == 0, vocab)) key = true
+            // The old side's capitals say nothing (title-cased accurate text): only its names and numbers count.
+            val keyChange = isKey(from, false, vocab, capitals = false) || isKey(to, j0 == 0, vocab)
+            if (keyChange) key = true
             changes += change
-            words += to.map { Word(it, alternatives = if (from.isEmpty()) emptyList() else listOf(change.first)) }
+            // A changed name or number stays visible as a doubt: "As heard" keeps the heard word, and the caption lets the user correct it.
+            words += to.map { Word(it, alternatives = if (from.isEmpty()) emptyList() else listOf(change.first), uncertain = keyChange && from.isNotEmpty()) }
         }
         if (changes.isEmpty()) return Verdict.Same
         return Verdict.Accepted(new.joinToString(" "), words, changes, key)

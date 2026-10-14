@@ -168,6 +168,18 @@ class CascadeGoodbyeTest {
         assertEquals(1, r.audio.ended)
     }
 
+    @Test fun wordsStillBeingHeardEndTheCallAtOnceWithNoGoodbye() = rig { r ->
+        r.live()
+        r.speech.built.single().channel.trySend(SttEvent.Final("check the stock"))
+        runCurrent()
+        assertFalse(r.rt.core.actor.state.value.userSpeaking)
+        r.engine.end()
+        runCurrent()
+        assertEquals("a goodbye must never let a turn commit after the hang-up", 0, r.byesFetched())
+        assertEquals(1, r.released)
+        assertFalse(r.rt.core.actor.state.value.started)
+    }
+
     @Test fun aSecondEndPressCutsTheGoodbyeShort() = rig { r ->
         r.live()
         r.engine.end()

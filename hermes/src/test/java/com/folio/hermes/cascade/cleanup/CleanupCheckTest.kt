@@ -41,6 +41,9 @@ class CleanupCheckTest {
         val v = accepted(check("what we have in sto", "what we have in stock"))
         assertEquals(listOf("sto" to "stock"), v.changes)
         assertFalse(v.key)
+        assertFalse(v.words.last().uncertain)
+        // Title-cased accurate text: an ordinary word's capital is not a name.
+        assertFalse(accepted(check("Get Me This Weeks Sails", "Get me this week's sales")).key)
     }
 
     @Test fun caseAndPunctuationAndNumberFormsAreNotChanges() {
@@ -85,7 +88,7 @@ class CleanupCheckTest {
         val heard = listOf(Word("check", 0.9), Word("castral", 0.3, listOf("Kestrel"), uncertain = true), Word("stock", 0.8))
         val v = accepted(CleanupCheck.check(heard, "check Kestrel stock", "check castral stock", vocab))
         assertEquals(0.9, v.words[0].confidence)
-        assertEquals(Word("Kestrel", alternatives = listOf("castral")), v.words[1])
+        assertEquals("a changed name stays a visible doubt", Word("Kestrel", alternatives = listOf("castral"), uncertain = true), v.words[1])
         assertEquals(0.8, v.words[2].confidence)
     }
 }
