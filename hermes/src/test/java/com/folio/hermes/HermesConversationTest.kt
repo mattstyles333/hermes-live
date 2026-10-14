@@ -284,10 +284,9 @@ class HermesConversationTest {
         fake.sockets.peek()!!.event("message.complete", sid, """{"text":"partial done"}""")
         completed.await()
         assertFalse(conversation.isBusy)
-        val started = System.nanoTime()
         val updates = conversation.turn("next", interruptFirst = true).toList()
         assertEquals(TurnUpdate.Completed("fresh", TurnStatus.Complete, null), updates.last())
-        assertTrue((System.nanoTime() - started) / 1_000_000 < config.interruptSettleMs)
+        // No interrupt on the wire is the proof it did not wait to settle one (no clock needed).
         assertEquals(listOf("client.capabilities", "session.create", "prompt.submit", "prompt.submit"), methods())
     }
 

@@ -130,6 +130,28 @@ class HermesGatewayTest {
         gateway.connection.first { it is GatewayConnection.Ready && it.generation > first.generation }
     }
 
+    /**
+     * A call made the moment a drop fails the previous one waits for the next connection; it
+     * does not fail at once on the old Ready state. Unconfined forces the window a busy CI runner
+     * hit by chance: the second call runs inside the drop's own cleanup, before the connection
+     * loop has moved off Ready.
+     */
+    @Test fun aCallMadeAsADropFailsTheLastOneWaitsForTheNextConnection() = test {
+        val first = gateway.awaitReady()
+        val socket = fake.nextSocket()
+        val next = async(Dispatchers.Unconfined) {
+            val lost = runCatching { gateway.call("session.list", JsonObject(emptyMap())) }
+            lost.exceptionOrNull() to gateway.call(FakeHermesServer.FENCE, JsonObject(emptyMap()))
+        }
+        socket.nextCall("session.list")
+        socket.ws.close(1001, "going away")
+        val (lost, answer) = next.await()
+        assertTrue(lost.toString(), lost is GatewayUnavailableException)
+        assertEquals(JsonObject(emptyMap()), answer)
+        val now = gateway.connection.value as GatewayConnection.Ready
+        assertTrue("answered on the new connection", now.generation > first.generation)
+    }
+
     @Test fun refusedHandshakesStopAfterTheLimit() = test {
         fake.refuseUpgrade = true
         val stopped = gateway.run {

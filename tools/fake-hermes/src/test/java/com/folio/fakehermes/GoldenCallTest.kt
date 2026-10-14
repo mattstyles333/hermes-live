@@ -181,6 +181,9 @@ class GoldenCallTest {
         val out = SpokenLog(router, ::changed)
         val events = CopyOnWriteArrayList<CascadeEvent>()
         val appEffects = CopyOnWriteArrayList<Effect>()
+
+        /** The effect the gate refused: the actor dies there, before running it. */
+        val killedAt = CompletableDeferred<Effect>()
         val core = CascadeCore.create(
             scope = scope,
             ports = CascadePorts.gateway(gateway, h.config, router, out, store, network = object : Network {
@@ -190,8 +193,17 @@ class GoldenCallTest {
             settings = { settings },
             telemetry = TelemetrySink.None,
             onAppEffect = { appEffects += it },
-            // A kill wakes the waits too (nothing else changes after it).
-            gate = EffectGate { e -> gate.allow(e).also { if (!it) changed() } },
+            // A kill wakes the waits too (nothing else changes after it). The wake follows the
+            // record: the actor sets `killed` only after the gate returns, so a wait on that
+            // could check too early and never be woken again.
+            gate = EffectGate { e ->
+                gate.allow(e).also {
+                    if (!it) {
+                        killedAt.complete(e)
+                        changed()
+                    }
+                }
+            },
             seed = 7,
         )
         val actor get() = core.actor
@@ -503,7 +515,8 @@ class GoldenCallTest {
         val first = Call(routes, briefs, store = store, gate = EffectGate { e -> e !is Effect.SubmitTask })
         first.start()
         first.say("Check how many Kestrel aviators we have in stock.")
-        first.until("killed at the submit") { first.actor.killed }
+        first.until("killed at the submit") { first.killedAt.isCompleted }
+        assertTrue(runBlocking { first.killedAt.await() } is Effect.SubmitTask)
         first.close()
         h.gateway.disconnect()
         assertEquals("the prompt never left", 0, promptCount())

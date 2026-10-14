@@ -7,7 +7,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.job
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -161,7 +160,7 @@ class SpeechClient internal constructor(private val router: OpenRouter) {
                 delay(router.config.retryBackoffMs)
             }
         }
-    }.flowOn(router.io)
+    }.flowOnInOrder(router.io)
 
     internal companion object {
         const val LABEL = "tts"

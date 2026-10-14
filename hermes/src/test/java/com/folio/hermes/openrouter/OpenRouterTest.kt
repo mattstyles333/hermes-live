@@ -2,7 +2,13 @@ package com.folio.hermes.openrouter
 
 import com.folio.hermes.telemetry.TelemetrySink
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -13,8 +19,11 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import mockwebserver3.MockResponse
+import mockwebserver3.MockResponseBody
 import mockwebserver3.MockWebServer
+import mockwebserver3.SocketEffect
 import okio.Buffer
+import okio.BufferedSink
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -39,6 +48,7 @@ internal class CapturingSink : TelemetrySink {
 internal fun MockWebServer.openRouter(
     key: String? = FAKE_KEY,
     sink: TelemetrySink = TelemetrySink.None,
+    io: CoroutineDispatcher = Dispatchers.IO,
     tweak: (OpenRouterConfig) -> OpenRouterConfig = { it },
 ): OpenRouter = OpenRouter(
     config = tweak(
@@ -53,7 +63,26 @@ internal fun MockWebServer.openRouter(
     ),
     key = { key },
     telemetry = sink,
+    io = io,
 )
+
+/**
+ * One thread behind two dispatchers: the collector ([run]) and the router's [io] take turns in
+ * FIFO order, so a stream that emits and then fails without suspending always finishes before
+ * the collector resumes. That is the order a starved CI runner produces by chance; here it is
+ * forced. Two distinct executors, so `flowOn` keeps its channel between them.
+ */
+internal class OneThread : AutoCloseable {
+    private val thread = Executors.newSingleThreadExecutor()
+    private val collector = Executor { thread.execute(it) }.asCoroutineDispatcher()
+    val io: CoroutineDispatcher = Executor { thread.execute(it) }.asCoroutineDispatcher()
+
+    fun run(block: suspend () -> Unit) = runBlocking(collector) { withTimeout(20_000) { block() } }
+
+    override fun close() {
+        thread.shutdownNow()
+    }
+}
 
 internal fun jsonResponse(body: String, code: Int = 200): MockResponse =
     MockResponse.Builder().code(code).addHeader("Content-Type", "application/json").body(body).build()
@@ -200,19 +229,26 @@ class OpenRouterTest {
         assertTrue(server.takeRequest().jsonBody()["stream"]!!.jsonPrimitive.boolean)
     }
 
-    @Test fun writerStreamErrorChunkFails() = test {
+    /**
+     * The text before an error chunk always reaches the collector, then the error. [OneThread]
+     * forces the order a busy CI runner hits by chance: the stream reads, emits and fails before
+     * the collector runs again.
+     */
+    @Test fun writerStreamErrorChunkFails() = OneThread().use { one ->
         server.enqueue(
             MockResponse.Builder().addHeader("Content-Type", "text/event-stream")
                 .body("""data: {"choices":[{"delta":{"content":"Hi"}}]}""" + "\n\n" + """data: {"error":{"code":502,"message":"upstream"}}""" + "\n\n")
                 .build(),
         )
         val got = mutableListOf<String>()
-        try {
-            server.openRouter().writer.stream("s", "p").collect { got += it }
-            fail("expected failure")
-        } catch (e: OpenRouterException) {
-            assertEquals(FailureKind.Http, e.failure.kind)
-            assertEquals(502, e.failure.httpStatus)
+        one.run {
+            try {
+                server.openRouter(io = one.io).writer.stream("s", "p").collect { got += it }
+                fail("expected failure")
+            } catch (e: OpenRouterException) {
+                assertEquals(FailureKind.Http, e.failure.kind)
+                assertEquals(502, e.failure.httpStatus)
+            }
         }
         assertEquals(listOf("Hi"), got)
         assertEquals(1, server.requestCount) // something was emitted: never retried, never heard twice
@@ -258,30 +294,61 @@ class OpenRouterTest {
         assertEquals(10L, (parts.last() as SpeechAudio.Finished).durationMs)
     }
 
+    /**
+     * Streamed audio is emitted before the body ends: the server sends the first 1,001 bytes and
+     * then holds the rest until the collector has had audio. If the client waited for the whole
+     * body, that would never happen and the hang guard would fail the test. No clocks.
+     */
     @Test fun speechStreamedEmitsBeforeTheBodyEndsOnWholeFrames() = test {
         val pcm = ByteArray(6_001) { (it % 251).toByte() }
+        val heardFirst = CountDownLatch(1)
         server.enqueue(
             MockResponse.Builder()
                 .addHeader("Content-Type", "audio/pcm;rate=24000;channels=1")
-                .chunkedBody(Buffer().write(pcm), 1_001)
-                .throttleBody(1_001, 100, TimeUnit.MILLISECONDS)
+                .body(object : MockResponseBody {
+                    override val contentLength = pcm.size.toLong()
+                    override fun writeTo(sink: BufferedSink) {
+                        sink.write(pcm, 0, 1_001).flush()
+                        check(heardFirst.await(20, TimeUnit.SECONDS)) { "the client never emitted the first audio" }
+                        sink.write(pcm, 1_001, pcm.size - 1_001).flush()
+                    }
+                })
                 .build(),
         )
-        val t0 = System.nanoTime()
-        val arrivals = mutableListOf<Long>()
         val chunks = mutableListOf<ByteArray>()
         server.openRouter().speech.speak("x", delivery = SpeechDelivery.Streamed).collect { part ->
             if (part is SpeechAudio.Chunk) {
-                arrivals += (System.nanoTime() - t0) / 1_000_000
                 chunks += part.bytes
+                heardFirst.countDown()
             }
         }
-        val total = (System.nanoTime() - t0) / 1_000_000
-        assertTrue("several chunks: ${chunks.size}", chunks.size >= 3)
-        assertTrue("first audio ${arrivals.first()} ms well before the end $total ms", arrivals.first() < total - 200)
+        assertTrue("several chunks: ${chunks.size}", chunks.size >= 2)
         chunks.forEach { assertEquals("whole 16-bit frames", 0, it.size % 2) }
         // The odd last byte has no pair: it is held back, never played as half a sample.
         assertArrayEquals(pcm.copyOf(6_000), chunks.fold(ByteArray(0)) { acc, b -> acc + b })
+    }
+
+    /** Audio read before the body broke reaches the collector before the failure (forced order, as above). */
+    @Test fun speechAudioBeforeABrokenBodyIsDeliveredThenTheFailure() = OneThread().use { one ->
+        server.enqueue(
+            MockResponse.Builder()
+                .addHeader("Content-Type", "audio/pcm;rate=24000;channels=1")
+                .body(Buffer().write(ByteArray(4_000)))
+                .onResponseBody(SocketEffect.ShutdownConnection)
+                .build(),
+        )
+        val got = mutableListOf<SpeechAudio>()
+        one.run {
+            try {
+                server.openRouter(io = one.io).speech.speak("x", delivery = SpeechDelivery.Streamed).collect { got += it }
+                fail("expected failure")
+            } catch (e: OpenRouterException) {
+                assertEquals(FailureKind.Offline, e.failure.kind)
+            }
+        }
+        assertTrue(got.toString(), got.first() is SpeechAudio.Started)
+        assertTrue(got.toString(), got.drop(1).isNotEmpty() && got.drop(1).all { it is SpeechAudio.Chunk })
+        assertEquals("audio was emitted: never retried", 1, server.requestCount)
     }
 
     @Test fun speechNon2xxEmitsNoAudio() = test {
