@@ -423,8 +423,11 @@ class GrokCallEngine(
         val next = s.copy(activity = activity, level = level, musicInGap = music, tool = tool, approvals = r.approvals.value, clarify = r.clarify.value)
         if (next != s) _state.value = next
         // Running tasks are not activity: the off-call service carries them after an idle hang-up.
+        // An approval or clarify card waiting for a tap is: its notification lives only as long as
+        // the call service (the off-call service posts results, not approvals).
         val session = grok
-        val busy = userSpeaking || speaking || otherCall || (session != null && (!session.quiet() || session.hasPendingNotice()))
+        val waitingOnUser = r.approvals.value.isNotEmpty() || r.clarify.value != null
+        val busy = userSpeaking || speaking || otherCall || waitingOnUser || (session != null && (!session.quiet() || session.hasPendingNotice()))
         applyLimits(now, busy)
     }
 

@@ -234,6 +234,25 @@ class GrokCallEngineTest {
         assertTrue(reason, reason.contains("Your tasks carry on"))
     }
 
+    @Test fun anApprovalWaitingForATapKeepsTheCallUp() {
+        accept()
+        val now = java.util.concurrent.atomic.AtomicLong(1_000_000L)
+        val t0 = now.get()
+        val e = engine(LiveSettings(grokSaveCost = false, callCapMinutes = 10), clock = { now.get() })
+        onEngine { e.start(CallRequest(entry = "test")) }
+        await(e.state) { it.phase == CallPhase.Live }
+        val request = com.folio.hermes.ApprovalRequest("srq-1", "s1", "q1", "rm -rf build", "Delete the build folder", listOf(com.folio.hermes.ApprovalChoice.Once), null, JsonObject(emptyMap()))
+        runBlocking { rt.gateway.events.emit(com.folio.hermes.GatewayEvent.ApprovalRequested(request)) }
+        await(e.state) { it.approvals.isNotEmpty() }
+        // 9 minutes with the card up and nobody speaking: past the idle time, so only the card keeps the
+        // call; the first tick at 9 min gives the cap's warning (without the card it would hang up for idle).
+        now.set(t0 + 9 * 60_000L)
+        await(e.state) { it.warning != null || !it.inCall }
+        assertTrue("the card keeps the call up", e.state.value.inCall)
+        assertEquals("This call ends in 1 minute (call time limit).", e.state.value.warning)
+        onEngine { e.end() }
+    }
+
     @Test fun theCallCapWarnsAMinuteBeforeAndHangsUp() {
         accept()
         val now = java.util.concurrent.atomic.AtomicLong(1_000_000L)

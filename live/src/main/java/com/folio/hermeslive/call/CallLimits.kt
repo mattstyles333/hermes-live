@@ -11,7 +11,8 @@ import com.folio.hermes.live.BridgeSettings
  *
  * "Something is happening" ([tick]'s `busy`) is the engine's call. For Grok: the user speaking
  * (heard by the server or by the phone while the session is parked), Grok speaking or answering,
- * a task notice waiting to be spoken, or another phone call. **Running tasks do not count** (hub
+ * a task notice waiting to be spoken, an approval or clarify card waiting for a tap (its
+ * notification ends with the call), or another phone call. **Running tasks do not count** (hub
  * decision, 1.3.0 integration): after the quiet time the call hangs up even with tasks running,
  * because the off-call service and the result notifications carry them; a result due to be spoken
  * counts as activity until it has been said. This differs from GPT-Live with parallel agents,
