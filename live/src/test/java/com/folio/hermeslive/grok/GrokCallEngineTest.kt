@@ -87,7 +87,13 @@ class GrokCallEngineTest {
         }
     }
 
-    private fun engine(settings: LiveSettings = LiveSettings(grokVoice = "rex", grokModel = "grok-voice-3.0"), billMemo: Boolean = false) = GrokCallEngine(
+    private val vad = com.folio.hermeslive.call.ondemand.FakeVad()
+
+    private fun engine(
+        settings: LiveSettings = LiveSettings(grokVoice = "rex", grokModel = "grok-voice-3.0"),
+        billMemo: Boolean = false,
+        withVad: Boolean = false,
+    ) = GrokCallEngine(
         scope = scope,
         settings = { settings },
         runtime = { rt.runtime },
@@ -101,6 +107,8 @@ class GrokCallEngineTest {
         billMemo = { billMemo },
         onLive = { lives += it },
         baseConfig = GrokConfig(url = server.url("/v1/realtime").toString().replaceFirst("http", "ws"), reconnectAttempts = 0),
+        vad = { if (withVad) vad else null },
+        onDemandTimings = { it.copy(idleCloseMs = 300) },
     )
 
     private fun <T> onEngine(block: () -> T): T = runBlocking { kotlinx.coroutines.withContext(scope.coroutineContext) { block() } }
@@ -137,11 +145,12 @@ class GrokCallEngineTest {
         await(e.state) { it.phase == CallPhase.Live }
         assertTrue(Earcon.Connected in effects.earcons)
         assertEquals(listOf(true), lives)
-        // 20 ms of 16 kHz mic (320 samples) is 480 samples at 24 kHz (479 for the very first chunk: no carry yet).
-        val pcm = Base64.getDecoder().decode(take("input_audio_buffer.append")["audio"]!!.jsonPrimitive.content)
-        assertTrue(pcm.size == 480 * 2 || pcm.size == 479 * 2)
-        val next = Base64.getDecoder().decode(take("input_audio_buffer.append")["audio"]!!.jsonPrimitive.content)
-        assertEquals(480 * 2, next.size)
+        // The audio heard while connecting goes first (in 200 ms appends), then live: 20 ms of 16 kHz
+        // mic (320 samples) is 480 samples at 24 kHz.
+        val sizes = List(20) { Base64.getDecoder().decode(take("input_audio_buffer.append")["audio"]!!.jsonPrimitive.content).size }
+        assertTrue(sizes.toString(), sizes.all { it <= 4_800 * 2 })
+        assertEquals(sizes.toString(), 480 * 2, sizes.last())
+        assertFalse("no voice detector: save cost cannot close the session", e.sessionUi.value.dimmed)
         rt.running.value = 2
         onEngine { e.end() }
         assertEquals(CallPhase.Ended, e.state.value.phase)
@@ -161,6 +170,43 @@ class GrokCallEngineTest {
         await(e.state) { it.offerBillMemo }
         assertTrue(e.state.value.notice!!.contains("offline"))
         assertFalse(e.state.value.phase == CallPhase.Ended)
+        onEngine { e.end() }
+    }
+
+    @Test fun saveCostParksTheSocketWhenIdleAndSpeechResumesTheConversation() {
+        accept()
+        val e = engine(withVad = true)
+        onEngine { e.start(CallRequest(entry = "test")) }
+        val first = sockets.poll(10, TimeUnit.SECONDS)!!
+        server.takeRequest(10, TimeUnit.SECONDS)!!
+        await(e.state) { it.phase == CallPhase.Live }
+        // All idle for 300 ms: the socket closes, the call stays.
+        runBlocking { withTimeout(10_000) { e.sessionUi.first { it.dimmed } } }
+        assertEquals(CallPhase.Live, e.state.value.phase)
+        assertTrue(e.state.value.inCall)
+        received.clear()
+        accept()
+        vad.speaking = true
+        val again = server.takeRequest(10, TimeUnit.SECONDS)!!
+        assertEquals("the conversation resumes", "conv_9", again.url.queryParameter("conversation_id"))
+        take("session.update")
+        // The held audio (the pre-roll since the park, plus what the mic heard while reopening) goes in
+        // first, more than one live chunk; the exact pre-roll is OnDemandControllerTest's.
+        val held = Base64.getDecoder().decode(take("input_audio_buffer.append")["audio"]!!.jsonPrimitive.content).size
+        assertTrue("$held", held > 480 * 2)
+        runBlocking { withTimeout(10_000) { e.sessionUi.first { it.view == com.folio.hermeslive.call.ondemand.SessionView.Connected } } }
+        assertTrue(first !== sockets.poll(10, TimeUnit.SECONDS))
+        vad.speaking = false
+        onEngine { e.end() }
+    }
+
+    @Test fun saveCostOffKeepsTheSessionForTheWholeCall() {
+        accept()
+        val e = engine(LiveSettings(grokSaveCost = false), withVad = true)
+        onEngine { e.start(CallRequest(entry = "test")) }
+        await(e.state) { it.phase == CallPhase.Live }
+        assertFalse(e.sessionUi.value.enabled)
+        assertFalse(e.sessionUi.value.dimmed)
         onEngine { e.end() }
     }
 

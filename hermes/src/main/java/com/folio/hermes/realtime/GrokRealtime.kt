@@ -37,6 +37,12 @@ sealed interface LinkState {
     /** Gave up: [code] `no_key`, `unauthorized`, `http_<n>`, `unreachable`. */
     data class Failed(val code: String) : LinkState
     data object Closed : LinkState
+
+    /**
+     * Closed on purpose to save cost while the call goes on (ondemand slice): the conversation id is
+     * kept, and [GrokRealtime.resume] reopens it (within the server's 30-minute window) or starts fresh.
+     */
+    data object Parked : LinkState
 }
 
 /** What a session sends in `session.update`: the instructions and the tools. */
@@ -81,6 +87,12 @@ class GrokRealtime(
     @Volatile var conversationId: String? = null
         private set
 
+    /** The last frame either way (the server drops a resumable conversation after 30 minutes without one). */
+    @Volatile private var lastActivityAt = 0L
+
+    /** The id this socket asked to resume, until the server names its conversation. */
+    @Volatile private var resumingId: String? = null
+
     /** The session config went out on this socket: audio may follow (it is dropped before). */
     @Volatile private var configured = false
 
@@ -110,11 +122,45 @@ class GrokRealtime(
     /** Send one client event; false if the socket is not open. */
     fun send(event: JsonObject): Boolean {
         val ws = synchronized(lock) { socket.takeIf { _link.value is LinkState.Open } } ?: return false
-        return ws.send(RealtimeProtocol.encode(event))
+        return ws.send(RealtimeProtocol.encode(event)).also { if (it) lastActivityAt = clock() }
     }
 
     /** Microphone audio, PCM s16le mono at [GrokConfig.sampleRate]. */
     fun appendAudio(pcm: ByteArray): Boolean = configured && pcm.isNotEmpty() && send(RealtimeProtocol.appendAudio(pcm))
+
+    /** The session is configured on this socket: audio sent now is heard. */
+    val acceptsAudio: Boolean get() = configured && _link.value is LinkState.Open
+
+    /**
+     * Close the socket to stop paying, keeping the conversation for [resume] (ondemand slice).
+     * [link] is [LinkState.Parked] and [acceptsAudio] false before this returns.
+     */
+    fun park() {
+        val ws = synchronized(lock) {
+            if (closing) return
+            generation++
+            retry?.cancel()
+            configured = false
+            socket.also { socket = null }
+        }
+        _link.value = LinkState.Parked
+        ws?.close(NORMAL_CLOSURE, null)
+        report("grok.park", emptyMap())
+    }
+
+    /**
+     * Reopen after [park]: with `conversation_id` while the server still keeps it (less than
+     * [RESUME_WINDOW_MS] since the last frame), else a fresh conversation. False without a key.
+     */
+    fun resume(): Boolean {
+        synchronized(lock) {
+            if (closing) return false
+            attempts = 0
+        }
+        val fresh = conversationId == null || clock() - lastActivityAt >= RESUME_WINDOW_MS
+        if (fresh) conversationId = null
+        return open(resume = !fresh)
+    }
 
     /** Close for good (hang-up). */
     fun close() {
@@ -145,6 +191,7 @@ class GrokRealtime(
         val gen = synchronized(lock) {
             socket?.cancel()
             configured = false
+            resumingId = resumeId
             ++generation
         }
         if (_link.value !is LinkState.Reconnecting) _link.value = LinkState.Connecting
@@ -162,17 +209,27 @@ class GrokRealtime(
         override fun onOpen(webSocket: WebSocket, response: Response) {
             if (!current()) return
             synchronized(lock) { attempts = 0 }
-            _link.value = LinkState.Open(resumed)
             report("grok.connect", mapOf("ok" to true, "ms" to clock() - startedAt, "resumed" to resumed))
-            // The server greets with `session.created`; configure then (or now, if it already has).
+            // The server greets with `session.created`; configure then, and only then is the link open
+            // (so nothing of ours, audio or a note, goes in before the session's config).
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (!current()) return
+            lastActivityAt = clock()
             val event = RealtimeProtocol.parse(text) ?: return
             when (event) {
                 ServerEvent.SessionCreated -> configure(webSocket)
-                is ServerEvent.ConversationCreated -> conversationId = event.id
+                is ServerEvent.ConversationCreated -> {
+                    val asked = resumingId
+                    resumingId = null
+                    conversationId = event.id
+                    // Asked to resume, but the server started another conversation: its history is gone.
+                    if (asked != null && asked != event.id && _link.value == LinkState.Open(true)) {
+                        _link.value = LinkState.Open(false)
+                        report("grok.resume_lost", emptyMap())
+                    }
+                }
                 is ServerEvent.Error -> report("grok.error", mapOf("type" to event.type, "code" to event.code), warn = true)
                 else -> if (!configured) configure(webSocket)
             }
@@ -185,6 +242,7 @@ class GrokRealtime(
             val s = spec()
             webSocket.send(RealtimeProtocol.encode(RealtimeProtocol.sessionUpdate(config(), s.instructions, s.tools, s.turnDetection)))
             this@GrokRealtime.configured = true
+            _link.value = LinkState.Open(resumed)
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -252,5 +310,8 @@ class GrokRealtime(
         const val NO_KEY = "no_key"
         const val UNAUTHORIZED = "unauthorized"
         const val UNREACHABLE = "unreachable"
+
+        /** xAI drops a resumable conversation after 30 minutes of inactivity (docs, 2026-10-14); a minute's margin. */
+        const val RESUME_WINDOW_MS = 29 * 60_000L
     }
 }

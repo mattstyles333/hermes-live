@@ -37,4 +37,16 @@ class LiveSettingsTest {
         assertEquals(0L, never.callCapMs)
         assertFalse(LiveSettings(musicInGaps = false).gapSettings().enabled)
     }
+
+    @Test fun saveCostIsOnForTheRealtimeEnginesAndNeverForCustom() {
+        val d = LiveSettings()
+        assertTrue(d.grokSaveCost)
+        assertTrue(d.gptLiveSaveCost)
+        assertTrue(d.onDemandSettings(VoiceEngine.Grok).enabled)
+        assertTrue(d.onDemandSettings(VoiceEngine.GptLive).enabled)
+        assertFalse(d.onDemandSettings(VoiceEngine.Cascade).enabled)
+        assertFalse(LiveSettings(grokSaveCost = false).onDemandSettings(VoiceEngine.Grok).enabled)
+        assertEquals(8_000L, d.onDemandSettings(VoiceEngine.Grok).idleCloseMs)
+        assertEquals("the engine's default is still GPT-Live", VoiceEngine.GptLive, d.voiceEngine)
+    }
 }

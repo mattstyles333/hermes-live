@@ -7,6 +7,7 @@ import com.folio.hermes.realtime.GrokModels
 import com.folio.hermes.realtime.GrokVoices
 import com.folio.hermeslive.call.FallbackRoute
 import com.folio.hermeslive.call.GapSettings
+import com.folio.hermeslive.call.ondemand.OnDemandSettings
 
 /** Hermes Live's settings. Defaults are the shipped behaviour (see LiveSettingsTest). */
 data class LiveSettings(
@@ -88,6 +89,12 @@ data class LiveSettings(
     val grokCustomVoice: String = "",
     /** The realtime model (`grok-voice-latest` by default). */
     val grokModel: String = GrokModels.DEFAULT,
+
+    // ── Settings › Voice › "Save cost: close the voice session while agents work" (ondemand slice) ──
+    /** Grok Voice: drop the paid session while idle, reopen on speech or a result. */
+    val grokSaveCost: Boolean = true,
+    /** GPT-Live: the same (the GPT-Live engine reads it once it supports on-demand sessions). */
+    val gptLiveSaveCost: Boolean = true,
 ) {
     /** The same settings with every Voice field inside its range (what is saved and used). */
     fun normalized(): LiveSettings = copy(
@@ -131,6 +138,15 @@ data class LiveSettings(
             },
         )
     }
+
+    /** The on-demand session rules for a call on [engine] (Custom never has a paid session). */
+    fun onDemandSettings(engine: VoiceEngine): OnDemandSettings = OnDemandSettings(
+        enabled = when (engine) {
+            VoiceEngine.Grok -> grokSaveCost
+            VoiceEngine.GptLive -> gptLiveSaveCost
+            VoiceEngine.Cascade -> false
+        },
+    )
 
     fun gapSettings(): GapSettings = GapSettings(enabled = musicInGaps, duckOnSpeaker = duckOnSpeaker)
 

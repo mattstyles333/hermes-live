@@ -33,6 +33,7 @@ import com.folio.hermeslive.ui.cascade.CascadeCallScreen
 import com.folio.hermeslive.ui.cascade.CascadeChrome
 import com.folio.hermeslive.ui.cascade.CascadeIntents
 import com.folio.hermeslive.ui.cascade.HapticIntent
+import com.folio.hermeslive.ui.ondemand.OnDemandIndicator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -64,6 +65,7 @@ fun GrokCallRoute(
     val grokFlow = remember(engine, call.phase) { engine.grokUi ?: MutableStateFlow(GrokUi()) }
     val grok by grokFlow.collectAsState()
     val tasks by actor.ui.collectAsState()
+    val session by engine.sessionUi.collectAsState()
     val state = remember(engine, runtime, grokFlow) {
         combine(actor.ui, grokFlow, engine.state) { t, g, c -> GrokScreen.state(t, g, c.level) }
             .stateIn(scope, SharingStarted.Eagerly, GrokScreen.state(actor.ui.value, grokFlow.value, 0f))
@@ -78,14 +80,18 @@ fun GrokCallRoute(
                 callStartedAtMs = call.startedAtMs?.let { started -> System.nanoTime() / 1_000_000 - (System.currentTimeMillis() - started) },
                 muted = call.muted,
                 speakerOn = call.route?.kind == RouteKind.Speaker,
-                engine = "GROK · VOICE",
+                engine = "GROK VOICE",
                 tools = GrokScreen.chips(grok.chips, tasks.tasks),
                 stripLabel = "GROK",
+                dimmed = session.dimmed && !ending,
             ),
             micLevel = { engine.micLevel },
             approvals = approvalsSlot(approvals, clarify, engine::answerApproval, engine::answerClarify),
             ended = if (ending) callEndOf(call) else null,
         )
+        if (!ending && call.inCall) {
+            OnDemandIndicator(session, Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 96.dp))
+        }
         val notice = call.notice
         if (!ending && call.inCall && (call.offerBillMemo || (notice != null && call.phase != com.folio.hermeslive.call.CallPhase.Live))) {
             Column(
@@ -95,8 +101,8 @@ fun GrokCallRoute(
             ) {
                 notice?.let { Text(it, style = BodyStyle, color = PrintInk) }
                 if (call.offerBillMemo) {
-                    Text("Bill can take notes offline and send them when you're back.", style = SmallStyle, color = PrintMute)
-                    Pill("Continue with Bill (memo)", filled = true, tag = "grok-use-bill", onClick = onUseBill)
+                    Text("The Custom engine can take notes offline and send them when you're back.", style = SmallStyle, color = PrintMute)
+                    Pill("Continue offline (memo)", filled = true, tag = "grok-use-bill", onClick = onUseBill)
                 }
             }
         }

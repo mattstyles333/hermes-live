@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.derivedStateOf
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.runtime.snapshotFlow
@@ -250,7 +251,7 @@ internal fun CascadeCallContent(
         modifier.fillMaxSize().background(VoidBlack).testTag("cascade-screen")
             .semantics { if (endRun != null) paneTitle = endRun.announcement },
     ) {
-        CascadeScene(ui, scene, motion, proximityNear, input, wake, animate && !proximityNear)
+        CascadeScene(ui, scene, motion, proximityNear, input, wake, animate && !proximityNear, Modifier.alpha(if (chrome.dimmed) DIMMED_ALPHA else 1f))
         if (proximityNear) return@Box
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val orbY = maxHeight * ORB_Y
@@ -392,3 +393,6 @@ private suspend fun tick(now: MutableLongState, wall: MutableLongState, clock: (
         delay(1000 - (t % 1000).coerceIn(0, 999))
     }
 }
+
+/** The scene (the orb) while a realtime engine's session is closed to save cost (ondemand slice). */
+private const val DIMMED_ALPHA = 0.45f
