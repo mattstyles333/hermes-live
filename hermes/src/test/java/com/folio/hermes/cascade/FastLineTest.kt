@@ -67,6 +67,19 @@ class FastLineTest {
         assertEquals("check the Kestrel aviators", r.s.actions.active!!.text)
     }
 
+    /** An ignored pause dropped the held words' audio: the shorter accurate text must not replace them (R-CTX-3). */
+    @Test fun heldWordsWhoseAudioWasDroppedStayInTheBrief() {
+        val r = run()
+        r.turn(0, "book the Leeds room for", "turn" to answer("keep_listening", 0.9))
+        val ignored = r.turn(2_000, "hang on Priya", "turn" to answer("ignore", 0.9))
+        assertTrue(Effect.DropSpeech("u2") in ignored)
+        r.turn(4_000, "Friday at ten", *newTask)
+        val accurate = Transcript("Friday at ten", listOf(Word("Friday"), Word("at"), Word("ten")), TranscriptPass.Accurate)
+        val run = r.at(5_300, Event.AccurateFinal("u3", accurate))
+        val brief = run.filterIsInstance<Effect.Write>().single { it.system == Briefs.SYSTEM }
+        assertTrue(brief.prompt, brief.prompt.contains("Transcript: \"book the Leeds room for Friday at ten\""))
+    }
+
     @Test fun aKeyDoubtAsksFirstSoNoLineAtCommit() {
         val r = run()
         val commit = r.turn(0, "email Sapphire about forty frames", *newTask, "clarity" to answer("key_doubt", 0.9))

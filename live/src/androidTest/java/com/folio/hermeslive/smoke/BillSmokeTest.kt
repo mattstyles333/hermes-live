@@ -195,6 +195,8 @@ class BillSmokeTest {
             val task = card()!!
             val played = out.played
             val started = at { it is CascadeEvent.TaskStarted && it.id == taskId }!!
+            // The first stock line after speech end (a key doubt's question, the writer's words, plays before it by design).
+            val lineAt = synchronized(events) { events.firstOrNull { (t, e) -> e is CascadeEvent.LinePlayed && t >= speechEnd }?.first }
             val finished = at { it is CascadeEvent.TaskFinished && it.id == taskId }!!
             result
                 .put("route", actor.ui.value.jev.action?.choice)
@@ -207,11 +209,14 @@ class BillSmokeTest {
                 .put("speech_end_source", "vad")
                 .put("vad_end_minus_clip_end_ms", speechEnd - clipEnd)
                 .put("speech_end_to_commit_ms", at { it is CascadeEvent.TurnCommitted }!! - speechEnd)
-                .put("speech_end_to_stock_line_ms", played.firstOrNull()?.let { it.startedAtMs - speechEnd })
+                .put("speech_end_to_stock_line_ms", lineAt?.let { it - speechEnd })
+                .put("speech_end_to_first_audio_ms", played.firstOrNull()?.let { it.startedAtMs - speechEnd })
+                // Jev's `clarity` when it doubted the words (a choice id, not content): `key_doubt` asks a question first.
+                .put("clarity_doubt", synchronized(events) { events.firstNotNullOfOrNull { (it.second as? CascadeEvent.ClarityDoubt)?.clarity } })
                 .put("jev_latency_ms", actor.ui.value.jev.latencyMs)
                 .put("speech_end_to_task_started_ms", started - speechEnd)
                 .put("clip_end_to_commit_ms", at { it is CascadeEvent.TurnCommitted }!! - clipEnd)
-                .put("clip_end_to_stock_line_ms", played.firstOrNull()?.let { it.startedAtMs - clipEnd })
+                .put("clip_end_to_stock_line_ms", lineAt?.let { it - clipEnd })
                 .put("clip_end_to_task_started_ms", started - clipEnd)
                 .put("task_started_to_accepted_ms", at { it is CascadeEvent.TaskAccepted && it.id == taskId }?.let { it - started })
                 .put("task_started_to_running_ms", seen(TaskUiStatus.Running)?.let { it - started })
@@ -225,7 +230,7 @@ class BillSmokeTest {
             result.put("tts_fetches_during_call", net.calls(OPENROUTER, "/audio/speech").count { it.startMs >= t0 })
             // The first stock line: its slot id (not content), and whether it had to be fetched after speech end (a cache miss).
             result.put("first_line_slot", synchronized(events) { events.firstNotNullOfOrNull { (t, e) -> (e as? CascadeEvent.LinePlayed)?.slot?.takeIf { t >= speechEnd } } })
-            played.firstOrNull()?.let { line -> result.put("tts_fetched_before_first_line", net.calls(OPENROUTER, "/audio/speech").count { it.startMs in speechEnd..line.startedAtMs }) }
+            lineAt?.let { line -> result.put("tts_fetched_before_first_line", net.calls(OPENROUTER, "/audio/speech").count { it.startMs in speechEnd..line }) }
             // The writer's calls (the briefs before the task starts, then the spoken result).
             result.put("writer_calls", org.json.JSONArray(net.calls(OPENROUTER, "/chat/completions").filter { it.startMs >= speechEnd }.map { row(it, speechEnd) }))
             net.calls(OPENROUTER, "/key").lastOrNull()?.let { result.put("warm", row(it, speechEnd)) }
