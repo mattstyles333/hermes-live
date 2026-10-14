@@ -59,6 +59,14 @@ class CascadeReducer(val env: CascadeEnv) {
                 turn(TurnRules.final(s.turn, event.text))
                 if (event.words.isNotEmpty()) s = s.copy(transcript = s.transcript.copy(words = s.transcript.words + event.words))
             }
+            is Event.Revised -> {
+                val step = TurnRules.revised(s.turn, event.fast, event.text, event.material)
+                if (step.state != s.turn) {
+                    val rewrote = step.state.finals != s.turn.finals || step.state.pending != s.turn.pending
+                    report("cascade.revised", mapOf("material" to event.material, "rewrote" to rewrote, "stage" to (s.turn.pause?.stage?.name ?: "none")))
+                }
+                turn(step)
+            }
             is Event.AccurateFinal -> {
                 env.handlers.hooks.accurate(this, event)
                 // Fast text when the pass gave nothing: the turn goes on either way.

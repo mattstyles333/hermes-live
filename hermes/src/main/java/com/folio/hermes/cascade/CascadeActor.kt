@@ -309,6 +309,7 @@ class CascadeActor(
         is SttEvent.Final -> Event.Final(text, words)
         is SttEvent.UserSpeech -> Event.UserSpeech(continuousMs)
         is SttEvent.HoldToTalk -> Event.HoldToTalk(pressed)
+        is SttEvent.Revised -> Event.Revised(fast, text, material)
     }
 }
 

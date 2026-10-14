@@ -30,6 +30,7 @@ import com.folio.hermeslive.data.ModelState
 import com.folio.hermeslive.data.PrepPhase
 import com.folio.hermeslive.data.PrepState
 import com.folio.hermeslive.data.SpeechModelStatus
+import com.folio.hermeslive.data.SpeechRecognition
 import com.folio.hermeslive.data.VoiceEngine
 import com.folio.hermeslive.data.VoiceUi
 import org.junit.Assert.assertEquals
@@ -172,5 +173,28 @@ class VoiceSettingsScreenTest {
         prep = prep.copy(phase = PrepPhase.Cancelled)
         compose.onNodeWithText("Resume").performScrollTo().assertIsDisplayed()
         assertEquals(listOf("prepare", "cancel"), calls)
+    }
+
+    @Test fun speechRecognitionSaysWhereAudioGoesAndShowsTheCost() {
+        settings = LiveSettings(voiceEngine = VoiceEngine.Cascade)
+        show { ui(KeyStatus(true, KeyCheck.Valid)) }
+        compose.onNodeWithTag("speech-recognition").performScrollTo().assertTextContains("never leaves the phone", substring = true)
+        compose.onNodeWithTag("cloud-stt-model").assertDoesNotExist()
+        compose.onNodeWithTag("speech-recognition").performClick()
+        assertEquals(SpeechRecognition.Cloud, settings.speechRecognition)
+        compose.onNodeWithTag("speech-recognition").performScrollTo().assertTextContains("sent to OpenRouter", substring = true)
+        compose.onNodeWithTag("cloud-stt-cost").performScrollTo().assertTextContains("About $0.45 an hour of speech", substring = true)
+        compose.onNodeWithTag("cloud-stt-model").performScrollTo().assertTextContains("AssemblyAI", substring = true)
+        compose.onNodeWithTag("cloud-stt-model").performClick()
+        assertEquals("elevenlabs/scribe-v2", settings.cloudSttModel)
+        compose.onNodeWithTag("cloud-stt-model").performClick()
+        compose.onNodeWithTag("cloud-stt-model").performClick()
+        assertEquals("wraps", "assemblyai/universal-3-5-pro", settings.cloudSttModel)
+        compose.onNodeWithTag("cloud-stt-model-id").performScrollTo().performTextClearance()
+        compose.onNodeWithTag("cloud-stt-model-id").performTextInput("someone/new-stt")
+        assertEquals("someone/new-stt", settings.cloudSttModel)
+        compose.onNodeWithTag("cloud-stt-cost").performScrollTo().assertTextContains("this model's price", substring = true)
+        compose.onNodeWithTag("cloud-stt-model").performClick()
+        assertEquals("a custom id cycles back to the list", "assemblyai/universal-3-5-pro", settings.cloudSttModel)
     }
 }

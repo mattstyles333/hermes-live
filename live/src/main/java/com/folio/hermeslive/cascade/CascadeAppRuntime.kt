@@ -18,6 +18,7 @@ import com.folio.hermeslive.call.ApprovalCard
 import com.folio.hermeslive.call.ClarifyCard
 import com.folio.hermeslive.data.CascadeRuntime
 import com.folio.hermeslive.service.Briefing
+import com.folio.hermeslive.stt.CloudStt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
@@ -85,6 +86,8 @@ class CascadeAppRuntime(
     private val scope: CoroutineScope,
     /** The user's vocabulary plus learned corrections (`VocabularyStore.hotwords`). */
     private val hotwordsOf: (List<String>) -> List<String> = { it },
+    /** The cloud speech-to-text pass a call may use (only while `CascadeSettings.cloudSttModel` is set). */
+    val cloudStt: CloudStt? = null,
 ) : CascadeRuntime {
     private val _approvals = MutableStateFlow<List<ApprovalCard>>(emptyList())
     private val _clarify = MutableStateFlow<ClarifyCard?>(null)

@@ -127,7 +127,7 @@ class CascadeCallEngine(
                 val src = MutableSource(io.source).also { it.muted = request.muted }
                 val stt = try {
                     withContext(this@CascadeCallEngine.io) {
-                        speech.create(src, io.playback, r.settings, ::hotwords, callSettings.highAccuracySpeech).also { it.start() }
+                        speech.create(src, io.playback, r.settings, ::hotwords, callSettings.highAccuracySpeech, r.cloudStt).also { it.start() }
                     }
                 } catch (e: Exception) {
                     io.release()

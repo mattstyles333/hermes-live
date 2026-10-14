@@ -122,4 +122,31 @@ class VoiceSettingsTest {
         assertEquals(VoiceEngine.Cascade, VoiceEngine.parse("cascade"))
         assertEquals(VoiceEngine.GptLive, VoiceEngine.parse(null))
     }
+
+    // ── Speech recognition (cloud STT slice) ────────────────────────────────────────────────
+
+    @Test fun speechRecognitionDefaultsToOnDeviceAndSendsNoModel() {
+        val d = LiveSettings()
+        assertEquals(SpeechRecognition.OnDevice, d.speechRecognition)
+        assertEquals("assemblyai/universal-3-5-pro", d.cloudSttModel)
+        assertEquals("on device: no cloud model, so no audio request", null, d.cascadeSettings().cloudSttModel)
+        assertEquals(null, LiveSettings(cloudSttModel = "elevenlabs/scribe-v2").cascadeSettings().cloudSttModel)
+    }
+
+    @Test fun cloudModeSendsTheChosenModelAndKeepsTheWaitLimit() {
+        val s = LiveSettings(speechRecognition = SpeechRecognition.Cloud, cloudSttModel = "elevenlabs/scribe-v2").cascadeSettings()
+        assertEquals("elevenlabs/scribe-v2", s.cloudSttModel)
+        assertEquals("the cloud never extends the wait", 1_500L, s.accuratePassWaitMs)
+        assertEquals("a custom id is kept", "someone/new-stt", LiveSettings(speechRecognition = SpeechRecognition.Cloud, cloudSttModel = " someone/new-stt ").cascadeSettings().cloudSttModel)
+        assertEquals("a broken id falls back to the default", "assemblyai/universal-3-5-pro", LiveSettings(cloudSttModel = "not a model").normalized().cloudSttModel)
+    }
+
+    @Test fun speechRecognitionIsSavedAndReadBack() {
+        val prefs = context.getSharedPreferences("voice-stt-test", Context.MODE_PRIVATE)
+        SettingsStore(prefs).update { it.copy(speechRecognition = SpeechRecognition.Cloud, cloudSttModel = "openai/gpt-transcribe") }
+        val read = SettingsStore(prefs).settings.value
+        assertEquals(SpeechRecognition.Cloud, read.speechRecognition)
+        assertEquals("openai/gpt-transcribe", read.cloudSttModel)
+        assertEquals(SpeechRecognition.OnDevice, SpeechRecognition.parse("bogus"))
+    }
 }

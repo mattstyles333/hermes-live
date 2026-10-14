@@ -25,7 +25,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * The cascade's [SpeechToText] on sherpa-onnx (spec v2 R-STT-1..4/7/8, R-SPK-4/6):
  * mic ([AudioSource]) -> Silero VAD -> streaming Zipformer (partials, finals with `ysProbs`
  * confidence) -> per-segment Parakeet second pass -> [accurate] merges the passes and flags
- * uncertain words. Everything runs on the device; audio stays in memory (R-STT-3).
+ * uncertain words. Audio stays in memory (R-STT-3). On device by default; with a [cloud] and
+ * `CascadeSettings.cloudSttModel` set (Speech recognition: "Cloud when online"), each segment's
+ * audio also goes to that model as it ends ([SecondPass]): its text is sent as
+ * [SttEvent.Revised] (caption, and Jev when it differs materially) and becomes the accurate pass
+ * when it is in by then.
  *
  * Construction (S-F): load the engines off the main thread once the models are ready, e.g.
  * ```
@@ -50,6 +54,8 @@ class SherpaSpeechToText(
         PipelineConfig(uncertainBelow = s.uncertainBelow, bargeInMs = s.bargeInMs)
     },
     bargeIn: BargeInConfig = BargeInConfig(bargeInMs = settings().bargeInMs),
+    /** The cloud pass (used only while `cloudSttModel` is set); null: on device only. */
+    cloud: CloudStt? = null,
 ) : SpeechToText {
     private val channel = Channel<SttEvent>(Channel.UNLIMITED)
     private val running = AtomicBoolean(false)
@@ -69,6 +75,10 @@ class SherpaSpeechToText(
         uncertainBelow = { settings().uncertainBelow },
         agreedBelow = { pipelineConfig(settings()).agreedUncertainBelow },
         vocabulary = hotwords,
+        cloud = cloud,
+        cloudModel = { settings().cloudSttModel },
+        cloudTimeoutMs = { settings().cloudSttTimeoutMs },
+        onCloud = { fast, text -> channel.trySend(SttEvent.Revised(fast, text, CloudMateriality.material(fast, text))) },
     )
 
     private val pipeline = SttPipeline(

@@ -53,11 +53,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import com.folio.hermes.live.VoiceLiveStatus
+import com.folio.hermes.openrouter.CloudSttModel
+import com.folio.hermes.openrouter.CloudSttModels
 import com.folio.hermeslive.data.EngineState
 import com.folio.hermeslive.data.EngineStatus
 import com.folio.hermeslive.data.KeyCheck
 import com.folio.hermeslive.data.ModelState
 import com.folio.hermeslive.data.PrepPhase
+import com.folio.hermeslive.data.SpeechRecognition
 import com.folio.hermeslive.data.VoiceEngine
 import com.folio.hermeslive.data.VoiceSettingsController
 import com.folio.hermeslive.data.VoiceShell
@@ -353,6 +356,7 @@ fun VoiceSettingsSection(ui: VoiceUi, actions: VoiceActions) {
             Toggle("High accuracy", "A larger second-pass speech model: better words, a much bigger download.", s.highAccuracySpeech, "high-accuracy") { v ->
                 actions.onChange { it.copy(highAccuracySpeech = v) }
             }
+            SpeechRecognitionBlock(ui, actions)
             VocabularyBlock(ui, actions)
             DecisionLogBlock(ui, actions)
             PrepareBlock(ui, actions)
@@ -428,7 +432,42 @@ private fun TextSetting(label: String, value: String, tag: String, valid: (Strin
 }
 
 /** An OpenRouter model id: `vendor/model`, no spaces. */
-fun isModelId(s: String): Boolean = Regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$").matches(s)
+fun isModelId(s: String): Boolean = LiveSettings.isModelId(s)
+
+/** Settings › Voice › Speech recognition: on device (default) or the cloud when online, its model and cost. */
+@Composable
+private fun SpeechRecognitionBlock(ui: VoiceUi, actions: VoiceActions) {
+    val s = ui.settings
+    val cloud = s.speechRecognition == SpeechRecognition.Cloud
+    Choice("Speech recognition", speechRecognitionText(s.speechRecognition), "speech-recognition") {
+        actions.onChange { it.copy(speechRecognition = if (it.speechRecognition == SpeechRecognition.Cloud) SpeechRecognition.OnDevice else SpeechRecognition.Cloud) }
+    }
+    if (!cloud) return
+    val model = CloudSttModels.of(s.cloudSttModel)
+    Choice("Cloud model", "${model.label}. ${model.note}", "cloud-stt-model") {
+        actions.onChange { it.copy(cloudSttModel = nextCloudModel(it.cloudSttModel)) }
+    }
+    TextSetting("Cloud model id (advanced)", s.cloudSttModel, "cloud-stt-model-id", valid = ::isModelId) { v -> actions.onChange { it.copy(cloudSttModel = v) } }
+    Text(cloudSttCost(model), style = SmallStyle, color = PrintMute, modifier = Modifier.testTag("cloud-stt-cost"))
+}
+
+/** What each choice means, in plain words (the user must know when audio leaves the phone). */
+fun speechRecognitionText(choice: SpeechRecognition): String = when (choice) {
+    SpeechRecognition.OnDevice -> "On device (default): your audio never leaves the phone."
+    SpeechRecognition.Cloud -> "Cloud when online: an audio clip of each thing you say is sent to OpenRouter " +
+        "for better words, on your OpenRouter key. Offline, or if it is slow, the phone's own pass is used."
+}
+
+/** The listed model after [current] (a custom id goes back to the first). */
+fun nextCloudModel(current: String): String {
+    val all = CloudSttModels.ALL
+    val i = all.indexOfFirst { it.id == current }
+    return all[(i + 1) % all.size].id
+}
+
+/** The estimated cost line for [model]. */
+fun cloudSttCost(model: CloudSttModel): String = model.dollarsPerHour?.let { "About $" + "%.2f".format(java.util.Locale.UK, it) + " an hour of speech, billed to your OpenRouter key." }
+    ?: "Billed to your OpenRouter key at this model's price on OpenRouter."
 
 @Composable
 private fun VocabularyBlock(ui: VoiceUi, actions: VoiceActions) {
