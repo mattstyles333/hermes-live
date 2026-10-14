@@ -48,8 +48,10 @@ import org.junit.runner.RunWith
  *
  * Expect: Jev routes the stock-check request to `new_task`; a stock line plays; the fake gets
  * exactly one prompt; the tool steps arrive; the result is spoken. Timings and the outcome go to
- * `<external files>/smoke/bill.json` (no transcripts). Run it with `tools/cascade-smoke.sh`
- * (reads `OPENROUTER_API_KEY`); skipped without the `openrouterKey` argument.
+ * `<external files>/smoke/bill.json` (no transcripts). `speech_end_*` count from the VAD's
+ * `SpeechEndedAt` (the anchor the app's pause counts from); `clip_end_*` from the clip's length.
+ * Run it with `tools/cascade-smoke.sh` (reads `OPENROUTER_API_KEY`); skipped without the
+ * `openrouterKey` argument.
  *
  * Arguments: `openrouterKey` (required), `hermesUrl` (default `http://10.0.2.2:18119`),
  * `wav` (a 16 kHz WAV on the device; default: the request spoken by TTS at run time), `say`.
@@ -130,19 +132,37 @@ class BillSmokeTest {
                     synchronized(statuses) { ui.tasks.forEach { t -> statuses.getOrPut(t.id) { LinkedHashMap() }.putIfAbsent(t.status, now) } }
                 }
             }
+            // The VAD's end of speech (`SpeechEndedAt`, on the actor's clock: nanoTime ms, as here): the
+            // committed action's `speechEndAt` is the reducer's own anchor; the pause's `endAt` before it.
+            val vadEnds = java.util.concurrent.ConcurrentHashMap<String, Long>()
+            val lastPauseEnd = java.util.concurrent.atomic.AtomicReference<Long?>(null)
+            watch.launch {
+                actor.state.collect { st ->
+                    st.turn.pause?.endAt?.let { lastPauseEnd.set(it) }
+                    (listOfNotNull(st.actions.active) + st.actions.waiting).forEach { a -> vadEnds.putIfAbsent(a.turnId, a.speechEndAt) }
+                }
+            }
             // The noise floor learns over the first 2 s: give it quiet first (the source idles in silence).
             Thread.sleep(2_500)
 
             corpus.enqueue(pcm, "request", silenceAfterMs = 4_000)
             val speechMs = pcm.size * 1000L / 16_000 / 2 // fed at twice real time
             val fedAt = waitFor("request fed", 30_000) { corpus.clipStarts.containsKey("request") }
-            val speechEnd = fedAt + speechMs
+            // The clip's end (fed at twice real time): the old anchor, kept as `clip_end_*`.
+            val clipEnd = fedAt + speechMs
             fun at(e: (CascadeEvent) -> Boolean) = synchronized(events) { events.firstOrNull { e(it.second) }?.first }
+            fun committedTurn() = synchronized(events) { events.firstNotNullOfOrNull { (it.second as? CascadeEvent.TurnCommitted)?.turnId } }
+            /** The VAD's end of speech for the committed turn (else the last pause seen), falling back to the clip's end. */
+            fun vadEnd(): Long? = committedTurn()?.let { vadEnds[it] } ?: lastPauseEnd.get()
 
             if (dry) {
                 // Jev can't be reached: the turn is decided without it and held for the network.
                 waitFor("turn held", 30_000) { at { it is CascadeEvent.TurnHeld } != null || actor.ui.value.connection.outbox > 0 }
-                result.put("speech_end_to_held_ms", at { it is CascadeEvent.TurnHeld }?.let { it - speechEnd })
+                val speechEnd = vadEnd() ?: clipEnd
+                result.put("speech_end_source", if (vadEnd() != null) "vad" else "clip")
+                    .put("vad_end_minus_clip_end_ms", vadEnd()?.let { it - clipEnd })
+                    .put("speech_end_to_held_ms", at { it is CascadeEvent.TurnHeld }?.let { it - speechEnd })
+                    .put("clip_end_to_held_ms", at { it is CascadeEvent.TurnHeld }?.let { it - clipEnd })
                     .put("outbox", actor.ui.value.connection.outbox).put("tasks", actor.ui.value.tasks.size)
                 main { g.calls.end() }
                 waitFor("call ended", 10_000) { !g.calls.state.value.inCall }
@@ -152,6 +172,8 @@ class BillSmokeTest {
                 return
             }
             waitFor("turn committed", 20_000) { at { it is CascadeEvent.TurnCommitted } != null }
+            waitFor("the committed turn's speech end", 5_000) { vadEnd() != null }
+            val speechEnd = vadEnd()!!
             // This call's task: the one the committed turn started (never an older card).
             fun ours() = actor.state.value.tasks.tasks.firstOrNull { t -> synchronized(events) { events.any { (_, e) -> e is CascadeEvent.TurnCommitted && e.turnId == t.turnId } } }
             val taskId = run {
@@ -181,10 +203,16 @@ class BillSmokeTest {
                 .put("task_statuses", synchronized(statuses) { statuses[taskId]?.keys?.joinToString(",") { it.name } })
                 .put("task_steps", task.steps)
                 .put("clips_played", played.size)
+                // From the VAD's `SpeechEndedAt` (what the app's pause counts from); `clip_end_*` from the clip's length.
+                .put("speech_end_source", "vad")
+                .put("vad_end_minus_clip_end_ms", speechEnd - clipEnd)
                 .put("speech_end_to_commit_ms", at { it is CascadeEvent.TurnCommitted }!! - speechEnd)
                 .put("speech_end_to_stock_line_ms", played.firstOrNull()?.let { it.startedAtMs - speechEnd })
                 .put("jev_latency_ms", actor.ui.value.jev.latencyMs)
                 .put("speech_end_to_task_started_ms", started - speechEnd)
+                .put("clip_end_to_commit_ms", at { it is CascadeEvent.TurnCommitted }!! - clipEnd)
+                .put("clip_end_to_stock_line_ms", played.firstOrNull()?.let { it.startedAtMs - clipEnd })
+                .put("clip_end_to_task_started_ms", started - clipEnd)
                 .put("task_started_to_accepted_ms", at { it is CascadeEvent.TaskAccepted && it.id == taskId }?.let { it - started })
                 .put("task_started_to_running_ms", seen(TaskUiStatus.Running)?.let { it - started })
                 .put("task_started_to_first_tool_ms", at { it is CascadeEvent.ToolStarted && it.id == taskId }?.let { it - started })

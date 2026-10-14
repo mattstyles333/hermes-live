@@ -6,7 +6,9 @@
 # 1. jev:     the live Jev eval (LiveJevEvalTest): harmful <= 3% on both sets; friction reported.
 # 2. staging: the staging (R8) build installed and launched on the emulator, with an STT round-trip.
 # 3. smoke:   one Bill smoke call (tools/cascade-smoke.sh: corpus speech -> Jev -> fake Hermes -> Bill),
-#             after lane 2, on the same emulator. Leaves bill-smoke-midtask.png in out-dir.
+#             after lane 2, on the same emulator, once the staging app is stopped (its speech models
+#             would otherwise still hold the emulator's CPU and skew the smoke's timings). Leaves
+#             bill-smoke-midtask.png in out-dir. Its timings count from the VAD's end of speech.
 # Lane 1 needs only the network and runs beside lanes 2 -> 3. The APKs are built first, in one
 # Gradle run, so the lanes never wait on each other's builds. The fake Hermes is started here on a
 # free port and stopped at the end. The key is read from the environment only: it is passed to the
@@ -99,10 +101,12 @@ lane_staging() {
     fi
     python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("pass") else 1)' "$WORK/staging.json"
   } >"$WORK/staging.log" 2>&1 || ok=1
+  # The smoke lane runs next on this emulator: nothing of the staging app may still be running.
+  "${ADB[@]}" shell am force-stop "$pkg" >/dev/null 2>&1 || true
   echo "$ok $(secs "$t0" "$(now)")" >"$WORK/staging.result"
 }
 
-# ── lane 3: the Bill smoke call (after lane 2, on the same emulator) ───────────────────────
+# ── lane 3: the Bill smoke call (after lane 2 and its app stopped, on the same emulator) ────
 lane_smoke() {
   local t0; t0=$(now)
   local ok=0
@@ -127,7 +131,7 @@ for lane in jev staging smoke; do
 done
 echo "  jev:"; sed 's/^/    /' "$WORK/jev.summary" 2>/dev/null
 echo "  staging: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print({k: d.get(k) for k in ("pass", "models_ready", "load_ms", "stt_ms", "fast_wer", "final_wer", "error") if k in d})' "$WORK/staging.json" 2>/dev/null)"
-echo "  smoke: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print({k: d.get(k) for k in ("pass", "speech_end_to_stock_line_ms", "jev_latency_ms", "speech_end_to_task_started_ms", "task_statuses", "error") if k in d})' "$OUT/bill.json" 2>/dev/null)"
+echo "  smoke: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print({k: d.get(k) for k in ("pass", "speech_end_to_stock_line_ms", "jev_latency_ms", "speech_end_to_task_started_ms", "clip_end_to_stock_line_ms", "vad_end_minus_clip_end_ms", "task_statuses", "error") if k in d})' "$OUT/bill.json" 2>/dev/null)"
 echo "  screenshot: $OUT/bill-smoke-midtask.png"
 echo "  total $(secs "$started" "$(now)")s; logs in $WORK"
 exit $fail
