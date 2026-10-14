@@ -12,6 +12,7 @@ import com.folio.hermes.cascade.ports.AudioOut
 import com.folio.hermes.cascade.ports.MemoryStore
 import com.folio.hermes.cascade.ports.OpenRouterPort
 import com.folio.hermes.cascade.writer.Briefs
+import com.folio.hermes.cascade.writer.Summaries
 import com.folio.hermes.openrouter.JevAnswer
 import com.folio.hermes.openrouter.JevQuestion
 import com.folio.hermes.openrouter.OpenRouterResult
@@ -81,6 +82,8 @@ class GoldenCallTest {
 
         override suspend fun write(system: String, prompt: String): OpenRouterResult<String> {
             delay(20)
+            // Background summaries are on in the CEO env (R-CTX-2): answer them too.
+            if (system == Summaries.SYSTEM) return OpenRouterResult.Ok("They check stock by voice.")
             check(system == Briefs.SYSTEM) { "unexpected writer job" }
             return OpenRouterResult.Ok(
                 """{"briefs":[{"brief":"Goal: check stock of the Kestrel aviators.\nDone when: the count is known","label":"Kestrel stock","summary":"Checking the Kestrel stock."}],"repaired":"","notes":""}""",

@@ -58,6 +58,9 @@ class HomeVoiceLineTest {
         val line = HomeVoiceLine.of(bill, noOpenAi, validKey, PrepState(), installed)
         shows(line, "Voice: Bill · ready")
         compose.onNodeWithText("Unavailable", substring = true).assertDoesNotExist()
+        // Rendering the stock lines alone does not hold a call back (the call switch needs only the models).
+        val rendering = PrepState(phase = PrepPhase.Running, phrases = RenderProgress(total = 285, done = 40))
+        assertEquals("Voice: Bill · ready (lines 40 of 285)", HomeVoiceLine.of(bill, noOpenAi, validKey, rendering, installed))
     }
 
     @Test fun billPreparingShowsProgress() {

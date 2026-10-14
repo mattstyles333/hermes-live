@@ -28,9 +28,10 @@ object HomeVoiceLine {
     fun readiness(key: KeyStatus, prep: PrepState, models: List<SpeechModelStatus>): BillReadiness = when {
         !key.saved -> BillReadiness.NeedsKey
         key.check == KeyCheck.Refused -> BillReadiness.KeyRefused
+        // The standard models decide (as `CallSwitch.plan` does); a phrase render alone never holds a call back.
+        standardMissing(models).isEmpty() -> BillReadiness.Ready
         prep.phase == PrepPhase.Running -> BillReadiness.Preparing
-        standardMissing(models).isNotEmpty() -> BillReadiness.NeedsModels
-        else -> BillReadiness.Ready
+        else -> BillReadiness.NeedsModels
     }
 
     /** The line, or null when there is nothing to say yet (GPT-Live before its status is read). */
@@ -43,7 +44,7 @@ object HomeVoiceLine {
     ): String? {
         if (settings.voiceEngine != VoiceEngine.Cascade) return gptLive?.let { "Voice: ${voiceText(it)}" }
         return "Voice: Bill · " + when (readiness(key, prep, models)) {
-            BillReadiness.Ready -> "ready"
+            BillReadiness.Ready -> "ready" + if (prep.phase == PrepPhase.Running) progress(prep, models).let { if (it.isEmpty()) "" else " ($it)" } else ""
             BillReadiness.Preparing -> "preparing" + progress(prep, models).let { if (it.isEmpty()) "…" else " ($it)" }
             BillReadiness.NeedsModels -> "needs his speech models" +
                 standardMissing(models).sumOf { (it.bytesTotal - it.bytesDone).coerceAtLeast(0) }.let { if (it > 0) " (about ${EngineStatus.megabytes(it)})" else "" } +
@@ -55,7 +56,7 @@ object HomeVoiceLine {
 
     /** "speech models 42%, lines 120 of 285": only the parts that are still under way. */
     private fun progress(prep: PrepState, models: List<SpeechModelStatus>): String {
-        val fetching = models.filter { it.state != ModelState.Ready && it.bytesTotal > 0 }
+        val fetching = models.filter { (it.state == ModelState.Downloading || it.state == ModelState.Verifying) && it.bytesTotal > 0 }
         val parts = mutableListOf<String>()
         if (fetching.isNotEmpty()) {
             val done = fetching.sumOf { it.bytesDone.coerceAtMost(it.bytesTotal) }
