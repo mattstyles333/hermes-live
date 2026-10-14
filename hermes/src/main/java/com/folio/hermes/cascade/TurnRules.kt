@@ -31,6 +31,8 @@ sealed interface TurnEvent {
         val timing: JevTiming,
         /** When speech ended (the actor's clock). */
         val speechEndAt: Long,
+        /** Null: Jev said `done`. [HOLD_SILENCE]: held words that looked like a request, committed after silence. */
+        val via: String? = null,
     ) : TurnEvent
 
     /** Mid-thought: [heard] was moved into pending; keep collecting. */
@@ -43,11 +45,29 @@ sealed interface TurnEvent {
         val timing: JevTiming,
     ) : TurnEvent
 
-    /** Still keep_listening at the recheck: [pending] stays for the next turn, and results may play meanwhile. */
+    /**
+     * Still keep_listening at the recheck: [pending] stays for the next turn, and results may play
+     * meanwhile. [answers] is what the recheck said (null when it failed: [failure]), for the log.
+     */
     data class Parked(
         override val turnId: String,
         override val heard: String,
         override val pending: List<String>,
+        val answers: Map<String, JevAnswer>? = null,
+        val failure: FailureKind? = null,
+        val jevMs: Long? = null,
+    ) : TurnEvent
+
+    /**
+     * The hold-silence rule: words are held and the user has been silent for
+     * [CascadeSettings.holdSilenceMs], and they do not look like a request. Bill says [slot]
+     * ([AppLines.HOLD_GO_ON], then once more [AppLines.HOLD_CONFIRM]); the words stay held.
+     */
+    data class Prompted(
+        override val turnId: String,
+        override val heard: String,
+        override val pending: List<String>,
+        val slot: String,
     ) : TurnEvent
 
     /** Noise or echo: [heard] was dropped. */
@@ -73,6 +93,16 @@ sealed interface TurnEvent {
         val speechEndAt: Long,
     ) : TurnEvent
 }
+
+/** What Jev last said about exactly the words held now ([utterance]): the hold-silence rule reads its `action`. */
+data class HeldAnswers(val utterance: String, val request: JevRequest, val answers: Map<String, JevAnswer>)
+
+/**
+ * Words held with no pause running (parked after the recheck, or left after an ignored blip): the
+ * hold-silence timer [seq] and how far it got. [step] 0: waiting to commit or say "Go on";
+ * 1: said it, waiting to ask "go ahead?"; 2: asked, nothing more. [endAt] is when speech ended.
+ */
+data class HoldSilence(val seq: Long, val step: Int, val endAt: Long, val turnId: String, val settings: CascadeSettings)
 
 /** One Jev call made by the turn-taking, and what came back. Correlated by [seq] (R-ARC-2). */
 data class JevCall(
@@ -141,6 +171,11 @@ data class TurnState(
     val pauseSeq: Long = 0L,
     /** Correlation ids for Jev calls (turn-taking and outbox resends share it). */
     val jevSeq: Long = 0L,
+    /** Jev's latest answers about the held words (kept while they are held). */
+    val heldAnswers: HeldAnswers? = null,
+    /** The hold-silence rule while words are held with no pause running. */
+    val silence: HoldSilence? = null,
+    val silenceSeq: Long = 0L,
 ) {
     /** Transcript since the last committed turn. */
     val heard: String get() = listOf(finals.trim(), partial.trim()).filter { it.isNotEmpty() }.joinToString(" ")
@@ -184,11 +219,22 @@ typealias JevAsk = (heard: String, pending: List<String>, silenceMs: Long) -> Je
  * - Speech resuming cancels the timer and any call in flight (their results are stale).
  * - keep_listening holds the words in `pending` and asks once more after
  *   [CascadeSettings.holdRecheckMs] more silence.
+ * - **No held turn waits forever in silence** (hold-silence rule, 2026-10-14). Words still held
+ *   with no pause running (parked after the recheck, or left after an ignored blip) start a
+ *   [CascadeSettings.holdSilenceMs] timer. When it fires in real silence: if Jev's latest answer
+ *   about exactly those words looks like a request ([Router.looksLikeRequest]), they commit
+ *   ([TurnEvent.Done] `via` [HOLD_SILENCE]); otherwise Bill says "Go on" once, and after another
+ *   [CascadeSettings.holdSilenceMs] asks "go ahead?" (`clarify.confirm`); the words stay held.
+ *   Any speech resets it; while Bill (or an action) is busy it waits again.
  */
 object TurnRules {
     const val EARLY = "turn.early"
     const val COMMIT = "turn.commit"
     const val RECHECK = "turn.recheck"
+    const val SILENCE = "turn.silence"
+
+    /** [TurnEvent.Done.via] for words committed by the hold-silence rule. */
+    const val HOLD_SILENCE = "hold_silence"
 
     private class Tx(var s: TurnState) {
         val effects = mutableListOf<Effect>()
@@ -261,12 +307,16 @@ object TurnRules {
     fun reset(t: TurnState): TurnStep {
         val tx = Tx(t)
         tx.endPause()
-        tx.s = tx.s.copy(finals = "", partial = "", pending = emptyList(), parked = false)
+        tx.s = tx.s.copy(finals = "", partial = "", pending = emptyList(), parked = false, heldAnswers = null)
         return tx.step()
     }
 
-    /** A turn timer fired at [now]. Stale timers (an older pause) do nothing. */
-    fun timer(t: TurnState, timer: Timer, now: Long, ask: JevAsk): TurnStep {
+    /**
+     * A turn timer fired at [now]. Stale timers (an older pause) do nothing. [busy]: Bill is
+     * speaking or an action is running (the hold-silence rule waits for real silence).
+     */
+    fun timer(t: TurnState, timer: Timer, now: Long, ask: JevAsk, busy: Boolean = false): TurnStep {
+        if (timer.name == SILENCE) return silence(t, timer, busy)
         val p = t.pause ?: return TurnStep(t)
         if (timer.seq != p.seq) return TurnStep(t)
         val tx = Tx(t)
@@ -281,6 +331,42 @@ object TurnRules {
             RECHECK -> if (p.stage == PauseStage.Holding) {
                 val call = tx.fire(ask(t.heard, t.pending, s.pause + s.holdRecheckMs), now, early = false)
                 tx.s = tx.s.copy(pause = p.copy(stage = PauseStage.Rechecking, commit = call, early = null))
+            }
+        }
+        return tx.step()
+    }
+
+    /** The hold-silence timer fired (see the class comment). */
+    private fun silence(t: TurnState, timer: Timer, busy: Boolean): TurnStep {
+        val h = t.silence ?: return TurnStep(t)
+        if (timer.seq != h.seq) return TurnStep(t)
+        val tx = Tx(t)
+        if (t.pending.isEmpty() || t.pause != null) {
+            tx.s = tx.s.copy(silence = null)
+            return tx.step()
+        }
+        if (busy) {
+            tx.holdSilently(h.endAt, h.turnId, h.settings, h.step)
+            return tx.step()
+        }
+        val utterance = CascadeBrain.utterance(t.heard, t.pending)
+        val held = t.heldAnswers?.takeIf { it.utterance == utterance }
+        when {
+            h.step == 0 && held != null && Router.looksLikeRequest(held.answers, h.settings) -> {
+                val turnId = "u${t.turns + 1}"
+                val pending = t.pending
+                tx.s = tx.s.copy(turns = t.turns + 1)
+                tx.clearAll()
+                tx.events += TurnEvent.Done(turnId, "", pending, held.request, held.answers, JevTiming(null, null, 0), h.endAt, via = HOLD_SILENCE)
+            }
+            h.step == 0 -> {
+                tx.events += TurnEvent.Prompted(h.turnId, t.heard, t.pending, AppLines.HOLD_GO_ON)
+                tx.holdSilently(h.endAt, h.turnId, h.settings, step = 1)
+            }
+            h.step == 1 -> {
+                tx.events += TurnEvent.Prompted(h.turnId, t.heard, t.pending, AppLines.HOLD_CONFIRM)
+                // Asked twice: the words stay held for the user's answer, but no longer hold back results.
+                tx.s = tx.s.copy(silence = h.copy(step = 2), parked = true)
             }
         }
         return tx.step()
@@ -301,9 +387,17 @@ object TurnRules {
             PauseStage.Committing -> tx.race(q, done, now, ask)
             PauseStage.Rechecking -> {
                 val recheck = result.toAnswer(done.request)
+                if (recheck is Answered) tx.s = tx.s.copy(heldAnswers = HeldAnswers(CascadeBrain.utterance(tx.s.heard, tx.s.pending), recheck.request, recheck.answers))
                 if (recheck !is Answered || Router.verdict(recheck.answers, q.settings) == TurnVerdict.KeepListening) {
                     tx.s = tx.s.copy(parked = true, pause = null)
-                    tx.events += TurnEvent.Parked(q.turnId.orEmpty(), tx.s.heard, tx.s.pending)
+                    tx.events += TurnEvent.Parked(
+                        q.turnId.orEmpty(), tx.s.heard, tx.s.pending,
+                        answers = (recheck as? Answered)?.answers,
+                        failure = (result as? OpenRouterResult.Failed)?.kind,
+                        jevMs = now - done.startedAt,
+                    )
+                    // Never wait forever in silence (the hold-silence rule).
+                    tx.holdSilently(q.endAt, q.turnId.orEmpty(), q.settings)
                 } else {
                     tx.resolve(q, recheck, JevTiming(now - q.endAt, now - done.startedAt, 1), now, ask)
                 }
@@ -323,8 +417,24 @@ object TurnRules {
         return JevCall(seq, request, now, early)
     }
 
-    /** Cancel the pause's timer and calls. */
+    /** Words held with no pause running: (re)start the hold-silence timer at [step]. */
+    private fun Tx.holdSilently(endAt: Long, turnId: String, settings: CascadeSettings, step: Int = 0) {
+        s.silence?.let { effects += Effect.CancelTimer(Timer(SILENCE, it.seq)) }
+        val seq = s.silenceSeq + 1
+        s = s.copy(silenceSeq = seq, silence = HoldSilence(seq, step, endAt, turnId, settings))
+        effects += Effect.StartTimer(Timer(SILENCE, seq), settings.holdSilenceMs)
+    }
+
+    /** Speech (or a new pause, or the call ending): the hold-silence timer starts again from nothing. */
+    private fun Tx.endSilence() {
+        val h = s.silence ?: return
+        effects += Effect.CancelTimer(Timer(SILENCE, h.seq))
+        s = s.copy(silence = null)
+    }
+
+    /** Cancel the pause's timer and calls (and the hold-silence timer: speech or a new pause). */
     private fun Tx.endPause() {
+        endSilence()
         val p = s.pause ?: return
         effects += Effect.CancelTimer(Timer(EARLY, p.seq))
         effects += Effect.CancelTimer(Timer(COMMIT, p.seq))
@@ -409,10 +519,12 @@ object TurnRules {
                     clearHeard()
                     s = s.copy(pause = null)
                     events += TurnEvent.Ignored(turnId, words, held, answer.request, answer.answers, timing)
+                    // Words held before the blip stay held, and the blip cancelled their recheck: never wait forever.
+                    if (s.pending.isNotEmpty()) holdSilently(p.endAt, turnId, p.settings)
                 }
                 TurnVerdict.KeepListening -> {
                     val pending = if (words.isNotEmpty()) s.pending + words else s.pending
-                    s = s.copy(pending = pending, finals = "", partial = "")
+                    s = s.copy(pending = pending, finals = "", partial = "", heldAnswers = HeldAnswers(CascadeBrain.utterance("", pending), answer.request, answer.answers))
                     events += TurnEvent.Holding(turnId, words, pending, answer.request, answer.answers, timing)
                     // Still quiet after a while longer: ask once more about everything held.
                     s = s.copy(pause = p.copy(stage = PauseStage.Holding, turnId = turnId, racing = false, firstFailed = false))
@@ -427,7 +539,8 @@ object TurnRules {
     }
 
     private fun Tx.clearAll() {
-        s = s.copy(finals = "", partial = "", pending = emptyList(), parked = false, pause = null)
+        endSilence()
+        s = s.copy(finals = "", partial = "", pending = emptyList(), parked = false, pause = null, heldAnswers = null)
     }
 
     private sealed interface Outcome

@@ -18,7 +18,7 @@ data class LoggedAnswer(val choice: String?, val confidence: Double, val probabi
 data class DecisionRecord(
     val turnId: String,
     val atMs: Long,
-    /** `done`, `keep_listening`, `ignore`, `no_answer`, `held`, `resent`. */
+    /** `done`, `keep_listening`, `parked`, `hold_prompt`, `ignore`, `no_answer`, `held`, `resent`. */
     val outcome: String,
     /** The Jev `state` that got the answer used (null when Jev never answered). */
     val state: JsonObject? = null,
@@ -41,6 +41,8 @@ data class DecisionRecord(
     val jevMs: Long? = null,
     /** Speech end → first audio of the response. */
     val speechEndToAudioMs: Long? = null,
+    /** How a `done` turn was committed: null when Jev said done, `hold_silence` by the hold-silence rule. */
+    val via: String? = null,
 )
 
 /** Lines of JSON, appended one per turn. `:live` supplies [FileDecisionStore] in app-private storage. */

@@ -20,6 +20,13 @@ data class CascadeSettings(
     val jevTimeoutMs: Long = 2_500L,
     /** After keep_listening, ask once more when the silence has lasted this much longer. Spec v2 §0. */
     val holdRecheckMs: Long = 2_500L,
+    /**
+     * The hold-silence rule (2026-10-14): words still held after the keep_listening recheck (or
+     * after an ignored blip) wait at most this much real silence. Then they commit if Jev's
+     * latest `action` for them is at or above [actionFloor] (not `end_call`); otherwise Bill says
+     * "Go on" once, and after this much more silence asks "go ahead?". Speech resets it.
+     */
+    val holdSilenceMs: Long = 4_000L,
     /** The floor for Jev's other answers (`line`, `clarity`, `split`; R-RT-3). `action` has its own: [actionFloor]. */
     val confidenceFloor: Double = 0.55,
     /**
