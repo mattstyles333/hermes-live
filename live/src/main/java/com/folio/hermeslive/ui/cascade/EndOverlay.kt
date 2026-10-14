@@ -49,19 +49,27 @@ import com.folio.hermeslive.ui.SmallStyle
 import com.folio.hermeslive.ui.StatusStyle
 import com.folio.hermeslive.ui.Surface
 
+/** The longest step the end clock takes per frame (ms): longer frames are stalls. */
+private const val MAX_STEP_MS = 50.0
+
 /**
  * Runs the end clock: [ms] counts from the first frame after the end, at the scene's speed
- * (1 / the animator duration scale). The summary leaves by itself ([leave]); the other
- * outcomes stop the clock once settled (the screen then stays until Close or Reconnect).
+ * (1 / the animator duration scale), at most [MAX_STEP_MS] per frame. The summary leaves by
+ * itself ([leave]); the other outcomes stop the clock once settled (the screen then stays until
+ * Close or Reconnect).
  */
 @Composable
 internal fun EndClock(run: EndRun, ms: MutableLongState, motion: CascadeMotion, leave: () -> Unit) {
     LaunchedEffect(run) {
-        val start = withFrameNanos { it }
+        var last = withFrameNanos { it }
+        var elapsed = 0.0
         val settled = maxOf(EndTimeline.windMs(run.reduced), EndTimeline.cardAtMs(run.reduced) + EndTimeline.cardMs(run.reduced))
         while (true) {
             val now = withFrameNanos { it }
-            ms.longValue = ((now - start) / 1_000_000.0 / motion.durationScale).toLong()
+            // A stalled frame (the hang-up's own work, a GC) pauses the transition instead of skipping it.
+            elapsed += ((now - last) / 1_000_000.0).coerceAtMost(MAX_STEP_MS) / motion.durationScale
+            last = now
+            ms.longValue = elapsed.toLong()
             if (run.leavesAt(ms.longValue)) {
                 leave()
                 break

@@ -1,7 +1,7 @@
 package com.folio.hermeslive.smoke
 
 import android.Manifest
-import android.view.accessibility.AccessibilityNodeInfo
+import android.view.WindowInsets
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -28,8 +28,8 @@ import org.junit.runner.RunWith
 /**
  * Bill's end-call transition on the device, for a screen recording (opt-in: `-e endcall true`).
  * The dry-run setup of [BillSmokeTest] (the fake Hermes, a placeholder key, `openrouter.ai`
- * refused, silence in, a capturing out): a Bill call starts, then the End button is tapped through
- * the accessibility tree and the screen is left up for its end and the crossfade home, while
+ * refused, silence in, a capturing out): a Bill call starts, then the End button is tapped
+ * (`input tap`) and the screen is left up for its end and the crossfade home, while
  * `screenrecord` writes `/sdcard/Download/bill-endcall.mp4` (8 s).
  *
  * `am instrument -w -e endcall true -e class com.folio.hermeslive.smoke.EndCallDemoTest com.folio.hermeslive.test/androidx.test.runner.AndroidJUnitRunner`
@@ -75,9 +75,15 @@ class EndCallDemoTest {
             Thread.sleep(1_500)
             instrumentation.uiAutomation.executeShellCommand("screenrecord --time-limit 8 /sdcard/Download/bill-endcall.mp4")
             Thread.sleep(1_500)
-            val end = instrumentation.uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText("End call")?.firstOrNull()
-            assertTrue("End button found", end != null)
-            end!!.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            // A real tap on the End button: centred, 22 dp + half its 58 dp above the bottom inset.
+            var tap = ""
+            scenario.onActivity { act ->
+                val decor = act.window.decorView
+                val bottom = decor.rootWindowInsets.getInsets(WindowInsets.Type.systemBars()).bottom
+                val dp = act.resources.displayMetrics.density
+                tap = "input tap ${decor.width / 2} ${(decor.height - bottom - 51 * dp).toInt()}"
+            }
+            shell(tap)
             waitFor("call ended", 5_000) { !g.calls.state.value.inCall }
             Thread.sleep(6_000)
             scenario.close()
