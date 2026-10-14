@@ -78,7 +78,11 @@ class CloudCorpusDeviceTest {
         val model = Device.args.getString("model") ?: CloudSttModels.DEFAULT.id
         val corpus = Device.requireCorpus()
         val names = Device.hotwords()
-        val config = SttEngineConfig()
+        // `-e live <id> -e accurate <id>`: the on-device pair (default Zipformer + Parakeet-110M).
+        val config = SttEngineConfig(
+            streaming = Device.args.getString("live")?.let { SttCatalog.byId(it)!! } ?: SttCatalog.zipformer,
+            accurate = Device.args.getString("accurate")?.let { SttCatalog.byId(it)!! } ?: SttCatalog.parakeet110m,
+        )
         Device.requireModels(config.streaming, config.accurate!!)
         val engines = Device.engines(config)
         val settings = CascadeSettings(accuratePass = true, cloudSttModel = if (mode == "cloud") model else null)
@@ -109,6 +113,9 @@ class CloudCorpusDeviceTest {
         val timings = utts.mapNotNull { it.timing }
         val result = JSONObject()
             .put("mode", mode).put("model", if (mode == "cloud") model else null)
+            .put("live", config.streaming.id).put("accurate", config.accurate.id)
+            .put("accurate_wait_within_1500", utts.count { (it.commitWaitMs ?: 0.0) <= 1_500 })
+            .put("accurate_wait_within_2500", utts.count { (it.commitWaitMs ?: 0.0) <= 2_500 })
             .put("files", utts.size).put("hotword_count", names.size)
             .put("final_wer", Scores.wer(utts) { it.transcript?.text ?: it.fastText }.json())
             .put("fast_wer", Scores.wer(utts) { it.fastText }.json())
@@ -129,6 +136,6 @@ class CloudCorpusDeviceTest {
                 .put("cloud_request_ms", Scores.dist(timings.filter { it.cloudSent > 0 }.map { it.cloudMs.toDouble() }))
                 .put("names_cloud", Scores.names(withCloud, names) { it.cloudText }.let { "${it.first}/${it.second}" })
         }
-        Device.results("cloud-$mode.json").writeText(result.toString(2))
+        Device.results("cloud-$mode-${config.streaming.id}+${config.accurate.id}.json").writeText(result.toString(2))
     }
 }

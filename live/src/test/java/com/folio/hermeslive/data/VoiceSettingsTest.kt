@@ -56,7 +56,7 @@ class VoiceSettingsTest {
     /** Spec v2 §14 item 11: High accuracy waits longer for the 0.6B second pass. */
     @Test fun highAccuracyWaitsLongerForTheAccuratePass() {
         assertEquals(1_500L, LiveSettings().cascadeSettings().accuratePassWaitMs)
-        assertEquals(2_500L, LiveSettings(highAccuracySpeech = true).cascadeSettings().accuratePassWaitMs)
+        assertEquals(2_500L, LiveSettings(accurateModel = com.folio.hermeslive.stt.SttCatalog.parakeet06b.id).cascadeSettings().accuratePassWaitMs)
         assertEquals(0.45, LiveSettings().cascadeSettings().uncertainBelow, 1e-9)
     }
 

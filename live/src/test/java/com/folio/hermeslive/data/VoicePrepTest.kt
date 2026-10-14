@@ -1,5 +1,7 @@
 package com.folio.hermeslive.data
 
+import com.folio.hermeslive.stt.SttCatalog
+
 import com.folio.hermes.cascade.BillVoice
 import com.folio.hermes.cascade.MemoryClipStore
 import com.folio.hermes.cascade.PhraseBank
@@ -41,7 +43,7 @@ class VoicePrepTest {
     private fun fingerprint() = VoicePrep.fingerprint(settings.billVoice, settings.ttsModel, bank.version)
 
     private fun prep(scope: CoroutineScope, models: SpeechModels, renders: () -> RenderJob = ::render) =
-        VoicePrep(scope, gate, models, { settings.highAccuracySpeech }, { bank }, renders, marker, ::fingerprint, TelemetrySink.None)
+        VoicePrep(scope, gate, models, { SpeechModelChoice.wanted(settings).map { it.id }.toSet() }, { bank }, renders, marker, ::fingerprint, TelemetrySink.None)
 
     private fun render(): RenderJob {
         val openRouter = OpenRouter(OpenRouterConfig(baseUrl = "https://openrouter.example/api/v1"), key = { FAKE_KEY }, client = server.client(), telemetry = TelemetrySink.None)
@@ -51,9 +53,9 @@ class VoicePrepTest {
 
     private fun models() = FakeSpeechModels(
         listOf(
-            SpeechModelStatus("zipformer", "Streaming", ModelRole.Streaming, ModelState.Missing, 0, 73_000_000),
-            SpeechModelStatus("parakeet-110m", "Accurate", ModelRole.Accurate, ModelState.Paused, 10_000_000, 108_000_000),
-            SpeechModelStatus("parakeet-0.6b", "High accuracy", ModelRole.HighAccuracy, ModelState.Missing, 0, 661_000_000),
+            SpeechModelStatus(SttCatalog.zipformer.id, "Streaming", ModelRole.Streaming, ModelState.Missing, 0, 73_000_000),
+            SpeechModelStatus(SttCatalog.parakeet110m.id, "Accurate", ModelRole.Accurate, ModelState.Paused, 10_000_000, 108_000_000),
+            SpeechModelStatus(SttCatalog.parakeet06b.id, "High accuracy", ModelRole.Accurate, ModelState.Missing, 0, 661_000_000),
             SpeechModelStatus("silero", "VAD", ModelRole.Vad, ModelState.Ready, 600_000, 600_000),
         ),
     )
@@ -81,11 +83,11 @@ class VoicePrepTest {
         assertEquals(3, s.phrases.done)
         assertTrue(s.ready)
         assertEquals("high accuracy is off: two models fetched", 2, models.downloads.get())
-        assertTrue(s.models.none { it.role == ModelRole.HighAccuracy })
-        settings = settings.copy(highAccuracySpeech = true)
+        assertTrue(s.models.none { it.id == SttCatalog.parakeet06b.id })
+        settings = settings.copy(accurateModel = SttCatalog.parakeet06b.id)
         p.refresh()
         assertEquals(661_000_000L, p.state.value.bytesToFetch)
-        settings = settings.copy(highAccuracySpeech = false)
+        settings = settings.copy(accurateModel = SttCatalog.parakeet110m.id)
         p.refresh()
         assertEquals(3, server.requests.size)
 
@@ -109,7 +111,7 @@ class VoicePrepTest {
     @Test fun cancelStopsAndStartResumes() = runTest {
         val gateOpen = CompletableDeferred<Unit>()
         val slow = object : SpeechModels {
-            private val s = MutableStateFlow(listOf(SpeechModelStatus("zipformer", "Streaming", ModelRole.Streaming, ModelState.Missing)))
+            private val s = MutableStateFlow(listOf(SpeechModelStatus(SttCatalog.zipformer.id, "Streaming", ModelRole.Streaming, ModelState.Missing)))
             override val status: StateFlow<List<SpeechModelStatus>> = s.asStateFlow()
             var calls = 0
             override suspend fun download(id: String): Boolean {

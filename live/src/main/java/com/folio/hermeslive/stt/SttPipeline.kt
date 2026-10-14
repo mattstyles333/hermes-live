@@ -60,6 +60,11 @@ class SttPipeline(
     private val onCutIn: (CutInReport) -> Unit = {},
     /** `Clock.System.nowMs()`'s base, for [SttEvent.SpeechEndedAt]. */
     private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** Times the live model's decode of each segment frame (the live-model guard); null: not timed. */
+    private val guard: LiveGuard? = null,
+    /** The guard tripped (capture thread, once). */
+    private val onSlow: (LiveGuard.Reason) -> Unit = {},
+    private val nanos: () -> Long = System::nanoTime,
 ) {
     private class Segment(val session: StreamingSession, val holding: Boolean) {
         val pcm = ArrayList<FloatArray>()
@@ -76,6 +81,10 @@ class SttPipeline(
     private var segment: Segment? = null
     private var samplesSeen = 0L
     private val holdRequest = AtomicReference<Boolean?>(null)
+    private val pendingLive = AtomicReference<Pair<StreamingEngine, (List<String>) -> String>?>(null)
+
+    /** Use [engine] as the live model from the next quiet moment (no segment open); the old one is released then. */
+    fun swapLiveWhenQuiet(engine: StreamingEngine, hotwords: (List<String>) -> String) = pendingLive.set(engine to hotwords)
     private val routeChanged = AtomicBoolean(false)
 
     /** True while a segment is open (tests). */
@@ -107,6 +116,7 @@ class SttPipeline(
 
         val open = segment
         if (open == null) {
+            pendingLive.getAndSet(null)?.let { (engine, words) -> runCatching { engines.swapStreaming(engine, words).release() } }
             when {
                 hold == true -> {
                     emit(SttEvent.HoldToTalk(true))
@@ -128,8 +138,10 @@ class SttPipeline(
         open.pcm += samples
         open.samples += samples.size
         if (level > floor.db + cfg.onsetMarginDb) open.lastLoud = samplesSeen
+        val t0 = if (guard != null) nanos() else 0L
         open.session.accept(samples)
         partial(open)
+        if (guard != null && guard.decoded(samples.size, nanos() - t0)) guard.tripped?.let(onSlow)
         when {
             hold == true -> if (!open.held) {
                 open.held = true

@@ -53,6 +53,9 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
             .putBoolean(K_HIGH_ACCURACY, next.highAccuracySpeech)
             .putString(K_SPEECH_RECOGNITION, next.speechRecognition.wire)
             .putString(K_CLOUD_STT_MODEL, next.cloudSttModel)
+            .putString(K_LIVE_MODEL, next.liveModel)
+            .putString(K_ACCURATE_MODEL, next.accurateModel)
+            .putBoolean(K_SPEECH_MODELS_CARD, next.speechModelsCard)
             .apply()
         _settings.value = next
     }
@@ -104,6 +107,9 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
             highAccuracySpeech = prefs.getBoolean(K_HIGH_ACCURACY, d.highAccuracySpeech),
             speechRecognition = SpeechRecognition.parse(prefs.getString(K_SPEECH_RECOGNITION, null)),
             cloudSttModel = prefs.getString(K_CLOUD_STT_MODEL, null) ?: d.cloudSttModel,
+            liveModel = prefs.getString(K_LIVE_MODEL, null),
+            accurateModel = prefs.getString(K_ACCURATE_MODEL, null),
+            speechModelsCard = prefs.getBoolean(K_SPEECH_MODELS_CARD, d.speechModelsCard),
         ).normalized()
     }
 
@@ -147,6 +153,9 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
         private const val K_HIGH_ACCURACY = "cascade_high_accuracy"
         private const val K_SPEECH_RECOGNITION = "cascade_speech_recognition"
         private const val K_CLOUD_STT_MODEL = "cascade_cloud_stt_model"
+        private const val K_LIVE_MODEL = "cascade_live_model"
+        private const val K_ACCURATE_MODEL = "cascade_accurate_model"
+        private const val K_SPEECH_MODELS_CARD = "cascade_speech_models_card"
         private const val K_SERVER = "server_url"
         private const val K_USER = "username"
         private const val K_SESSION = "stored_session_id"

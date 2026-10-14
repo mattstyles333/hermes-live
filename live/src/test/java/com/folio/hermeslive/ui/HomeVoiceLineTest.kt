@@ -1,5 +1,7 @@
 package com.folio.hermeslive.ui
 
+import com.folio.hermeslive.stt.SttCatalog
+
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -37,14 +39,14 @@ class HomeVoiceLineTest {
     private val validKey = KeyStatus(saved = true, check = KeyCheck.Valid, hint = "abcd")
     private val mb = 1_048_576L
 
-    private fun model(role: ModelRole, state: ModelState, done: Long = 0, total: Long = 0) =
-        SpeechModelStatus(role.name, role.name, role, state, done, total)
+    private fun model(role: ModelRole, state: ModelState, done: Long = 0, total: Long = 0, id: String? = null) =
+        SpeechModelStatus(id ?: if (role == ModelRole.Streaming) SttCatalog.zipformer.id else SttCatalog.parakeet110m.id, role.name, role, state, done, total)
 
     /** The standard pair installed; High accuracy not downloaded (it is optional). */
     private val installed = listOf(
         model(ModelRole.Streaming, ModelState.Ready, 70 * mb, 70 * mb),
         model(ModelRole.Accurate, ModelState.Ready, 120 * mb, 120 * mb),
-        model(ModelRole.HighAccuracy, ModelState.Missing, 0, 600 * mb),
+        model(ModelRole.Accurate, ModelState.Missing, 0, 600 * mb, id = SttCatalog.parakeet06b.id),
     )
 
     /** Render the idle screen with [line] and check it is what the user sees. */

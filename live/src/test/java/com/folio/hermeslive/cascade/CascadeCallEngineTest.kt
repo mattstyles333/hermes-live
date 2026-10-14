@@ -87,7 +87,7 @@ class CascadeCallEngineTest {
         assertFalse("standard models by default", stt.highAccuracy)
     }
 
-    @Test fun highAccuracyAsksForTheBigSecondPass() = rig(LiveSettings(highAccuracySpeech = true)) { r ->
+    @Test fun highAccuracyAsksForTheBigSecondPass() = rig(LiveSettings(accurateModel = com.folio.hermeslive.stt.SttCatalog.parakeet06b.id)) { r ->
         r.live()
         assertTrue(r.speech.built.single().highAccuracy)
     }

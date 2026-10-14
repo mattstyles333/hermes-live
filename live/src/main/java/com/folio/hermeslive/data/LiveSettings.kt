@@ -54,8 +54,17 @@ data class LiveSettings(
     val decisionLog: Boolean = true,
     /** Capture with the phone's call processing (VOICE_COMMUNICATION + echo canceller). §11b. */
     val echoCancel: Boolean = true,
-    /** Use the larger second-pass speech model ("High accuracy"; a bigger download). §11b. */
+    /**
+     * Before the speech-model picker: the larger second-pass model ("High accuracy"). Read only to
+     * keep an existing install's models ([SpeechModelChoice.firstRun]); [accurateModel] decides now.
+     */
     val highAccuracySpeech: Boolean = false,
+    /** Settings › Voice › Speech models: the live (streaming) model id; null until set at first run. */
+    val liveModel: String? = null,
+    /** The accurate (second-pass) model id; null until set at first run. */
+    val accurateModel: String? = null,
+    /** Show "Better speech models available" once (an install that kept its older models). */
+    val speechModelsCard: Boolean = false,
     /**
      * Speech recognition: on device (the default: audio never leaves the phone), or the cloud
      * when online (each utterance's audio goes to OpenRouter's [cloudSttModel]).
@@ -90,7 +99,7 @@ data class LiveSettings(
             vocabulary = n.vocabulary,
             decisionLog = n.decisionLog,
             // The 0.6B second pass can finish a long dictation's last segments after 1.5 s (S-C bench: 1 in 3).
-            accuratePassWaitMs = if (n.highAccuracySpeech) HIGH_ACCURACY_WAIT_MS else base.accuratePassWaitMs,
+            accuratePassWaitMs = if (SpeechModelChoice.accurate(n).bytes > SpeechModelChoice.FALLBACK_ACCURATE.bytes) HIGH_ACCURACY_WAIT_MS else base.accuratePassWaitMs,
             // On device: null, so no audio request is ever made.
             cloudSttModel = if (n.speechRecognition == SpeechRecognition.Cloud) n.cloudSttModel else null,
         )
@@ -108,7 +117,7 @@ data class LiveSettings(
     companion object {
         const val DEFAULT_PAUSE_MS = 1_000
 
-        /** `accuratePassWaitMs` with High accuracy on (spec v2 §14 item 11). */
+        /** `accuratePassWaitMs` with a large accurate model (Parakeet 0.6B; spec v2 §14 item 11). */
         const val HIGH_ACCURACY_WAIT_MS = 2_500L
         const val MIN_PAUSE_MS = CascadeSettings.MIN_PAUSE_MS.toInt()
         const val MAX_PAUSE_MS = CascadeSettings.MAX_PAUSE_MS.toInt()

@@ -47,7 +47,8 @@ class VoicePrep(
     private val scope: CoroutineScope,
     private val gate: CascadeGate,
     private val models: SpeechModels,
-    private val highAccuracy: () -> Boolean,
+    /** The model ids these settings want ([SpeechModelChoice.wanted]). */
+    private val wanted: () -> Set<String>,
     private val bank: () -> PhraseBank,
     /** Builds the render for the current voice and model; called only while the gate is open. */
     private val renders: () -> RenderJob,
@@ -65,8 +66,8 @@ class VoicePrep(
         scope.launch { models.status.collect { list -> _state.update { it.copy(models = shown(list)) } } }
     }
 
-    /** The models these settings use: the high-accuracy one only when it is on. */
-    private fun shown(list: List<SpeechModelStatus>) = list.filter { it.role != ModelRole.HighAccuracy || highAccuracy() }
+    /** The models these settings use (the chosen pair, and the guard's fallback), plus voice detection. */
+    private fun shown(list: List<SpeechModelStatus>) = wanted().let { ids -> list.filter { it.id in ids || it.role == ModelRole.Vad } }
 
     /** Re-read whether the current settings are prepared (after a voice, model or accuracy change). */
     fun refresh() = _state.update { it.copy(ready = prepared.get() == currentFingerprint(), models = shown(models.status.value)) }
@@ -85,13 +86,13 @@ class VoicePrep(
                     launch { runCatching { render.warm() } }
                     val watch = launch { render.renderer.progress.collect { p -> _state.update { it.copy(phrases = p) } } }
                     val downloads = launch {
-                        models.wanted(highAccuracy()).forEach { m -> models.download(m.id) }
+                        models.wanted(wanted()).forEach { m -> models.download(m.id) }
                     }
                     val result = render.renderer.render(bank())
                     downloads.join()
                     watch.cancel()
                     _state.update { it.copy(phrases = result) }
-                    val modelsOk = models.wanted(highAccuracy()).isEmpty()
+                    val modelsOk = models.wanted(wanted()).isEmpty()
                     if (result.failed == 0 && result.total > 0) prepared.set(render.fingerprint)
                     if (result.failed == 0 && modelsOk) PrepPhase.Done else PrepPhase.Failed
                 }
@@ -107,7 +108,7 @@ class VoicePrep(
                     "cascade.prepare",
                     mapOf(
                         "outcome" to outcome.name.lowercase(), "lines" to s.phrases.total, "done" to s.phrases.done,
-                        "failed" to s.phrases.failed, "models_missing" to models.wanted(highAccuracy()).size,
+                        "failed" to s.phrases.failed, "models_missing" to models.wanted(wanted()).size,
                         "ms" to (System.nanoTime() - started) / 1_000_000,
                     ),
                     outcome == PrepPhase.Failed,

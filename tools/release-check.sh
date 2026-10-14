@@ -14,7 +14,8 @@
 # free port and stopped at the end. The key is read from the environment only: it is passed to the
 # test JVM and the instrumentation, never written or printed.
 #
-# Env: SERIAL (default emulator-5554), JAVA_HOME / ANDROID_HOME (default /tmp/folio-toolchain/...).
+# Env: SERIAL (default emulator-5554), JAVA_HOME / ANDROID_HOME (default /tmp/folio-toolchain/...),
+# SPEECH=cloud (the smoke call with Speech recognition "Cloud when online"; default on device).
 set -uo pipefail
 : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY (read from the environment, never printed)}"
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -110,7 +111,7 @@ lane_staging() {
 lane_smoke() {
   local t0; t0=$(now)
   local ok=0
-  SKIP_BUILD=1 FAKE_HERMES_PORT=$PORT SERIAL=$SERIAL "$ROOT/tools/cascade-smoke.sh" "$OUT" >"$WORK/smoke.log" 2>&1 || ok=1
+  SKIP_BUILD=1 FAKE_HERMES_PORT=$PORT SERIAL=$SERIAL SPEECH=${SPEECH:-device} "$ROOT/tools/cascade-smoke.sh" "$OUT" >"$WORK/smoke.log" 2>&1 || ok=1
   echo "$ok $(secs "$t0" "$(now)")" >"$WORK/smoke.result"
 }
 

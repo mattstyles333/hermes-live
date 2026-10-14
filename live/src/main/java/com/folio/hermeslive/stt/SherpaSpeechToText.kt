@@ -56,6 +56,13 @@ class SherpaSpeechToText(
     bargeIn: BargeInConfig = BargeInConfig(bargeInMs = settings().bargeInMs),
     /** The cloud pass (used only while `cloudSttModel` is set); null: on device only. */
     cloud: CloudStt? = null,
+    /**
+     * Loads the fallback live model (Zipformer) when the chosen one can't keep up ([LiveGuard]);
+     * null: no guard (the live model is the fallback already, or none is installed).
+     */
+    private val fallbackLive: (() -> FallbackLive)? = null,
+    /** The guard swapped the live model (once per call; say so once, report it without content). */
+    private val onFallback: (LiveFallback) -> Unit = {},
 ) : SpeechToText {
     private val channel = Channel<SttEvent>(Channel.UNLIMITED)
     private val running = AtomicBoolean(false)
@@ -81,6 +88,9 @@ class SherpaSpeechToText(
         onCloud = { fast, text -> channel.trySend(SttEvent.Revised(fast, text, CloudMateriality.material(fast, text))) },
     )
 
+    /** The live-model guard, when there is a fallback to swap to. */
+    val guard: LiveGuard? = fallbackLive?.let { LiveGuard() }
+
     private val pipeline = SttPipeline(
         engines = engines,
         secondPass = secondPass,
@@ -92,7 +102,20 @@ class SherpaSpeechToText(
         emit = { channel.trySend(it) },
         onLevel = { _level.value = it },
         onCutIn = { _cutIns.tryEmit(it) },
+        guard = guard,
+        onSlow = ::fallBack,
     )
+
+    /** The guard tripped (capture thread): load the fallback off this thread, swap it in at the next quiet moment. */
+    private fun fallBack(reason: LiveGuard.Reason) {
+        val load = fallbackLive ?: return
+        val from = engines.streaming.model?.id
+        Thread({
+            val loaded = runCatching { load() }.getOrNull()
+            if (loaded != null && running.get()) pipeline.swapLiveWhenQuiet(loaded.engine, loaded.hotwords)
+            runCatching { onFallback(LiveFallback(from, loaded?.engine?.model?.id, reason, guard?.rtf ?: 0.0, loaded != null)) }
+        }, "stt-live-fallback").apply { isDaemon = true }.start()
+    }
 
     override val events: Flow<SttEvent> = channel.receiveAsFlow()
 
@@ -158,6 +181,7 @@ class SherpaSpeechToText(
         var filled = 0
         var idle = 0
         var procNanos = 0L
+        val startedNanos = System.nanoTime()
         try {
             while (running.get()) {
                 val n = source.read(buffer)
@@ -182,6 +206,7 @@ class SherpaSpeechToText(
                         samplesProcessed += SttPipeline.FRAME
                         captureRtf = procNanos / 1e9 / (samplesProcessed.toDouble() / AudioRate.HZ)
                         filled = 0
+                        if (guard?.progress(samplesProcessed * 1000 / AudioRate.HZ, (System.nanoTime() - startedNanos) / 1_000_000) == true) fallBack(LiveGuard.Reason.BEHIND)
                     }
                 }
             }
@@ -198,3 +223,9 @@ class SherpaSpeechToText(
         const val MAX_IDLE_READS = 2_000
     }
 }
+
+/** A loaded fallback live model and its hotwords builder. */
+class FallbackLive(val engine: StreamingEngine, val hotwords: (List<String>) -> String)
+
+/** The live model was swapped for the call: from [from] to [to] ([swapped] false: the fallback failed to load). Ids and numbers only. */
+data class LiveFallback(val from: String?, val to: String?, val reason: LiveGuard.Reason, val rtf: Double, val swapped: Boolean)
