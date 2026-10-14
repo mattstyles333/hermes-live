@@ -5,6 +5,8 @@ import com.folio.hermes.cascade.ports.Clock
 import com.folio.hermes.cascade.ports.MemoryStore
 import com.folio.hermes.cascade.ports.Network
 import com.folio.hermes.cascade.ports.OpenRouterPort
+import com.folio.hermes.cascade.ports.SpeechToText
+import com.folio.hermes.cascade.ports.SttEvent
 import com.folio.hermes.cascade.registry.ClientHermes
 import com.folio.hermes.cascade.registry.FakeServer
 import com.folio.hermes.cascade.routing.CeoHarness.Companion.brief
@@ -27,6 +29,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -121,7 +124,7 @@ class CascadePropertyTest {
 
     // ── the world: Hermes, the store, the network and Jev outlive app processes ─────────────
 
-    private inner class World(val ts: TestScope, val seed: Long) {
+    private inner class World(val ts: TestScope, val seed: Long, val accurate: Boolean) {
         val store = MemoryStore()
         val server = FakeServer()
         val online = MutableStateFlow(true)
@@ -141,6 +144,17 @@ class CascadePropertyTest {
         val reducer = CascadeReducer(CascadeCore.env(bank, MemoRouting(ZoneOffset.UTC)))
         val pick = Random(seed xor 0x5eed)
         lateinit var proc: Proc
+
+        /** The accurate pass (R-STT-2) when [accurate]: back after a seeded delay, sometimes past `accuratePassWaitMs`. */
+        val passDelays = Random(seed xor 0xacc)
+        val stt = object : SpeechToText {
+            override val events: Flow<SttEvent> = emptyFlow()
+            override suspend fun accurate(turnId: String): Transcript? {
+                delay(passDelays.nextLong(20, 2_000))
+                val text = proc.actor.state.value.actions.waiting.firstOrNull { it.turnId == turnId }?.text ?: return null
+                return Transcript(text, text.split(' ').map { Word(it, confidence = 0.95) }, TranscriptPass.Accurate)
+            }
+        }
 
         fun utterance(n: Int) = "item $n: please look after job number $n"
 
@@ -245,9 +259,9 @@ class CascadePropertyTest {
         var killIn: Int? = null
         val core: CascadeCore = CascadeCore.create(
             scope = scope,
-            ports = CascadePorts(world.router, hermes, hermes, speaker, world.store, clock, world.network),
+            ports = CascadePorts(world.router, hermes, hermes, speaker, world.store, clock, world.network, world.stt.takeIf { world.accurate }),
             bank = bank,
-            settings = { settings },
+            settings = { if (world.accurate) settings.copy(accuratePass = true) else settings },
             telemetry = TelemetrySink.None,
             zone = ZoneOffset.UTC,
             gate = EffectGate { e -> allow(e) },
@@ -311,11 +325,11 @@ class CascadePropertyTest {
     // ── running a sequence ──────────────────────────────────────────────────────────────────
 
     /** Null if every invariant held, else what broke. */
-    private fun run(ops: List<Op>, seed: Long): String? {
+    private fun run(ops: List<Op>, seed: Long, accurate: Boolean): String? {
         var failure: String? = null
         try {
             runTest {
-                val w = World(this, seed)
+                val w = World(this, seed, accurate)
                 w.proc = Proc(w, 0)
                 w.proc.core.start()
                 runCurrent()
@@ -489,18 +503,26 @@ class CascadePropertyTest {
         return current
     }
 
-    @Test fun invariantsHoldOverRandomCalls() {
+    @Test fun invariantsHoldOverRandomCalls() = invariants(accurate = false)
+
+    /**
+     * The same with the accurate pass on, as `:live` runs Bill: the stock line plays at commit while
+     * the pass is out, kills land between that line and the gate opening, and some passes time out.
+     */
+    @Test fun invariantsHoldWithTheAccuratePass() = invariants(accurate = true)
+
+    private fun invariants(accurate: Boolean) {
         val only = System.getenv("CASCADE_PROPERTY_SEED")?.toLongOrNull()
         val seeds = if (only != null) listOf(only) else (0 until SEQUENCES).map { BASE_SEED + it }
         for (seed in seeds) {
             val ops = generate(Random(seed))
-            val failure = run(ops, seed) ?: continue
+            val failure = run(ops, seed, accurate) ?: continue
             val kind = failure.substringBefore(':')
-            val minimal = shrink(ops) { run(it, seed)?.substringBefore(':') == kind }
+            val minimal = shrink(ops) { run(it, seed, accurate)?.substringBefore(':') == kind }
             fail(
-                "seed $seed: $failure\n" +
+                "seed $seed (accurate pass ${if (accurate) "on" else "off"}): $failure\n" +
                     "minimal sequence (${minimal.size} of ${ops.size} ops; replay with CASCADE_PROPERTY_SEED=$seed):\n" +
-                    minimal.joinToString("\n") { "  $it" } + "\nwhich fails with: ${run(minimal, seed)}",
+                    minimal.joinToString("\n") { "  $it" } + "\nwhich fails with: ${run(minimal, seed, accurate)}",
             )
         }
     }

@@ -318,7 +318,7 @@ class CascadeReducer(val env: CascadeEnv) {
                 )
                 flushAwaiting()
                 val action = hooks.committed(this, ActionState(event.turnId, text, decision, event.speechEndAt, record), event)
-                enqueue(accuratePass(event.turnId, action))
+                enqueue(lineFirst(accuratePass(event.turnId, action)))
             }
             is TurnEvent.Holding -> {
                 val slot = hooks.backchannel(s, event.answers, env.bank)
@@ -352,6 +352,32 @@ class CascadeReducer(val env: CascadeEnv) {
         }
         effects += Effect.AccuratePass(turnId)
         return action.copy(gates = action.gates + ACCURATE_GATE)
+    }
+
+    /**
+     * R-Q-3, R-SPK-2: the stock line plays at commit, from the cache, while the accurate pass is
+     * still out (Jev decided from the fast text). Only when nothing is ahead of [a] and the
+     * accurate pass is its only gate, and only if its handler plays the line first (R-RT-5, §0:
+     * an update, a key doubt or a memo plays none first). Everything that needs the exact words
+     * (the writer's brief and repair, the submit, the doubt question) still waits for the gate;
+     * [begin] reuses the reply, and [Tx.play] never plays a turn's line twice.
+     */
+    private fun Tx.lineFirst(a: ActionState): ActionState {
+        if (a.gates != setOf(ACCURATE_GATE) || s.actions.active != null || s.actions.waiting.isNotEmpty()) return a
+        val slot = a.decision.slot ?: return a
+        val queue = s.actions
+        // The handler decides with the action as it would be once begun.
+        s = s.copy(actions = ActionQueue(active = a))
+        if (!env.handlers.handler(a.decision.route).playsSlotFirst(this)) {
+            s = s.copy(actions = queue)
+            return a
+        }
+        val u = open(SpeechKind.Reply, turnId = a.turnId)
+        updateAction { it.copy(utteranceId = u) }
+        play(slot)
+        val early = action
+        s = s.copy(actions = queue)
+        return early
     }
 
     /** Explicit names: class names do not survive R8 in release builds. */
@@ -421,7 +447,8 @@ class CascadeReducer(val env: CascadeEnv) {
     }
 
     private fun Tx.begin(a: ActionState) {
-        val u = open(SpeechKind.Reply, turnId = a.turnId)
+        // The reply was opened at commit if its line played first ([lineFirst]).
+        val u = a.utteranceId.takeIf { it != 0L } ?: open(SpeechKind.Reply, turnId = a.turnId)
         s = s.copy(actions = s.actions.copy(active = a.copy(utteranceId = u)))
         if (a.turnId !in s.log.remembered) {
             s = s.copy(

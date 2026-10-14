@@ -25,7 +25,7 @@ class EffectiveEvalTest {
 
     @Test fun doneBelowTheTurnFloorKeepsListeningAndAnUnsureActionClarifies() {
         val case = cases.first { it.expect["turn"] == "done" && it.tasks.isEmpty() }
-        val e = RoutingEvals.effective(case, mapOf("turn" to answer("done", 0.58), "action" to answer("new_task", 0.5)), bank)
+        val e = RoutingEvals.effective(case, mapOf("turn" to answer("done", 0.58), "action" to answer("new_task", 0.35)), bank)
         assertEquals("keep_listening", e["turn"])
         assertEquals("clarify", e["action"])
         assertEquals("done", RoutingEvals.effective(case, mapOf("turn" to answer("done", 0.6)), bank)["turn"])

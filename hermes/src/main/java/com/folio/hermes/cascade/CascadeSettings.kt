@@ -20,8 +20,15 @@ data class CascadeSettings(
     val jevTimeoutMs: Long = 2_500L,
     /** After keep_listening, ask once more when the silence has lasted this much longer. Spec v2 §0. */
     val holdRecheckMs: Long = 2_500L,
-    /** Below this, `turn` means keep listening and `action` a clarifying question. R-RT-3. */
+    /** The floor for Jev's other answers (`line`, `clarity`, `split`; R-RT-3). `action` has its own: [actionFloor]. */
     val confidenceFloor: Double = 0.55,
+    /**
+     * Below this, `action` plays `clarify.confirm` and never acts (R-RT-3, CEO routing). 0.40 since
+     * the fastline slice (2026-10-14): over the recorded Jev fixtures (88 cases) it takes friction
+     * from 2/40 to 0/40 (tuned) and 9/48 to 8/48 (held out) with harmful unchanged at 1/40 and 1/48;
+     * the cases between 0.40 and 0.55 were the right action, or (one) a status read instead of a reply.
+     */
+    val actionFloor: Double = 0.40,
     /**
      * `turn = done` is acted on only at or above this (spec v2 §14 item 16: measured over 176 runs,
      * 0 false "done" at 0.60 against 1 at 0.55; 4.6% of true "done" wait for the 2.5 s re-ask).

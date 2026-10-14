@@ -47,8 +47,10 @@ class CeoRouterTest {
     }
 
     @Test fun unsureActionPlaysClarifyConfirmAndNeverStartsATask() {
-        val d = decide(state(), "action" to answer("new_task", 0.54), "line" to answer("start.one"))
+        val d = decide(state(), "action" to answer("new_task", 0.39), "line" to answer("start.one"))
         assertEquals(Decision(Route.Clarify, "clarify.confirm", writer = false), d)
+        // The action floor is its own (0.40), below the other answers' 0.55.
+        assertEquals(Route.NewTask, decide(state(), "action" to answer("new_task", 0.40), "line" to answer("start.one")).route)
     }
 
     @Test fun lowTaskConfidenceAsksWhichUnlessOneCandidate() {

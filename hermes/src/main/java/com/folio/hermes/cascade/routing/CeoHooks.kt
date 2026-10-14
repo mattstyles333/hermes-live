@@ -101,11 +101,21 @@ class CeoHooks(private val memo: MemoRouting, private val summaries: BackgroundS
         TaskQueue.pump(tx)
     }
 
-    /** The accurate pass for a turn (R-STT-2, S-C): its transcript replaces the fast one. */
+    /**
+     * The accurate pass for a turn (R-STT-2, S-C): its transcript replaces the fast one, and its
+     * text the action's text when it is the same stretch of speech ([AccurateSpan]): then the
+     * brief, its repair, the submit and a doubt question use the accurate words. When it is not
+     * (held words whose audio an ignored pause dropped, typed text), the fast text stays, so Hermes
+     * still gets every word. Jev already decided from the fast text, and the stock line may
+     * already have played.
+     */
     override fun accurate(tx: Tx, event: Event.AccurateFinal) {
         val t = event.transcript ?: return
         keep(tx, event.turnId, t)
-        val update = { a: ActionState -> if (a.turnId == event.turnId) a.copy(transcript = t) else a }
+        val text = t.text.trim().takeIf { t.pass == TranscriptPass.Accurate && it.isNotEmpty() }
+        val update = { a: ActionState ->
+            if (a.turnId != event.turnId) a else a.copy(transcript = t, text = text?.takeIf { AccurateSpan.same(a.text, it) } ?: a.text)
+        }
         tx.s = tx.s.copy(actions = tx.s.actions.copy(active = tx.s.actions.active?.let(update), waiting = tx.s.actions.waiting.map(update)))
     }
 

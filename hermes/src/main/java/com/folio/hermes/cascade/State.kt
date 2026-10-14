@@ -9,7 +9,7 @@ package com.folio.hermes.cascade
 /** One running action: a committed turn being carried out (the C1 `execute`), step by step. */
 data class ActionState(
     val turnId: String,
-    /** The full verbatim text (pending + heard): Hermes always gets all of it (R-CTX-3). */
+    /** The full verbatim text (pending + heard; the accurate pass's text once it is in): Hermes always gets all of it (R-CTX-3). */
     val text: String,
     val decision: Decision,
     val speechEndAt: Long,
