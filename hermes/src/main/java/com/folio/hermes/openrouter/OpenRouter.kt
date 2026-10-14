@@ -46,6 +46,9 @@ class OpenRouter(
     val writer: WriterClient = WriterClient(this)
     val speech: SpeechClient = SpeechClient(this)
 
+    /** Transcript cleanup (chat completions, text only); only used when the cascade turns it on. */
+    val cleanup: CleanupClient = CleanupClient(this)
+
     /** Cloud speech-to-text (`/audio/transcriptions`); only used when the user chose it. */
     val transcription: TranscriptionClient = TranscriptionClient(this)
 

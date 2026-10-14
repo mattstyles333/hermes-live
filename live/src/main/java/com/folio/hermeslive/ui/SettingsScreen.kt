@@ -62,6 +62,7 @@ import com.folio.hermeslive.data.ModelState
 import com.folio.hermeslive.data.PrepPhase
 import com.folio.hermeslive.data.SpeechModelChoice
 import com.folio.hermeslive.data.SpeechRecognition
+import com.folio.hermeslive.data.TranscriptCleanupMode
 import com.folio.hermeslive.stt.SttModel
 import com.folio.hermeslive.data.VoiceEngine
 import com.folio.hermeslive.data.VoiceSettingsController
@@ -369,6 +370,7 @@ fun VoiceSettingsSection(ui: VoiceUi, actions: VoiceActions) {
             }
             SpeechModelsBlock(ui, actions)
             SpeechRecognitionBlock(ui, actions)
+            TranscriptCleanupBlock(ui, actions)
             VocabularyBlock(ui, actions)
             DecisionLogBlock(ui, actions)
             PrepareBlock(ui, actions)
@@ -511,6 +513,22 @@ private fun SpeechRecognitionBlock(ui: VoiceUi, actions: VoiceActions) {
     }
     TextSetting("Cloud model id (advanced)", s.cloudSttModel, "cloud-stt-model-id", valid = ::isModelId) { v -> actions.onChange { it.copy(cloudSttModel = v) } }
     Text(cloudSttCost(model), style = SmallStyle, color = PrintMute, modifier = Modifier.testTag("cloud-stt-cost"))
+}
+
+/** Settings › Voice › Clean up transcripts: on device only (default), always, or off. */
+@Composable
+private fun TranscriptCleanupBlock(ui: VoiceUi, actions: VoiceActions) {
+    Choice("Clean up transcripts", transcriptCleanupText(ui.settings.transcriptCleanup), "transcript-cleanup") {
+        actions.onChange { it.copy(transcriptCleanup = TranscriptCleanupMode.entries[(it.transcriptCleanup.ordinal + 1) % TranscriptCleanupMode.entries.size]) }
+    }
+}
+
+/** What each choice means, in plain words (the text of each request goes to OpenRouter). */
+fun transcriptCleanupText(choice: TranscriptCleanupMode): String = when (choice) {
+    TranscriptCleanupMode.OnDeviceOnly -> "On device only (default): when the phone wrote the words, their text goes to OpenRouter " +
+        "to fix misheard names, on your OpenRouter key. Never the audio."
+    TranscriptCleanupMode.Always -> "Always: the text of each thing you say goes to OpenRouter to fix misheard names, also with cloud speech recognition."
+    TranscriptCleanupMode.Off -> "Off: your words go to Bill's helpers as the phone heard them."
 }
 
 /** What each choice means, in plain words (the user must know when audio leaves the phone). */

@@ -5,6 +5,8 @@ import com.folio.hermes.TurnUpdate
 import com.folio.hermes.cascade.AudioClip
 import com.folio.hermes.cascade.Transcript
 import com.folio.hermes.cascade.Word
+import com.folio.hermes.openrouter.CleanupInput
+import com.folio.hermes.openrouter.FailureKind
 import com.folio.hermes.openrouter.JevAnswer
 import com.folio.hermes.openrouter.JevQuestion
 import com.folio.hermes.openrouter.OpenRouterResult
@@ -175,4 +177,10 @@ interface OpenRouterPort {
      * (additive; default nothing). No key: no request.
      */
     suspend fun warm() = Unit
+
+    /**
+     * Clean up one committed turn's transcript (text only; the cleanup slice, 2026-10-14). The
+     * caller keeps the heard text on any failure. Additive; the default makes no request.
+     */
+    suspend fun cleanup(input: CleanupInput, timeoutMs: Long): OpenRouterResult<String> = OpenRouterResult.Failed(FailureKind.NoKey)
 }

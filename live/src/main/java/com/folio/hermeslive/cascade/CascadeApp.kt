@@ -72,7 +72,8 @@ class CascadeApp(
         val gateway = HermesGateway(config, tokens, client, scope)
         val openRouterClient = OpenRouter(OpenRouterConfig(), key = env.key, client = client, telemetry = env.telemetry)
         val voice = BillVoice(openRouterClient.speech, env.storage.ttsCache(settings().ttsCacheBytes), { settings().voice }, { settings().ttsModel })
-        val openRouter = LiveOpenRouter(openRouterClient, voice)
+        // The cleanup's vocabulary also gets the learned corrections (read only when a cleanup runs).
+        val openRouter = LiveOpenRouter(openRouterClient, voice, learned = { shell.vocabulary.hotwords(emptyList()) })
         val stt = SttSlot()
         val audio = AudioSlot()
         val network = AndroidNetwork(context)

@@ -10,6 +10,7 @@ import com.folio.hermes.TurnUpdate
 import com.folio.hermes.GatewayConnection
 import com.folio.hermes.cascade.AudioClip
 import com.folio.hermes.cascade.BillVoice
+import com.folio.hermes.openrouter.CleanupInput
 import com.folio.hermes.openrouter.JevAnswer
 import com.folio.hermes.openrouter.JevQuestion
 import com.folio.hermes.openrouter.OpenRouter
@@ -99,6 +100,8 @@ class LiveOpenRouter(
     private val openRouter: OpenRouter,
     private val voice: BillVoice,
     private val writeMaxTokens: Int = WRITE_MAX_TOKENS,
+    /** The learned corrections (`:live`'s vocabulary store), added to each cleanup's vocabulary. Read only when a cleanup runs. */
+    private val learned: () -> List<String> = { emptyList() },
 ) : OpenRouterPort {
     override suspend fun jev(state: JsonObject, questions: Map<String, JevQuestion>, timeoutMs: Long): OpenRouterResult<Map<String, JevAnswer>> =
         openRouter.jev.decide(state, questions, timeoutMs)
@@ -113,6 +116,12 @@ class LiveOpenRouter(
 
     override suspend fun warm() {
         openRouter.warm()
+    }
+
+    override suspend fun cleanup(input: CleanupInput, timeoutMs: Long): OpenRouterResult<String> {
+        val extra = runCatching(learned).getOrDefault(emptyList())
+        val vocabulary = (input.vocabulary + extra).filter { it.isNotBlank() }.distinctBy { it.lowercase() }
+        return openRouter.cleanup.clean(input.copy(vocabulary = vocabulary), timeoutMs)
     }
 
     companion object {

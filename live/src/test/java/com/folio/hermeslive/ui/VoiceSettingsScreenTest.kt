@@ -204,6 +204,20 @@ class VoiceSettingsScreenTest {
         assertEquals("a custom id cycles back to the list", "assemblyai/universal-3-5-pro", settings.cloudSttModel)
     }
 
+    @Test fun transcriptCleanupSaysWhatGoesAndCycles() {
+        settings = LiveSettings(voiceEngine = VoiceEngine.Cascade)
+        show { ui(KeyStatus(true, KeyCheck.Valid)) }
+        compose.onNodeWithTag("transcript-cleanup").performScrollTo().assertTextContains("On device only (default)", substring = true)
+        compose.onNodeWithTag("transcript-cleanup").assertTextContains("Never the audio", substring = true)
+        compose.onNodeWithTag("transcript-cleanup").performClick()
+        assertEquals(com.folio.hermeslive.data.TranscriptCleanupMode.Always, settings.transcriptCleanup)
+        compose.onNodeWithTag("transcript-cleanup").performClick()
+        assertEquals(com.folio.hermeslive.data.TranscriptCleanupMode.Off, settings.transcriptCleanup)
+        compose.onNodeWithTag("transcript-cleanup").performScrollTo().assertTextContains("as the phone heard them", substring = true)
+        compose.onNodeWithTag("transcript-cleanup").performClick()
+        assertEquals("wraps", com.folio.hermeslive.data.TranscriptCleanupMode.OnDeviceOnly, settings.transcriptCleanup)
+    }
+
     @Test fun speechModelsPickDownloadAndDelete() {
         settings = LiveSettings(voiceEngine = VoiceEngine.Cascade, liveModel = SttCatalog.zipformer.id, accurateModel = SttCatalog.parakeet110m.id, speechModelsCard = true)
         val models = listOf(
