@@ -70,6 +70,8 @@ class LiveGraph(private val app: Context) {
     val client: OkHttpClient = OkHttpClient.Builder()
         // The system DNS, except in debug builds under an end-to-end test (BuildHooks).
         .dns(BuildHooks.dns)
+        // Network timing for the emulator smoke (debug and staging only; none in release).
+        .eventListenerFactory(BuildHooks.eventListenerFactory)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()

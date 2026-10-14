@@ -63,6 +63,19 @@ class Tx(var s: State, val env: CascadeEnv) {
         return line
     }
 
+    /** The line [slotId] plays next, without playing it: a slot with no pass under way gets its pass now (saved). */
+    fun primeLine(slotId: String): String? {
+        val lines = env.bank[slotId]?.lines?.takeIf { it.isNotEmpty() } ?: return null
+        val current = s.rotation.rotations[slotId]
+        val random = Random(s.rotation.seed)
+        val primed = Rotations.prime(lines, current, random)
+        if (primed != current) {
+            s = s.copy(rotation = RotationState(s.rotation.rotations + (slotId to primed), random.nextLong()))
+            effects += Effect.SaveRotation(slotId, primed)
+        }
+        return primed.order[primed.cursor]
+    }
+
     /** Play a slot on its own utterance (app events, approvals, fallbacks). Returns the line. */
     fun say(slotId: String, kind: SpeechKind = SpeechKind.Notice): String? {
         val line = nextLine(slotId) ?: return null

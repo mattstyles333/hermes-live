@@ -28,6 +28,7 @@ import java.time.ZoneId
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 /**
  * The ports one cascade needs (R-ARC-5). [hermes] and [recovery] usually come from one gateway
@@ -90,10 +91,21 @@ class CascadeCore private constructor(
     private val recovery = TaskRecovery(ports.hermes, ports.recovery)
     private var recoveryJob: Job? = null
 
-    /** A call starts (mic on): restore if needed, recover tasks once, listen to the ports. */
+    /**
+     * A call starts (mic on): open the OpenRouter connection ahead of the first turn, restore if
+     * needed, recover tasks once, listen to the ports, and fetch the likely first stock lines
+     * ahead ([LIKELY_SLOTS]) if they are not cached yet.
+     */
     fun start() {
+        warm()
         actor.start()
+        actor.send(Event.PrimeLines(LIKELY_SLOTS))
         recoverOnce()
+    }
+
+    /** Open the OpenRouter connection now (also from "Preparing Bill…"); no key, no request. */
+    fun warm() {
+        scope.launch { runCatching { ports.openRouter.warm() } }
     }
 
     /** The call ends: Bill stops; tasks keep running (R-CONV-3). */
@@ -126,6 +138,16 @@ class CascadeCore private constructor(
     }
 
     companion object {
+        /**
+         * The stock lines a call most likely needs first, most likely first: starting a task,
+         * acknowledging, status, an update, a result, waiting, and the offline notice.
+         */
+        val LIKELY_SLOTS: List<String> = listOf(
+            "start.one", "start.lookup", "start.big", "start.parallel", "start.carry_on",
+            "ack.do", "ack.understood", "ack.neutral", "status.working", "status.summary",
+            "update.queued", "result.back", "result.found", "wait.signal", "cancel.one", "error.offline",
+        )
+
         /** The cascade env: CEO routing on the durable seams, sharing one [memo] (the default `:live` env). */
         fun env(bank: PhraseBank, memo: MemoRouting = MemoRouting()): CascadeEnv = CascadeEnv(
             bank = bank,

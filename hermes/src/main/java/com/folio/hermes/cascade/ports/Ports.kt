@@ -162,4 +162,10 @@ interface OpenRouterPort {
 
     /** True if [text] is cached (no request). */
     fun isCached(text: String): Boolean
+
+    /**
+     * Open the connection now, so the turn's first Jev call does not pay DNS, TCP and TLS
+     * (additive; default nothing). No key: no request.
+     */
+    suspend fun warm() = Unit
 }

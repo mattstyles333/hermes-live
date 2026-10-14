@@ -75,6 +75,7 @@ class OpenRouterTest {
         assertEquals(OpenRouterResult.Failed(FailureKind.NoKey), router.jev.decide(state, questions))
         assertEquals(OpenRouterResult.Failed(FailureKind.NoKey), router.writer.write("s", "p"))
         assertEquals(OpenRouterResult.Failed(FailureKind.NoKey), router.checkKey())
+        assertFalse("no warm-up without a key", router.warm())
         try {
             router.writer.stream("s", "p").toList()
             fail("stream without a key")
@@ -88,6 +89,23 @@ class OpenRouterTest {
             assertEquals(FailureKind.NoKey, e.failure.kind)
         }
         assertEquals(0, server.requestCount)
+    }
+
+    /** Latency: one small GET /key opens the connection ahead of a call; its answer (even a refusal) is ignored. */
+    @Test fun warmOpensTheConnectionWithOneSmallRequest() = test {
+        server.enqueue(jsonResponse("""{"data":{}}"""))
+        server.enqueue(jsonResponse("{}", code = 401))
+        val sink = CapturingSink()
+        val router = server.openRouter(sink = sink)
+        assertTrue(router.warm())
+        assertTrue("a refused key still warmed the connection", router.warm())
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/api/v1/key", request.url.encodedPath)
+        assertEquals(2, server.requestCount)
+        assertTrue(sink.events.all { (name, attrs) -> name == "openrouter.call" && attrs["call"] == "warm" })
+        assertFalse(FAKE_KEY in sink.text())
+        assertEquals(15_000, router.http.pingIntervalMillis)
     }
 
     @Test fun jevSendsSystemOneShapeAndParsesAnswers() = test {

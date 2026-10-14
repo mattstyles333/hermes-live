@@ -263,6 +263,7 @@ class CascadeActor(
             is Effect.CancelWriter -> cancel("writer:${effect.seq}")
             is Effect.Write -> launch("plan:${effect.seq}") { post(Event.WriterWrote(effect.seq, openRouter.write(effect.system, effect.prompt))) }
             is Effect.FetchClip -> player.fetch(effect)
+            is Effect.Prerender -> player.prerender(effect.lines)
             is Effect.DropClips -> player.drop(effect)
             is Effect.Play -> player.play(effect.piece)
             Effect.StopPlayback -> player.stopPlayback()

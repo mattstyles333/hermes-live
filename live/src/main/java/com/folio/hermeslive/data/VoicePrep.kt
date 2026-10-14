@@ -32,7 +32,8 @@ data class PrepState(
 }
 
 /** One render of the bank (a fresh [PhraseRenderer] over the current voice and model). */
-class RenderJob(val renderer: PhraseRenderer, val fingerprint: String)
+/** One render: the renderer and the fingerprint it renders to; [warm] opens the OpenRouter connection first (no key: nothing). */
+class RenderJob(val renderer: PhraseRenderer, val fingerprint: String, val warm: suspend () -> Unit = {})
 
 /**
  * Runs "Prepare Bill's voice" from Settings: renders every stock line (at most 4 requests at a
@@ -80,6 +81,8 @@ class VoicePrep(
             val outcome = try {
                 coroutineScope {
                     val render = renders()
+                    // "Prepare" usually comes just before a call ("Preparing Bill…"): open the connection now.
+                    launch { runCatching { render.warm() } }
                     val watch = launch { render.renderer.progress.collect { p -> _state.update { it.copy(phrases = p) } } }
                     val downloads = launch {
                         models.wanted(highAccuracy()).forEach { m -> models.download(m.id) }

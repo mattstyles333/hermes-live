@@ -156,6 +156,27 @@ class SpeechPlayer(
         }
     }
 
+    /**
+     * Fetch [lines] into the TTS cache ahead (`Effect.Prerender`), [PRERENDER_PARALLEL] at a
+     * time, in order, skipping those already cached. Failures are ignored: the line is fetched
+     * again when it plays. Cancelled with the call.
+     */
+    fun prerender(lines: List<String>) {
+        val missing = lines.filterNot { voice.isCached(it) }
+        if (missing.isEmpty()) return
+        val gate = kotlinx.coroutines.sync.Semaphore(PRERENDER_PARALLEL)
+        missing.forEach { line ->
+            scope.launch {
+                gate.acquire()
+                try {
+                    if (!voice.isCached(line)) runCatching { voice.clip(line) }
+                } finally {
+                    gate.release()
+                }
+            }
+        }
+    }
+
     /** Stop now; the running play returns with what was played. */
     fun stopPlayback() {
         out.stop()
@@ -176,6 +197,11 @@ class SpeechPlayer(
             fetches.clear()
             ready.clear()
         }
+    }
+
+    companion object {
+        /** Ahead-of-time line fetches at once (below the phrase renderer's 4: a turn's own clip may need the connection). */
+        const val PRERENDER_PARALLEL = 2
     }
 
     private fun fetched(piece: Piece): Boolean = synchronized(fetches) { piece in ready || fetches[piece]?.isCompleted == true }

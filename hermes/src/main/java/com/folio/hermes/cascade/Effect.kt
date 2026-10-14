@@ -98,6 +98,9 @@ sealed interface Effect {
     data class DropSpeech(val turnId: String) : Effect
 
     // ── outputs ─────────────────────────────────────────────────────────────────────────────
+    /** Fetch [lines] into the TTS cache ahead (in order, those not cached), no result event ([Event.PrimeLines]). */
+    data class Prerender(val lines: List<String>) : Effect
+
     /** Save a phrase slot's rotation (the cursor survives restarts; R-SPK-1). */
     data class SaveRotation(val slotId: String, val rotation: Rotation) : Effect
 

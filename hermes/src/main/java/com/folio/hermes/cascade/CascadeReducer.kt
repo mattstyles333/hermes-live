@@ -39,6 +39,11 @@ class CascadeReducer(val env: CascadeEnv) {
         if (!s.started && !event.offCall) return
         when (event) {
             is Event.Start -> start(event)
+            is Event.PrimeLines -> {
+                val lines = event.slots.mapNotNull { primeLine(it) }.distinct()
+                // Offline nothing can be fetched; the lines stay primed for when it can.
+                if (lines.isNotEmpty() && s.connection.online) effects += Effect.Prerender(lines)
+            }
             Event.Stop -> stop()
             Event.SpeechStarted -> {
                 s = s.copy(userSpeaking = true)

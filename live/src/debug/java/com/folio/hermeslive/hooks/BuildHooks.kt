@@ -3,6 +3,7 @@ package com.folio.hermeslive.hooks
 import com.folio.hermeslive.audio.CascadeAudioFactory
 import java.net.InetAddress
 import okhttp3.Dns
+import okhttp3.EventListener
 
 /**
  * Build-type seams, debug flavour: test overrides for the emulator end-to-end tests (S-F2b). The
@@ -22,6 +23,11 @@ object BuildHooks {
 
     @Volatile var hosts: Map<String, String> = emptyMap()
 
+    /** A test's network timing ([NetTimings]): host, path and phase times of each call while set. */
+    @Volatile var netEvents: EventListener.Factory? = null
+
+    val eventListenerFactory: EventListener.Factory = EventListener.Factory { call -> netEvents?.create(call) ?: EventListener.NONE }
+
     val dns: Dns = Dns { host ->
         val h = host.lowercase()
         when {
@@ -39,5 +45,6 @@ object BuildHooks {
     fun reset() {
         hosts = emptyMap()
         cascadeAudio = null
+        netEvents = null
     }
 }

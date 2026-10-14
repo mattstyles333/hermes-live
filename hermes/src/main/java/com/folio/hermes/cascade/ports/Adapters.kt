@@ -111,6 +111,10 @@ class LiveOpenRouter(
 
     override fun isCached(text: String): Boolean = voice.isCached(text)
 
+    override suspend fun warm() {
+        openRouter.warm()
+    }
+
     companion object {
         /**
          * Spec v2 §14 item 17a. 200 tokens cut multi-brief JSON short. Worst cases (sized in
