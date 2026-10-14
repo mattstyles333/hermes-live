@@ -143,10 +143,10 @@ class VoiceSettingsTest {
 
     @Test fun speechRecognitionIsSavedAndReadBack() {
         val prefs = context.getSharedPreferences("voice-stt-test", Context.MODE_PRIVATE)
-        SettingsStore(prefs).update { it.copy(speechRecognition = SpeechRecognition.Cloud, cloudSttModel = "openai/gpt-transcribe") }
+        SettingsStore(prefs).update { it.copy(speechRecognition = SpeechRecognition.Cloud, cloudSttModel = "x-ai/grok-stt-1.0") }
         val read = SettingsStore(prefs).settings.value
         assertEquals(SpeechRecognition.Cloud, read.speechRecognition)
-        assertEquals("openai/gpt-transcribe", read.cloudSttModel)
+        assertEquals("x-ai/grok-stt-1.0", read.cloudSttModel)
         assertEquals(SpeechRecognition.OnDevice, SpeechRecognition.parse("bogus"))
     }
 }

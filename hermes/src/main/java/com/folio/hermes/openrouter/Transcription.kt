@@ -39,26 +39,27 @@ data class CloudSttModel(
 )
 
 /**
- * The models Settings offers (hub bench 2026-10-14, clean corpus; the hub re-benchmarks and sets
- * the default). Keyterms were probed live through OpenRouter on 2026-10-14: AssemblyAI's
- * `keyterms_prompt` fixed "Holden"/"Haldon" → "Halden" (2 of 2); ElevenLabs `keyterms` /
- * `biased_keywords` and OpenAI `prompt` changed nothing, so those models get no words.
+ * The models Settings offers, from the hub's bench of all 24 OpenRouter models on the hard corpus
+ * (babble, phone band, room echo; 2026-10-14; WER, latency p50 / p90). Keyterms were probed live
+ * through OpenRouter on 2026-10-14: AssemblyAI's `keyterms_prompt` fixed "Holden"/"Haldon" →
+ * "Halden" (2 of 2) and takes 100 terms (201 is a 400); ElevenLabs (`keyterms`,
+ * `biased_keywords`) and xAI (`prompt`, `keyterms`) changed nothing, so they get no words.
  */
 object CloudSttModels {
     val ASSEMBLYAI = CloudSttModel(
-        "assemblyai/universal-3-5-pro", "AssemblyAI Universal 3.5 Pro", "Fastest (about 0.5 s), 2.4% word errors on the bench. Uses your words.",
-        dollarsPerHour = 0.45, vocabulary = SttVocabulary.ProviderTerms("assemblyai", "keyterms_prompt"),
+        "assemblyai/universal-3-5-pro", "AssemblyAI Universal 3.5 Pro", "Default: 2.6% word errors on the hard bench, about 0.5 s. Uses your words.",
+        dollarsPerHour = 0.45, vocabulary = SttVocabulary.ProviderTerms("assemblyai", "keyterms_prompt"), maxTerms = 100,
     )
     val ELEVENLABS = CloudSttModel(
-        "elevenlabs/scribe-v2", "ElevenLabs Scribe v2", "Most accurate on the bench (2.0%), slower (about 0.9 s).",
+        "elevenlabs/scribe-v2", "ElevenLabs Scribe v2", "Most accurate on the hard bench (2.3%), slower (about 0.7 s).",
         dollarsPerHour = 0.22,
     )
-    val OPENAI = CloudSttModel(
-        "openai/gpt-transcribe", "OpenAI GPT Transcribe", "2.3% word errors, about 0.8 s.",
-        dollarsPerHour = 0.27,
+    val GROK = CloudSttModel(
+        "x-ai/grok-stt-1.0", "xAI Grok STT", "2.9% word errors on the hard bench, about 0.5 s.",
+        dollarsPerHour = 0.10,
     )
 
-    val ALL: List<CloudSttModel> = listOf(ASSEMBLYAI, ELEVENLABS, OPENAI)
+    val ALL: List<CloudSttModel> = listOf(ASSEMBLYAI, ELEVENLABS, GROK)
     val DEFAULT: CloudSttModel = ASSEMBLYAI
 
     /** The listed model, or an unlisted (custom) id with no vocabulary and no price. */
