@@ -40,6 +40,12 @@ interface CascadeIntents {
     fun end() {}
     fun speaker() {}
 
+    /** After the call ended: leave this screen for home (Close, Back, a tap on the summary, or its hold running out). */
+    fun closeEnded() {}
+
+    /** After the call ended: start a new call ("Talk again", or "Reconnect" after a drop). */
+    fun callAgain() {}
+
     /** A past conversation was picked in the history list (no S0 event yet; see the S-D report). */
     fun openConversation(conversationId: String) {}
 
@@ -65,6 +71,8 @@ class EventIntents(
     override fun mute() = app.mute()
     override fun end() = app.end()
     override fun speaker() = app.speaker()
+    override fun closeEnded() = app.closeEnded()
+    override fun callAgain() = app.callAgain()
     override fun openConversation(conversationId: String) = app.openConversation(conversationId)
     override fun haptic(intent: HapticIntent) = app.haptic(intent)
 }

@@ -136,6 +136,45 @@ class CascadeScreenshotRender {
         scripted("13-decisions", 12_000, decisions = sampleDecisions()) { decisionsOpen = true }
     }
 
+    /**
+     * The end transition, frame-sampled (`cascade-end-*.png`): the scene is replayed live to the
+     * moment of the end, then [atMs] into the transition, and drawn at that moment.
+     */
+    private fun endFrame(name: String, state: CascadeUiState, end: CallEnd, atMs: Long, liveAtMs: Long, motion: CascadeMotion = CascadeMotion()) {
+        val scene = SceneModel().apply {
+            reduceMotion = motion.reduceMotion
+            replay(2_000, w, h, d, { state })
+            ending = true
+            if (atMs > 0) replay(atMs, w, h, d, { state })
+        }
+        val memory = ScreenMemory().apply {
+            endTapped = end.reason == EndReason.HungUp
+            callStartMs = 0L
+        }
+        val holder = mutableStateOf(state)
+        shoot(name) {
+            CascadeCallContent(
+                ui = holder, events = emptyFlow(), intents = NoCascadeIntents, chrome = CascadeChrome(callStartedAtMs = null), motion = motion,
+                clock = { liveAtMs + atMs }, wallClock = { wall }, scene = scene, memory = memory, animate = false, ended = end, endAtMs = atMs,
+            )
+        }
+    }
+
+    @Test fun renderEnd() {
+        // Tasks keep running: the satellites settle into the "still working" row, the tray stays.
+        val working = FakeCascadeUi.Moments.endedWithTasks()
+        val tapped = CallEnd(EndReason.HungUp, durationMs = 252_000)
+        for ((i, at) in listOf(0L, 300L, 600L, 1_400L).withIndex()) endFrame("end-tasks-${i + 1}", working, tapped, at, 14_000)
+        // Nothing left running: the orb collapses into the summary card, held 1.5 s, then home.
+        val done = FakeCascadeUi.Moments.endedAllDone()
+        val bye = CallEnd(EndReason.HungUp, durationMs = 22_000)
+        for ((i, at) in listOf(0L, 400L, 800L, 1_200L).withIndex()) endFrame("end-none-${i + 1}", done, bye, at, 22_000)
+        // An error: the calm "Call dropped" card with Reconnect; the tasks still run.
+        val dropped = FakeCascadeUi.Moments.endedDropped()
+        val error = CallEnd(EndReason.Error, durationMs = 9_000, error = "The microphone or Bill's speech models could not start.")
+        for ((i, at) in listOf(0L, 500L, 1_200L).withIndex()) endFrame("end-dropped-${i + 1}", dropped, error, at, 9_000)
+    }
+
     private fun sampleDecisions(): List<DecisionRecord> = listOf(
         DecisionRecord(
             "t2", 11_100, "done",

@@ -140,6 +140,12 @@ internal class ScreenMemory {
     /** The orb is held (hold-to-talk). */
     var holding by mutableStateOf(false)
 
+    /** The End button was tapped in this call (the end is then [EndReason.EndButton]). */
+    var endTapped by mutableStateOf(false)
+
+    /** The running call's start on the screen's clock, kept for the end (the chrome drops it then). */
+    var callStartMs: Long? = null
+
     fun observe(s: CascadeUiState) {
         for (h in s.ceo.heldTurns) heldText[h.turnId] = h.text
     }

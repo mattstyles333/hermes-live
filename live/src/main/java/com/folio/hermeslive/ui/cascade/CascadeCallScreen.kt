@@ -29,6 +29,13 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.SideEffect
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.derivedStateOf
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,6 +83,9 @@ val MonotonicMs: () -> Long = { System.nanoTime() / 1_000_000 }
  * @param wallClock wall time, for "12 min ago".
  * @param approvals approval and clarify cards (tap only, R-TASK-6), drawn above the tray. Their
  *   content is not in `CascadeUiState`; the engine supplies them (null: none).
+ * @param ended how the call ended, once it has (null while it runs): the screen winds down
+ *   ([EndRun], [EndTimeline]) and stays until [CascadeIntents.closeEnded] or
+ *   [CascadeIntents.callAgain].
  */
 @Composable
 fun CascadeCallScreen(
@@ -93,15 +103,19 @@ fun CascadeCallScreen(
     clock: () -> Long = MonotonicMs,
     wallClock: () -> Long = System::currentTimeMillis,
     approvals: (@Composable () -> Unit)? = null,
+    ended: CallEnd? = null,
 ) {
     val ui = state.collectAsState()
     CascadeCallContent(
         ui, events, intents, modifier, chrome, micLevel, proximityNear, motion, pauseMs, decisions, history, clock, wallClock,
-        approvals = approvals,
+        approvals = approvals, ended = ended,
     )
 }
 
-/** [CascadeCallScreen] on a [State]; [scene] and [memory] injectable for renders, [animate] false for still renders. */
+/**
+ * [CascadeCallScreen] on a [State]; [scene] and [memory] injectable for renders, [animate] false
+ * for still renders. With [animate] false, [endAtMs] is the moment of the end transition to draw.
+ */
 @Composable
 internal fun CascadeCallContent(
     ui: State<CascadeUiState>,
@@ -121,6 +135,8 @@ internal fun CascadeCallContent(
     scene: SceneModel = remember { SceneModel() },
     memory: ScreenMemory = remember { ScreenMemory() },
     animate: Boolean = true,
+    ended: CallEnd? = null,
+    endAtMs: Long = 0L,
 ) {
     Probe("root")
     val current by rememberUpdatedState(intents)
@@ -193,31 +209,63 @@ internal fun CascadeCallContent(
         SheetActions(close = { memory.sheetTaskId = null }, cancel = swipeCancel, tap = { id, tap -> current.task(id, tap) })
     }
     val onWord: (Int, String) -> Unit = remember { { index, choice -> memory.lastTurnId?.let { current.wordChosen(it, index, choice) } } }
-    val input = remember(pauseMs, chrome.muted, micLevel) { SceneInput(pauseMs, chrome.muted, jevAnchor, micLevel) }
+    // The end (EndCall.kt): the call's start is remembered while it runs (the chrome drops it at the end).
+    chrome.callStartedAtMs?.let { started -> SideEffect { memory.callStartMs = started } }
+    val endRun = remember(ended) {
+        ended?.let { EndRun.start(it, memory.endTapped, ui.value.tasks, memory.callStartMs ?: chrome.callStartedAtMs, clock(), motion.reduceMotion) }
+    }
+    // A new call after this end (Talk again, Reconnect) starts untapped.
+    DisposableEffect(endRun) { onDispose { if (endRun != null) memory.endTapped = false } }
+    val endMs = remember(endRun) { mutableLongStateOf(if (animate) 0L else endAtMs) }
+    val endActions = remember(endRun) {
+        var sent = false
+        fun once(block: () -> Unit) = { if (!sent) { sent = true; block() } }
+        EndActions(close = once { current.closeEnded() }, again = once { current.callAgain() })
+    }
+    if (endRun != null) {
+        scene.ending = true
+        if (animate) EndClock(endRun, endMs, motion, endActions.close)
+        BackHandler { endActions.close() }
+    } else {
+        scene.ending = false
+    }
+    val live: () -> Float = remember(endRun) { { if (endRun == null) 1f else 1f - EndTimeline.wind(endMs.longValue, endRun.reduced) } }
+    val input = remember(pauseMs, chrome.muted, micLevel, endRun) { SceneInput(pauseMs, chrome.muted, jevAnchor, micLevel, endRun) { endMs.longValue } }
+    val fade = Modifier.graphicsLayer { alpha = live() }
+    // The caption and the Jev strip are gone by half-way, before the end's own text comes in.
+    val early = Modifier.graphicsLayer { alpha = (2f * live() - 1f).coerceIn(0f, 1f) }
 
-    Box(modifier.fillMaxSize().background(VoidBlack).testTag("cascade-screen")) {
+    Box(
+        modifier.fillMaxSize().background(VoidBlack).testTag("cascade-screen")
+            .semantics { if (endRun != null) paneTitle = endRun.announcement },
+    ) {
         CascadeScene(ui, scene, motion, proximityNear, input, wake, animate && !proximityNear)
         if (proximityNear) return@Box
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val orbY = maxHeight * ORB_Y
-            HoldTarget(Modifier.align(Alignment.TopCenter).offset(y = orbY - 90.dp).size(180.dp), memory, current, sections.holding)
+            if (endRun == null) HoldTarget(Modifier.align(Alignment.TopCenter).offset(y = orbY - 90.dp).size(180.dp), memory, current, sections.holding)
             Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))) {
-                TopBar(chrome, now, sections.top)
-                JevStrip(sections.jev, memory.chipEpoch, motion, onAnchor = { jevAnchor[0] = it.x; jevAnchor[1] = it.y }) { memory.decisionsOpen = true }
-                ConnectionBanner(sections.banner)
-                Flyouts(memory, motion)
+                TopBar(chrome, now, sections.top, endedAfterMs = endRun?.summary?.durationMs, live = live)
+                Column(early) {
+                    JevStrip(sections.jev, memory.chipEpoch, motion, onAnchor = { jevAnchor[0] = it.x; jevAnchor[1] = it.y }) { memory.decisionsOpen = true }
+                    ConnectionBanner(sections.banner)
+                    Flyouts(memory, motion)
+                }
             }
-            Box(Modifier.align(Alignment.TopCenter).offset(y = orbY + 148.dp)) { CaptionView(sections.caption, memory, onWord, motion) }
+            Box(Modifier.align(Alignment.TopCenter).offset(y = orbY + 148.dp).then(early)) { CaptionView(sections.caption, memory, onWord, motion) }
             Column(
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
                     .padding(horizontal = 14.dp),
             ) {
                 approvals?.invoke()
-                ResumeCard(sections.resume, history, wall, current)
-                TaskTray(sections.tasks, now, memory, trayActions, motion, Modifier.padding(top = 8.dp))
-                Controls(chrome, current)
+                if (endRun == null) ResumeCard(sections.resume, history, wall, current)
+                // The tray stays (tasks run on); after a call with nothing left running it collapses with the orb.
+                val trayFade = if (endRun?.outcome == EndOutcome.Summary) Modifier.graphicsLayer { alpha = 1f - EndTimeline.card(endMs.longValue, endRun.reduced) } else Modifier
+                TaskTray(sections.tasks, now, memory, trayActions, motion, Modifier.padding(top = 8.dp).then(trayFade))
+                EndAwareControls(chrome, current, memory, endRun, endMs, endActions, live)
             }
+            if (endRun != null) EndStatus(endRun, endMs, sections.tasks, endActions)
         }
         TaskSheetHost(memory, sections.tasks, now, sheetActions)
         if (memory.decisionsOpen) {
@@ -225,6 +273,43 @@ internal fun CascadeCallContent(
             SheetFrame("decisions", onClose = { memory.decisionsOpen = false }) { DecisionsContent(list) { memory.decisionsOpen = false } }
         }
     }
+}
+
+/**
+ * The controls while the call runs; at the end the End button stays pressed and the rest fade.
+ * After a call that left tasks running (once settled), "Talk again" and "Close" take their place.
+ */
+@Composable
+private fun EndAwareControls(
+    chrome: CascadeChrome,
+    intents: CascadeIntents,
+    memory: ScreenMemory,
+    run: EndRun?,
+    ms: State<Long>,
+    actions: EndActions,
+    live: () -> Float,
+) {
+    val settled by remember(run) { derivedStateOf { run != null && run.phaseAt(ms.value) == EndPhase.Settled } }
+    if (run?.outcome == EndOutcome.StillWorking && settled) {
+        EndButtons(actions) { 1f }
+        return
+    }
+    if (run?.outcome == EndOutcome.Dropped && settled) {
+        // The dropped card has the buttons; the tray keeps its place.
+        Spacer(Modifier.height(CONTROLS_HEIGHT))
+        return
+    }
+    Controls(
+        chrome, intents,
+        onEnd = {
+            // The press shows at once; the engine's own end haptic ticks in the same call.
+            memory.endTapped = true
+            intents.end()
+        },
+        ending = run != null,
+        press = { if (run != null) EndTimeline.press(ms.value) else if (memory.endTapped) 1f else 0f },
+        live = live,
+    )
 }
 
 @Composable
