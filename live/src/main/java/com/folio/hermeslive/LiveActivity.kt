@@ -32,6 +32,9 @@ import com.folio.hermeslive.cascade.CascadeCallEngine
 import com.folio.hermeslive.cascade.CascadeSignOut
 import com.folio.hermeslive.cascade.appRuntime
 import com.folio.hermeslive.data.VoiceShell
+import com.folio.hermeslive.data.KeyStatus
+import com.folio.hermeslive.data.PrepState
+import com.folio.hermeslive.data.VoiceEngine
 import com.folio.hermeslive.service.MemoEntry
 import com.folio.hermeslive.service.ResultNotifications
 import com.folio.hermeslive.ui.CascadeCallRoute
@@ -52,7 +55,7 @@ import com.folio.hermeslive.ui.SettingsScreen
 import com.folio.hermeslive.ui.SignInScreen
 import com.folio.hermeslive.ui.SignInUi
 import com.folio.hermeslive.ui.clock
-import com.folio.hermeslive.ui.voiceText
+import com.folio.hermeslive.ui.HomeVoiceLine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -188,6 +191,16 @@ class LiveActivity : ComponentActivity() {
         val account by g.account.state.collectAsStateWithLifecycle()
         val settings by g.settings.settings.collectAsStateWithLifecycle()
         val voice by g.account.voiceStatus.collectAsStateWithLifecycle()
+        // The idle screen's voice line follows the chosen engine: Bill's readiness, not GPT-Live's status.
+        val voiceLine = if (settings.voiceEngine == VoiceEngine.Cascade) {
+            val shell = remember { VoiceShell.of(this@LiveActivity) }
+            val key by shell.keys.status.collectAsStateWithLifecycle()
+            val prep by shell.prep.state.collectAsStateWithLifecycle()
+            val models by shell.speechModels.status.collectAsStateWithLifecycle()
+            HomeVoiceLine.of(settings, voice, key, prep, models)
+        } else {
+            HomeVoiceLine.of(settings, voice, KeyStatus(), PrepState(), emptyList())
+        }
         val scope = rememberCoroutineScope()
         val elapsed by produceState<String?>(null, call.startedAtMs, call.inCall) {
             val started = call.startedAtMs
@@ -288,7 +301,7 @@ class LiveActivity : ComponentActivity() {
             else -> CallScreen(
                 state = if (micRefused && !call.inCall) call.copy(error = "Hermes Live needs the microphone. Allow it in Settings › Apps.") else call,
                 elapsed = elapsed,
-                voiceLine = voice?.let { "Voice: ${voiceText(it)}" },
+                voiceLine = voiceLine,
                 actions = CallActions(
                     onTalk = {
                         g.calls.dismissSummary()

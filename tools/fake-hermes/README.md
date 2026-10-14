@@ -71,6 +71,7 @@ They need `python3` on the PATH. The suites:
   - an open approval delivered again after a drop;
   - refused tickets and upgrades.
 - `DefaultScenarioTest`: the shipped rules.
+- `GoldenCallTest`: a whole Bill call through `CascadeCore` and `CascadePorts.gateway` (the app's wiring) with a scripted Jev, writer and voice. The card goes Starting → Running → Done, one prompt, the result spoken.
 
 Set `FAKE_HERMES_ECHO=1` to see the server's log in the test output.
 

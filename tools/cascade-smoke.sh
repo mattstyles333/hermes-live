@@ -7,7 +7,7 @@
 #   DRY_RUN=1 tools/cascade-smoke.sh [out-dir]    # no key, no OpenRouter request: plumbing only
 #
 # Keeps the debug app installed (install -r: the speech models stay). Writes bill.json (timings,
-# no transcripts), the fake's prompt count, a mid-task screenshot and a 20 s screen recording
+# no transcripts), the fake's prompt count, a mid-task screenshot and a 45 s screen recording
 # into out-dir (default ~/reports/assets/hermes-cascade-smoke).
 set -euo pipefail
 if [[ -n ${DRY_RUN:-} ]]; then KEYARGS=(-e dryRun true); else
@@ -38,7 +38,7 @@ fi
 "${ADB[@]}" install -r -t "$ROOT/live/build/outputs/apk/debug/live-debug.apk" >/dev/null
 "${ADB[@]}" install -r -t "$ROOT/live/build/outputs/apk/androidTest/debug/live-debug-androidTest.apk" >/dev/null
 
-"${ADB[@]}" shell screenrecord --time-limit 20 /sdcard/Download/bill-smoke.mp4 >/dev/null 2>&1 &
+"${ADB[@]}" shell screenrecord --time-limit 45 /sdcard/Download/bill-smoke.mp4 >/dev/null 2>&1 &
 rec=$!
 set +e
 "${ADB[@]}" shell am instrument -w -e class com.folio.hermeslive.smoke.BillSmokeTest \

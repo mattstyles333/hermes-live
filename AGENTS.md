@@ -195,6 +195,8 @@ Crash and error reporting as OTLP/HTTP JSON logs (`POST <endpoint>/v1/logs`), sh
 - `LiveIntentsTest` (incl. memo, tile memo, Open).
 - `CallScreenTest` (Robolectric Compose).
 - Bill (S-F2a): `cascade/CascadeCallEngineTest` (start, mute, hang-up order and hang-up while starting, approvals incl. from the viewer, a prompt as the first turn, hold-to-talk, failures, hotwords, the off-call hold), `cascade/AppRuntimeShellTest`, `call/EngineSwitchTest`, `data/GptLiveBuildsNoCascadeTest` (R-Q-1 on the real graph), `data/AutoPrepareTest`, `hooks/TestServerTest`, `cascade/AppEffectsTest`; S-C's `stt/` and `audio/` tests.
+- Golden calls (`:tools:fake-hermes` `GoldenCallTest`, test-shape plan item 1): a whole Bill call through `CascadeCore` + `CascadePorts.gateway` (a real `HermesGateway`) against the Python fake, with scripted Jev, writer and voice: the task card goes Starting → Running → Done, `TaskAccepted` is emitted, the fake gets the prompt once, the result is spoken.
+- Idle screen voice line (`ui/HomeVoiceLineTest`): with Bill chosen it shows his readiness (ready, preparing with progress, models to fetch, no key, key refused), never GPT-Live's server status; GPT-Live unchanged.
 - Emulator (`src/androidTest`, see its README): S-C's STT and audio tests; `service/OffCallBackgroundStartTest` (`-e offcall true`); `smoke/BillSmokeTest`, run by `tools/cascade-smoke.sh` with `OPENROUTER_API_KEY` from the environment.
 
 `ScreenshotRender` writes S23-sized PNGs of made-up states to `live/build/screenshots/` (ignored with the build). Run it locally to refresh them. The cascade call screen renders live in `live/docs/screenshots/` and are committed (`.gitignore` excepts that folder).
