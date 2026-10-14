@@ -60,8 +60,12 @@ class FakeHermesRecoveryTest {
     @Test fun `a submit lost after the server stored it must not be resent`() = runBlocking<Unit> {
         h.faults("""{"lose_submits": {"count": 1, "mode": "after_store"}}""")
         val conv = h.conversation()
+        val before = h.gateway.awaitReady().generation
         val updates = conv.turn("check stock lost reply").untilDone()
         assertTrue(updates.last() is TurnUpdate.Failed)
+        // The fake dropped the socket with the reply: probe on the next connection (the probe
+        // would wait for it too, see HermesGatewayTest; here the reconnect is the test's own sync point).
+        h.reconnectedAfter(before)
         val probe = recovery.probe("t", conv.storedSessionId!!)
         assertTrue(probe.toString(), probe is SessionProbe.Running || probe is SessionProbe.Ended)
         assertEquals(listOf("check stock lost reply"), probe.prompts!!.distinct())

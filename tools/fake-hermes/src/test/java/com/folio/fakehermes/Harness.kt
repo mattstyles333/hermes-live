@@ -1,5 +1,6 @@
 package com.folio.fakehermes
 
+import com.folio.hermes.GatewayConnection
 import com.folio.hermes.HermesAuth
 import com.folio.hermes.HermesConversation
 import com.folio.hermes.HermesGateway
@@ -11,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.runBlocking
@@ -42,6 +44,11 @@ class Harness(
     }
 
     // ── admin shortcuts ────────────────────────────────────────────────────────────────────
+
+    /** Wait (15 s hang guard) for a connection newer than [generation]: the sync point after a drop. */
+    suspend fun reconnectedAfter(generation: Long) {
+        withTimeout(15_000) { gateway.connection.first { it is GatewayConnection.Ready && it.generation > generation } }
+    }
 
     fun faults(json: String) = fake.post("/__fake/faults", json)
     fun prompts(): JsonObject = fake.get("/__fake/assert/prompts")

@@ -8,7 +8,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.job
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -90,7 +89,7 @@ class WriterClient internal constructor(private val router: OpenRouter) {
                 delay(router.config.retryBackoffMs)
             }
         }
-    }.flowOn(router.io)
+    }.flowOnInOrder(router.io)
 
     /** [stream] cut into speakable pieces by [SentenceSplitter] (lead first). */
     fun sentences(system: String, prompt: String, maxTokens: Int = 200): Flow<String> = flow {
