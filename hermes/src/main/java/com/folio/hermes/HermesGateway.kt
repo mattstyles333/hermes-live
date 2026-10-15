@@ -457,7 +457,9 @@ class HermesGateway(
         val reply = CompletableDeferred<JsonElement>()
         pending[id] = PendingCall(method, params, reply)
         try {
-            if (!conn.ws.send(GatewayFrames.request(id, method, params))) {
+            // A drop's sweep runs after `closed` completes, so a call that registered too late for it
+            // fails here instead of waiting out its timeout.
+            if (conn.closed.isCompleted || !conn.ws.send(GatewayFrames.request(id, method, params))) {
                 throw GatewayUnavailableException("Hermes connection closed.")
             }
             return withTimeout(timeoutMs) { reply.await() }
@@ -523,10 +525,18 @@ class HermesGateway(
         serverRequest(conn.ws, id, method, snapshot.obj("params") ?: JsonObject(emptyMap()))
     }
 
+    /**
+     * Fails every waiting call. [disconnect] and the connection loop's cleanup call this, often at
+     * the same moment, while calls register and leave. Each entry is removed before it is failed, so
+     * a call fails at most once, and a call that registers during the sweep is either failed here or
+     * stays in the map (for the next sweep, its reply, or [rawCall]'s closed check); it is never
+     * dropped unanswered, as `clear()` did. Key iteration never throws on a map that changes under
+     * it; copying `values` with `toList()` threw NoSuchElementException.
+     */
     private fun failPending(reason: String) {
-        val calls = pending.values.toList()
-        pending.clear()
-        calls.forEach { it.reply.completeExceptionally(GatewayUnavailableException("Hermes $reason (${it.method}).")) }
+        for (id in pending.keys) {
+            pending.remove(id)?.let { it.reply.completeExceptionally(GatewayUnavailableException("Hermes $reason (${it.method}).")) }
+        }
     }
 
     private fun protocol(method: String, what: String) = HermesRpcException(method, -32603, "unexpected reply: $what")
