@@ -18,6 +18,7 @@ import com.folio.hermeslive.call.ApprovalCard
 import com.folio.hermeslive.call.ClarifyCard
 import com.folio.hermeslive.data.CascadeRuntime
 import com.folio.hermeslive.service.Briefing
+import com.folio.hermeslive.data.VoiceRoute
 import com.folio.hermeslive.stt.CloudStt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
@@ -89,6 +90,10 @@ class CascadeAppRuntime(
     private val hotwordsOf: (List<String>) -> List<String> = { it },
     /** The cloud speech-to-text pass a call may use (only while `CascadeSettings.cloudSttModel` is set). */
     val cloudStt: CloudStt? = null,
+    /** At call start, beside the model load: refresh Hermes's voice config (Hermes voice slice). Bounded by the caller. */
+    val voiceRefresh: suspend () -> Unit = {},
+    /** Where Bill's voice comes from now; [VoiceRoute.None] stops a call before it starts. */
+    val voiceRoute: () -> VoiceRoute = { VoiceRoute.OpenRouter },
 ) : CascadeRuntime {
     private val _approvals = MutableStateFlow<List<ApprovalCard>>(emptyList())
     private val _clarify = MutableStateFlow<ClarifyCard?>(null)

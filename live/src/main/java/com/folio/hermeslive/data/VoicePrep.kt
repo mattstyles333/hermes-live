@@ -33,7 +33,12 @@ data class PrepState(
 
 /** One render of the bank (a fresh [PhraseRenderer] over the current voice and model). */
 /** One render: the renderer and the fingerprint it renders to; [warm] opens the OpenRouter connection first (no key: nothing). */
-class RenderJob(val renderer: PhraseRenderer, val fingerprint: String, val warm: suspend () -> Unit = {})
+class RenderJob(val renderer: PhraseRenderer, private val fingerprintNow: () -> String, val warm: suspend () -> Unit = {}) {
+    constructor(renderer: PhraseRenderer, fingerprint: String, warm: suspend () -> Unit = {}) : this(renderer, { fingerprint }, warm)
+
+    /** What the finished render was for (read after it: a Hermes voice is learned during it). */
+    val fingerprint: String get() = fingerprintNow()
+}
 
 /**
  * Runs "Prepare Bill's voice" from Settings: renders every stock line (at most 4 requests at a

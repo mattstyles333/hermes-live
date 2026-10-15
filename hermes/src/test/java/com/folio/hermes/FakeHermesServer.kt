@@ -38,6 +38,9 @@ class FakeHermesServer : Closeable {
     @Volatile var sendReady = true
     @Volatile var capabilitiesUnsupported = false
 
+    /** Plain HTTP routes beyond the gateway's (path → handler): the voice tests add `/api/audio/…` ([FakeHermesVoice]). */
+    val routes = ConcurrentHashMap<String, (RecordedRequest) -> MockResponse>()
+
     /** method -> handler(socket, id, params). Unhandled methods get no reply. */
     val responders = ConcurrentHashMap<String, (ServerSide, JsonElement, JsonObject) -> Unit>()
 
@@ -62,7 +65,7 @@ class FakeHermesServer : Closeable {
                     if (refuseUpgrade) MockResponse.Builder().code(403).build()
                     else MockResponse.Builder().webSocketUpgrade(listener()).build()
                 }
-                else -> json(404, """{"detail":"Not Found"}""")
+                else -> routes[request.url.encodedPath]?.invoke(request) ?: json(404, """{"detail":"Not Found"}""")
             }
         }
         server.start()

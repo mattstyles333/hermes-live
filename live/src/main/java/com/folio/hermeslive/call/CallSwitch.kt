@@ -14,6 +14,13 @@ sealed interface CallPlan {
 
     /** Bill is chosen but his speech models are not on the phone yet ("Preparing Bill…"). */
     data object PreparingBill : CallPlan
+
+    /**
+     * Custom is chosen but has no voice at all (Hermes's not reachable and no OpenRouter key): the
+     * "preparing" screen says so instead of starting a silent call. Today's gate already needs an
+     * OpenRouter key for Custom, so this cannot happen yet (Hermes voice slice).
+     */
+    data object NoVoice : CallPlan
 }
 
 /**
@@ -42,6 +49,8 @@ class CallSwitch(
     private val grokActive: () -> Boolean = { false },
     /** Bill could take a call now even with another engine chosen (a usable OpenRouter key): Grok's offline fallback. */
     private val billAvailable: () -> Boolean = { false },
+    /** Custom has a voice now (Hermes's or OpenRouter's). Asked only when Bill would take the call. */
+    private val voiceReady: () -> Boolean = { true },
 ) : VoiceCall {
     private val _active = MutableStateFlow<VoiceCall?>(null)
     private var builtCascade: VoiceCall? = null
@@ -57,6 +66,7 @@ class CallSwitch(
         grokActive() -> CallPlan.Ready(Engine.Grok)
         !cascadeActive() -> CallPlan.Ready(Engine.GptLive)
         !modelsReady() -> CallPlan.PreparingBill
+        !voiceReady() -> CallPlan.NoVoice
         else -> CallPlan.Ready(Engine.Cascade)
     }
 
@@ -84,7 +94,7 @@ class CallSwitch(
         }
         val engine = when (val p = plan(request)) {
             is CallPlan.Ready -> p.engine
-            CallPlan.PreparingBill -> return
+            CallPlan.PreparingBill, CallPlan.NoVoice -> return
         }
         val call = when (engine) {
             Engine.Cascade -> builtCascade ?: cascade().also { builtCascade = it }

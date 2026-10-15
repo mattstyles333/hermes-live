@@ -22,8 +22,14 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 class FakeOpenRouterServer(var keyStatus: Int = 200) : Interceptor {
     val requests = mutableListOf<okhttp3.Request>()
 
-    @Synchronized override fun intercept(chain: Interceptor.Chain): Response {
+    override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
+        // The Hermes voice fakes (`*.ts.net` on loopback) answer for themselves, outside this fake's lock.
+        if (request.url.host.endsWith(".ts.net")) return chain.proceed(request)
+        return fake(request)
+    }
+
+    @Synchronized private fun fake(request: okhttp3.Request): Response {
         requests += request
         val builder = Response.Builder().request(request).protocol(Protocol.HTTP_1_1).message("x")
         return if (request.url.encodedPath.endsWith("/audio/speech")) {
@@ -33,7 +39,7 @@ class FakeOpenRouterServer(var keyStatus: Int = 200) : Interceptor {
         }
     }
 
-    fun client(): OkHttpClient = OkHttpClient.Builder().addInterceptor(this).build()
+    fun client(): OkHttpClient = OkHttpClient.Builder().addInterceptor(this).dns(TsNetLoopback).build()
 }
 
 class CountingRuntime : CascadeRuntime {
@@ -103,6 +109,9 @@ class TestShell(context: Context, name: String, scope: CoroutineScope, val sink:
 
     /** Signed in to Hermes (GPT-Live's parallel agents need it); signed out by default. */
     var signedIn = false
+
+    /** The Hermes server the voice slice talks to while [signedIn] (a [FakeHermesVoiceServer]), or null. */
+    var hermes: FakeHermesVoiceServer? = null
     val xaiChecks = AtomicInteger()
     private val config = OpenRouterConfig(baseUrl = "https://openrouter.example/api/v1", retryBackoffMs = 1)
     val shell = VoiceShell(
@@ -123,5 +132,7 @@ class TestShell(context: Context, name: String, scope: CoroutineScope, val sink:
         xaiKeys = xaiKeys,
         xaiChecker = KeyChecker { xaiChecks.incrementAndGet(); xaiAnswer },
         signedIn = { signedIn },
+        hermesAccount = { hermes?.takeIf { signedIn }?.account() },
+        audioDecoder = { FakeDecoder },
     )
 }
