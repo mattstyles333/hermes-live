@@ -291,6 +291,9 @@ class VoiceSettingsController(private val shell: VoiceShell, private val scope: 
     fun dismissMessage() = local.update { it.copy(message = null) }
 
     /** The voice pickers over this shell (lists, previews; a voice change goes through [update]). */
+    /** Settings › Voice › Custom's Hermes part (Hermes voice slice). */
+    fun hermes(): HermesVoiceSettingsController = HermesVoiceSettingsController(scope, shell, signedIn = { shell.isSignedIn })
+
     fun pickers(): VoicePickerController = VoicePickerController(
         scope = scope,
         catalog = shell.catalog,

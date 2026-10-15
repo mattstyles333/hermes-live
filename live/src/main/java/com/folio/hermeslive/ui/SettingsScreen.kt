@@ -67,6 +67,7 @@ import com.folio.hermeslive.stt.SttModel
 import com.folio.hermeslive.data.VoiceEngine
 import com.folio.hermes.realtime.GrokPricing
 import com.folio.hermes.realtime.GrokVoices
+import com.folio.hermeslive.data.HermesVoiceUi
 import com.folio.hermeslive.data.VoicePickerUi
 import com.folio.hermeslive.data.VoiceSettingsController
 import com.folio.hermeslive.data.VoiceShell
@@ -241,7 +242,7 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
 }
 
 @Composable
-private fun Line(label: String, value: String, modifier: Modifier = Modifier) {
+internal fun Line(label: String, value: String, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         Text(label, style = SmallStyle, color = PrintMute)
         Text(value, style = BodyStyle, color = PrintInk)
@@ -270,7 +271,7 @@ private fun Toggle(title: String, detail: String, checked: Boolean, tag: String,
 }
 
 @Composable
-private fun Choice(title: String, value: String, tag: String, onClick: () -> Unit) {
+internal fun Choice(title: String, value: String, tag: String, onClick: () -> Unit) {
     Column(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick).padding(vertical = 8.dp).testTag(tag)) {
         Text(title, style = BodyStyle, color = PrintInk)
         Text(value, style = SmallStyle, color = Ember)
@@ -318,6 +319,8 @@ private fun VoiceSettingsWired(controller: VoiceSettingsController) {
     val ui by controller.ui.collectAsState()
     val pickers = remember(controller) { controller.pickers() }
     val picker by pickers.ui.collectAsState()
+    val hermesVoice = remember(controller) { controller.hermes() }
+    val hermes by hermesVoice.ui.collectAsState()
     LaunchedEffect(Unit) { controller.refresh() }
     LaunchedEffect(ui.cascadeActive) { MemoEntry.syncShortcut(context, ui.cascadeActive) }
     VoiceSettingsSection(
@@ -360,6 +363,14 @@ private fun VoiceSettingsWired(controller: VoiceSettingsController) {
             onPreviewCustom = pickers::previewCustom,
             onPreviewGrok = pickers::previewGrok,
         ),
+        hermes,
+        HermesVoiceActions(
+            onRefresh = hermesVoice::refresh,
+            onVoiceFrom = hermesVoice::chooseVoiceFrom,
+            onSttFrom = hermesVoice::chooseSttFrom,
+            onChooseVoice = hermesVoice::chooseVoice,
+            onPreview = hermesVoice::preview,
+        ),
     )
 }
 
@@ -369,6 +380,8 @@ fun VoiceSettingsSection(
     actions: VoiceActions,
     picker: VoicePickerUi = VoicePickerUi(),
     pickerActions: VoicePickerActions = VoicePickerActions(),
+    hermes: HermesVoiceUi = HermesVoiceUi(),
+    hermesActions: HermesVoiceActions = HermesVoiceActions(),
 ) {
     val s = ui.settings
     val cascade = s.voiceEngine == VoiceEngine.Cascade
@@ -412,9 +425,13 @@ fun VoiceSettingsSection(
             Choice("Tasks at once", "${s.maxTasks} (more wait their turn)", "max-tasks") {
                 actions.onChange { it.copy(maxTasks = if (it.maxTasks >= LiveSettings.MAX_TASKS) LiveSettings.MIN_TASKS else it.maxTasks + 1) }
             }
-            CustomVoicePicker(s, picker, pickerActions)
-            TextSetting("Or type a voice id", s.billVoice, "bill-voice", valid = { it.isNotBlank() && it.none(Char::isWhitespace) }) { v -> actions.onChange { it.copy(billVoice = v) } }
-            TextSetting("Or type a voice model id", s.ttsModel, "tts-model", valid = ::isModelId) { v -> actions.onChange { it.copy(ttsModel = v) } }
+            HermesVoiceFromBlock(s, hermes, hermesActions)
+            // OpenRouter's voice: chosen, or speaking until Hermes can.
+            if (!hermesSpeaks(s, hermes)) {
+                CustomVoicePicker(s, picker, pickerActions)
+                TextSetting("Or type a voice id", s.billVoice, "bill-voice", valid = { it.isNotBlank() && it.none(Char::isWhitespace) }) { v -> actions.onChange { it.copy(billVoice = v) } }
+                TextSetting("Or type a voice model id", s.ttsModel, "tts-model", valid = ::isModelId) { v -> actions.onChange { it.copy(ttsModel = v) } }
+            }
             Toggle("Small listening noises", "The voice says \"mm-hm\" while you talk. Off by default: it can talk over you.", s.backchannel, "backchannel") { v ->
                 actions.onChange { it.copy(backchannel = v) }
             }
@@ -425,7 +442,7 @@ fun VoiceSettingsSection(
                 actions.onChange { it.copy(echoCancel = v) }
             }
             SpeechModelsBlock(ui, actions)
-            SpeechRecognitionBlock(ui, actions)
+            SpeechRecognitionBlock(ui, actions, hermes, hermesActions)
             TranscriptCleanupBlock(ui, actions)
             VocabularyBlock(ui, actions)
             DecisionLogBlock(ui, actions)
@@ -463,6 +480,9 @@ private fun KeyBlock(ui: VoiceUi, actions: VoiceActions) {
         "Your own OpenRouter key, sealed on this phone with the Android Keystore. It is only sent to OpenRouter, never logged.",
         style = SmallStyle, color = PrintMute, modifier = Modifier.padding(top = 6.dp),
     )
+    if (ui.settings.voiceEngine == VoiceEngine.Cascade) {
+        Text(OPENROUTER_STILL_NEEDED, style = SmallStyle, color = PrintMute, modifier = Modifier.padding(top = 4.dp).testTag("key-still-needed"))
+    }
 }
 
 /** Settings › Voice with Grok chosen: the xAI key, the voice (or a custom voice id), the model and the cost. */
@@ -598,13 +618,16 @@ private fun ModelRow(ui: VoiceUi, model: SttModel, chosen: Boolean, choose: (Str
 
 /** Settings › Voice › Speech recognition: on device (default) or the cloud when online, its model and cost. */
 @Composable
-private fun SpeechRecognitionBlock(ui: VoiceUi, actions: VoiceActions) {
+private fun SpeechRecognitionBlock(ui: VoiceUi, actions: VoiceActions, hermes: HermesVoiceUi, hermesActions: HermesVoiceActions) {
     val s = ui.settings
     val cloud = s.speechRecognition == SpeechRecognition.Cloud
-    Choice("Speech recognition", speechRecognitionText(s.speechRecognition), "speech-recognition") {
+    Choice("Speech recognition", if (cloud) cloudAudioText(s, hermes) else speechRecognitionText(s.speechRecognition), "speech-recognition") {
         actions.onChange { it.copy(speechRecognition = if (it.speechRecognition == SpeechRecognition.Cloud) SpeechRecognition.OnDevice else SpeechRecognition.Cloud) }
     }
     if (!cloud) return
+    HermesSttFromBlock(s, hermes, hermesActions)
+    // OpenRouter's model and cost only matter while OpenRouter takes the audio.
+    if (hermesHears(s, hermes)) return
     val model = CloudSttModels.of(s.cloudSttModel)
     Choice("Cloud model", "${model.label}. ${model.note}", "cloud-stt-model") {
         actions.onChange { it.copy(cloudSttModel = nextCloudModel(it.cloudSttModel)) }

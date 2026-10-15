@@ -8,6 +8,7 @@ import com.folio.hermes.openrouter.OpenRouterConfig
 import com.folio.hermeslive.audio.AndroidCallEffects
 import com.folio.hermeslive.cascade.AndroidNetwork
 import com.folio.hermeslive.stt.OpenRouterCloudStt
+import com.folio.hermeslive.stt.SourcedCloudStt
 import com.folio.hermeslive.cascade.appRuntime
 import com.folio.hermeslive.data.AccountState
 import com.folio.hermeslive.data.VoiceShell
@@ -74,8 +75,19 @@ class MeetingHost private constructor(private val app: Context) {
         return SherpaMeetingSpeech.load(
             app.assets, app.graph.modelManager, live, settings,
             hotwords = { shell.vocabulary.hotwords(app.graph.settings.settings.value.vocabulary) },
-            // Cloud speech recognition only when the user chose it and a key is saved (as for calls).
-            cloud = if (settings().cloudSttModel != null) OpenRouterCloudStt(openRouter.transcription, network::isOnline) else null,
+            // Cloud speech recognition only when the user chose it: Hermes's STT or OpenRouter's, as for calls.
+            cloud = if (settings().cloudSttModel != null) {
+                SourcedCloudStt(
+                    settings = { app.graph.settings.settings.value },
+                    hermes = shell.hermesVoices,
+                    openRouter = OpenRouterCloudStt(openRouter.transcription, network::isOnline),
+                    openRouterUsable = { shell.keys.status.value.usable },
+                    online = network::isOnline,
+                    telemetry = shell.telemetry,
+                )
+            } else {
+                null
+            },
         )
     }
 

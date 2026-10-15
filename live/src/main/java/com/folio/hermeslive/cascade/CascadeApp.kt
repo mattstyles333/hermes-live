@@ -5,7 +5,6 @@ import android.os.Handler
 import android.os.Looper
 import com.folio.hermes.HermesConfig
 import com.folio.hermes.HermesGateway
-import com.folio.hermes.cascade.BillVoice
 import com.folio.hermes.cascade.CascadeCore
 import com.folio.hermes.cascade.CascadePorts
 import com.folio.hermes.cascade.PhraseBank
@@ -19,6 +18,7 @@ import com.folio.hermeslive.data.CascadeFactory
 import com.folio.hermeslive.data.CascadeRuntime
 import com.folio.hermeslive.data.VoiceShell
 import com.folio.hermeslive.stt.OpenRouterCloudStt
+import com.folio.hermeslive.stt.SourcedCloudStt
 import com.folio.hermeslive.service.Briefing
 import com.folio.hermeslive.service.OffCallHooks
 import com.folio.hermeslive.service.ResultNotifications
@@ -77,7 +77,9 @@ class CascadeApp(
         val settings = { env.settings().copy(accuratePass = true) }
         val gateway = HermesGateway(config, tokens, client, scope)
         val openRouterClient = OpenRouter(OpenRouterConfig(), key = env.key, client = client, telemetry = env.telemetry)
-        val voice = BillVoice(openRouterClient.speech, env.storage.ttsCache(settings().ttsCacheBytes), { settings().voice }, { settings().ttsModel })
+        // Bill's voice from Hermes or OpenRouter (Settings › Voice › Voice from), OpenRouter the fallback per line.
+        val routed = shell.routedVoice(openRouterClient.speech)
+        val voice = routed.billVoice(env.storage.ttsCache(settings().ttsCacheBytes))
         // The cleanup's vocabulary also gets the learned corrections (read only when a cleanup runs).
         val openRouter = LiveOpenRouter(openRouterClient, voice, learned = { shell.vocabulary.hotwords(emptyList()) })
         val stt = SttSlot()
@@ -113,8 +115,33 @@ class CascadeApp(
             running = running,
             scope = scope,
             hotwordsOf = { vocabulary -> shell.vocabulary.hotwords(vocabulary) },
-            // Speech recognition "Cloud when online": the same key and connection pool as Jev.
-            cloudStt = OpenRouterCloudStt(openRouterClient.transcription, online = network::isOnline),
+            // Speech recognition "Cloud when online": Hermes's STT or OpenRouter's (the same key and pool as Jev).
+            cloudStt = SourcedCloudStt(
+                settings = { shell.settings.settings.value },
+                hermes = shell.hermesVoices,
+                openRouter = OpenRouterCloudStt(openRouterClient.transcription, online = network::isOnline),
+                openRouterUsable = { shell.keys.status.value.usable },
+                online = network::isOnline,
+                telemetry = env.telemetry,
+            ),
+            voiceRefresh = {
+                // Call start: Hermes's voice config afresh (keys rotate); then say where the voice and speech go.
+                shell.hermesVoices.refresh(force = true)
+                val stt = (shell.settings.settings.value.speechRecognition == com.folio.hermeslive.data.SpeechRecognition.Cloud)
+                runCatching {
+                    env.telemetry.event(
+                        "cascade.voice_source",
+                        mapOf(
+                            "voice_source" to routed.route().wire,
+                            "stt_source" to com.folio.hermeslive.data.VoiceRouting.stt(
+                                stt, shell.settings.settings.value.sttFrom, shell.hermesVoices.cached(), shell.keys.status.value.usable,
+                            ).wire,
+                        ),
+                        false,
+                    )
+                }
+            },
+            voiceRoute = { routed.route() },
         )
     }
 

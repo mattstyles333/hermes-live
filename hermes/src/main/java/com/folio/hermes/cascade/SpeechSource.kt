@@ -58,19 +58,3 @@ class OpenRouterSpeechSource(
         }
     }
 }
-
-/**
- * [primary], and when it fails (Hermes unreachable, signed out, refused) [fallback] for that
- * line, cached under the fallback's own identity so the primary's key never holds another voice.
- */
-class FallbackSpeechSource(private val primary: SpeechSource, private val fallback: SpeechSource?) : SpeechSource {
-    override fun identity(): VoiceIdentity? = primary.identity()
-
-    override suspend fun prepare() = primary.prepare()
-
-    override suspend fun synth(text: String): OpenRouterResult<SpokenClip> {
-        val first = primary.synth(text)
-        if (first is OpenRouterResult.Ok || fallback == null) return first
-        return fallback.synth(text)
-    }
-}

@@ -82,8 +82,18 @@ class VoicePreview(
     /** Grok: the xAI key, or null. */
     private val xaiKey: () -> String?,
     private val xai: XaiTts,
+    /** Custom with Hermes's voice: the line in [voice] (null: Hermes's own), cached under its identity; null when signed out. */
+    private val hermesClip: (suspend (voice: String?) -> AudioClip?)? = null,
     private val play: suspend (AudioClip) -> Unit,
 ) {
+    /** A preview through the user's Hermes server (its TTS, direct or relayed). */
+    suspend fun hermes(voice: String?): PreviewOutcome {
+        val fetch = hermesClip ?: return PreviewOutcome.NoKey
+        val clip = fetch(voice) ?: return PreviewOutcome.Failed
+        play(clip)
+        return PreviewOutcome.Played
+    }
+
     suspend fun custom(model: String, voice: String): PreviewOutcome {
         val fetch = openRouterClip ?: return PreviewOutcome.NoKey
         val clip = cached(model, voice) { fetch(model, voice, LINE) } ?: return PreviewOutcome.Failed

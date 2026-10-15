@@ -185,6 +185,8 @@ internal fun cascadeIntents(
 fun PreparingBill(
     prep: PrepState,
     wifi: Boolean,
+    /** Custom has no voice at all (Hermes unreachable, no OpenRouter key): say so, offer GPT-Live. */
+    noVoice: Boolean = false,
     onDownload: () -> Unit,
     onUseGptLive: () -> Unit,
     onCancel: () -> Unit,
@@ -193,7 +195,15 @@ fun PreparingBill(
         Modifier.fillMaxSize().background(VoidBlack).windowInsetsPadding(WindowInsets.safeDrawing).padding(24.dp).testTag("preparing-bill"),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("Preparing the voice…", style = StatusStyle, color = PrintInk, modifier = Modifier.padding(top = 48.dp))
+        Text(if (noVoice) "No voice yet" else "Preparing the voice…", style = StatusStyle, color = PrintInk, modifier = Modifier.padding(top = 48.dp))
+        if (noVoice) {
+            Text(NO_VOICE_TEXT, style = BodyStyle, color = PrintMute, modifier = Modifier.testTag("no-voice"))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("Use GPT-Live this time", filled = true, tag = "prepare-gpt-live", onClick = onUseGptLive)
+                Pill("Not now", filled = false, tag = "prepare-cancel", onClick = onCancel)
+            }
+            return@Column
+        }
         val left = prep.bytesToFetch
         val running = prep.phase == PrepPhase.Running
         Text(
@@ -217,3 +227,7 @@ fun PreparingBill(
         Text("The call starts by itself once it is ready.", style = SmallStyle, color = PrintMute)
     }
 }
+
+/** "No voice yet": Custom's voice comes from Hermes or OpenRouter, and neither can speak now. */
+const val NO_VOICE_TEXT = "Custom has no voice right now: your Hermes server can't be reached and there's no OpenRouter key. " +
+    "Check the connection, or add an OpenRouter key in Settings › Voice."

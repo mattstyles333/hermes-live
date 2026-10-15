@@ -4,7 +4,12 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import com.folio.hermes.AccessTokenProvider
+import com.folio.hermes.HermesConfig
 import com.folio.hermes.cascade.BillVoice
+import com.folio.hermes.live.AudioDecoder
+import com.folio.hermes.live.HermesSpeechSource
+import com.folio.hermes.live.HermesVoiceState
 import com.folio.hermes.cascade.DecisionLog
 import com.folio.hermes.cascade.PhraseBank
 import com.folio.hermes.cascade.PhraseRenderer
@@ -16,6 +21,7 @@ import com.folio.hermeslive.service.OffCallHooks
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
 /**
@@ -82,11 +88,52 @@ class VoiceShell(
     xaiChecker: KeyChecker? = null,
     /** Signed in to Hermes (GPT-Live's parallel agents need it before the task machinery opens). */
     private val signedIn: () -> Boolean = { false },
+    /** The signed-in Hermes server and its tokens (Hermes voice slice), or null. */
+    hermesAccount: () -> Pair<HermesConfig, AccessTokenProvider>? = { null },
+    /** Decodes the relay's MP3/Ogg clips (`MediaCodecDecoder` in the app). */
+    audioDecoder: () -> AudioDecoder = { AudioDecoder.None },
+    /** Tests widen it to their fake provider. */
+    hermesReachable: ((String) -> Boolean)? = null,
 ) {
     /** Checks an xAI key (`GET /v1/api-key`); tests pass a fake. */
     val xaiChecker: KeyChecker = xaiChecker ?: XaiKeyChecker(client, telemetry = telemetry)
 
     val storage: CascadeStorage by lazy { CascadeStorage(dirs, telemetry) }
+
+    /**
+     * Hermes's voice for Custom (Hermes voice slice). Off state: built and fetched only while
+     * signed in **and** Custom is the engine or cloud speech recognition is on (meeting mode).
+     */
+    val hermesVoices: HermesVoices = HermesVoices(
+        account = hermesAccount,
+        client = client,
+        decoder = audioDecoder,
+        telemetry = telemetry,
+        wanted = { hermesVoiceWanted(settings.settings.value) },
+        scope = scope,
+        reachable = hermesReachable ?: com.folio.hermes.live.HermesVoiceConfig::phoneReachable,
+    )
+
+    /**
+     * Hermes's voice may be asked for: signed in, and Custom with "Voice from" Hermes, or cloud
+     * speech recognition on (calls or meeting mode) with "Cloud speech recognition from" Hermes.
+     * Otherwise nothing is fetched (a GPT-Live, Grok or OpenRouter-only user never holds its keys).
+     */
+    fun hermesVoiceWanted(s: LiveSettings): Boolean = signedIn() &&
+        ((s.voiceEngine == VoiceEngine.Cascade && s.voiceFrom.prefersHermes) || (s.speechRecognition == SpeechRecognition.Cloud && s.sttFrom.prefersHermes))
+
+    /** Signed in to Hermes now. */
+    val isSignedIn: Boolean get() = signedIn()
+
+    /** Where Custom's voice would come from now, without a request ([VoiceRoute.None]: no voice at all). */
+    fun voiceRoute(): VoiceRoute {
+        val s = settings.settings.value
+        return VoiceRouting.tts(s.voiceFrom, if (s.voiceFrom.prefersHermes) hermesVoices.cached() else null, keys.status.value.usable)
+    }
+
+    /** Bill's voice routed between Hermes and OpenRouter on [speech] (OpenRouter's TTS client). */
+    fun routedVoice(speech: com.folio.hermes.openrouter.SpeechClient, live: () -> LiveSettings = { settings.settings.value }): RoutedVoice =
+        RoutedVoice(live, hermesVoices, RoutedVoice.openRouterSource(speech, live), openRouterUsable = { keys.status.value.usable })
     val gate = CascadeGate(
         { settings.settings.value }, { keys.status.value }, { xaiKeys?.status?.value ?: KeyStatus() },
         gptLiveAgents = { signedIn() && GptLivePrefs.of(context).agents.value },
@@ -107,10 +154,33 @@ class VoiceShell(
 
     private val bank: PhraseBank by lazy { PhraseBank.load() }
 
-    private fun fingerprint(): String {
+    /**
+     * What the stock lines should be rendered as: OpenRouter's voice and model (byte-identical to
+     * before the Hermes voice slice), or, with Hermes preferred and its TTS known, Hermes's
+     * identity. Hermes preferred but not known yet (not fetched, or unreachable for now): null, so
+     * an offline start never re-renders the bank through OpenRouter and back.
+     */
+    private fun fingerprintOrNull(): String? {
         val s = settings.settings.value
-        return VoicePrep.fingerprint(s.billVoice, s.ttsModel, bank.version)
+        val openRouter = VoicePrep.fingerprint(s.billVoice, s.ttsModel, bank.version)
+        if (!s.voiceFrom.prefersHermes) return openRouter
+        val v = hermesVoices.voice() ?: return openRouter
+        val cfg = v.cached()
+        if (cfg != null) {
+            if (!cfg.tts.available) return openRouter
+            val id = v.ttsIdentity(cfg, s.hermesVoiceFor(VoiceRouting.hermesTtsProvider(cfg)))
+            return VoicePrep.fingerprint(id.voice, id.model, bank.version)
+        }
+        return when (val st = v.state.value) {
+            // The server has no voice route, or refuses us: OpenRouter is the voice, not a blip.
+            is HermesVoiceState.Unavailable -> if (st.kind in PERMANENT) openRouter else null
+            else -> null
+        }
     }
+
+    private fun preparedMarker(): String? = if (dirs.store.exists()) runCatching { storage.store.get(PREPARED_KEY) }.getOrNull() else null
+
+    private fun fingerprint(): String = fingerprintOrNull() ?: preparedMarker() ?: PENDING_FINGERPRINT
 
     val prep: VoicePrep by lazy {
         VoicePrep(
@@ -121,11 +191,18 @@ class VoiceShell(
             bank = { bank },
             renders = {
                 val s = cascadeSettings()
+                val live = settings.settings.value
                 val openRouter = openRouters(keys::key)
-                val voice = BillVoice(openRouter.speech, storage.ttsCache(s.ttsCacheBytes), { s.voice }, { s.ttsModel })
-                val fp = fingerprint()
-                renderingFor = fp
-                RenderJob(PhraseRenderer(voice, s.renderConcurrency, telemetry), fp, warm = { openRouter.warm() })
+                val voice = routedVoice(openRouter.speech) { live }.billVoice(storage.ttsCache(s.ttsCacheBytes))
+                renderingFor = fingerprint()
+                RenderJob(
+                    PhraseRenderer(voice, s.renderConcurrency, telemetry),
+                    { fingerprint().also { renderingFor = it } },
+                    warm = {
+                        openRouter.warm()
+                        hermesVoices.refresh(force = false)
+                    },
+                )
             },
             prepared = object : VoicePrep.PreparedMarker {
                 override fun get(): String? = if (dirs.store.exists()) storage.store.get(PREPARED_KEY) else null
@@ -157,6 +234,12 @@ class VoiceShell(
             xaiKey = { xaiKeys?.takeIf { it.status.value.usable }?.key() },
             xai = XaiTts(client, telemetry = telemetry),
             play = { player.play(it) },
+            hermesClip = { voice ->
+                hermesVoices.voice()?.let { hv ->
+                    BillVoice(storage.ttsCache(cascadeSettings().ttsCacheBytes), { HermesSpeechSource(hv) { voice } })
+                        .clip(VoicePreview.LINE).valueOrNull()
+                }
+            },
         )
     }
 
@@ -195,12 +278,23 @@ class VoiceShell(
         if (active && voiceChanged()) rerender()
     }
 
+    init {
+        // Hermes's voice became known or changed (provider, model, voice): re-render the stock lines in it.
+        scope.launch {
+            hermesVoices.state.collect { st ->
+                if (st is HermesVoiceState.Unknown) return@collect
+                prep.refresh()
+                if (gate.active && voiceChanged()) rerender()
+            }
+        }
+    }
+
     /** The voice, model and bank version the running render is for (null: none running). */
     @Volatile private var renderingFor: String? = null
 
     /** The lines were prepared, or are being rendered, for a different voice, model or bank version than now. */
     private fun voiceChanged(): Boolean {
-        val now = fingerprint()
+        val now = fingerprintOrNull() ?: return false
         if (prep.state.value.phase == PrepPhase.Running) return renderingFor != null && renderingFor != now
         val marker = if (dirs.store.exists()) runCatching { storage.store.get(PREPARED_KEY) }.getOrNull() else null
         return marker != null && marker != now
@@ -229,6 +323,10 @@ class VoiceShell(
 
     companion object {
         const val PREPARED_KEY = "cascade.shell.voice.prepared"
+        private const val PENDING_FINGERPRINT = "pending"
+
+        /** `HermesVoiceState.Unavailable` kinds that mean "not this server" rather than "not right now". */
+        private val PERMANENT = setOf("none", "refused", "no_key", "bad_body")
 
         // Holds the application context only.
         @SuppressLint("StaticFieldLeak")
@@ -251,6 +349,8 @@ class VoiceShell(
                     host = app as? CascadeHost,
                     xaiKeys = XaiKeys.store(app),
                     signedIn = { g.account.config() != null && g.account.currentAuth() != null },
+                    hermesAccount = { g.account.config()?.let { c -> g.account.currentAuth()?.let { a -> c to a } } },
+                    audioDecoder = { com.folio.hermeslive.audio.MediaCodecDecoder() },
                 ).also {
                     instance = it
                     it.settleSpeechModels()

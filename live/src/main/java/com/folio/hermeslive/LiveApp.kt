@@ -26,6 +26,9 @@ import com.folio.hermeslive.cascade.appRuntime
 import com.folio.hermeslive.data.CascadeFactory
 import com.folio.hermeslive.data.CascadeHost
 import com.folio.hermeslive.data.SpeechModels
+import com.folio.hermeslive.data.SpeechRecognition
+import com.folio.hermeslive.data.VoiceEngine
+import com.folio.hermeslive.data.VoiceRoute
 import com.folio.hermeslive.data.VoiceShell
 import com.folio.hermeslive.service.OffCall
 import com.folio.hermeslive.service.OffCallHooks
@@ -51,6 +54,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
 class LiveApp : Application(), CascadeHost {
@@ -71,6 +75,14 @@ class LiveApp : Application(), CascadeHost {
         }
         CallNotifications.createChannels(this)
         graph.ready // start restoring the session
+        // Hermes's voice for Custom (Hermes voice slice): its config afresh once per app start, in
+        // memory only. Only signed in with Custom chosen or cloud speech recognition on; else nothing.
+        graph.ioScope.launch {
+            graph.ready.await()
+            val s = graph.settings.settings.value
+            val maybe = (s.voiceEngine == VoiceEngine.Cascade && s.voiceFrom.prefersHermes) || (s.speechRecognition == SpeechRecognition.Cloud && s.sttFrom.prefersHermes)
+            if (maybe && graph.account.currentAuth() != null) runCatching { VoiceShell.of(this@LiveApp).hermesVoices.refresh(force = true) }
+        }
     }
 }
 
@@ -154,6 +166,7 @@ class LiveGraph(private val app: Context) {
             },
             cascadeActive = { VoiceShell.of(app).gate.active },
             modelsReady = { CallSpeechFactory.ready(modelManager, settings.settings.value) },
+            voiceReady = { VoiceShell.of(app).voiceRoute() != VoiceRoute.None },
             grok = {
                 val shell = VoiceShell.of(app)
                 val network = AndroidNetwork(app)

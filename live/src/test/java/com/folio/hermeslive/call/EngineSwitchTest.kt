@@ -76,4 +76,19 @@ class EngineSwitchTest {
         r.switch.start(CallRequest())
         assertEquals("the next call is GPT-Live", 1, r.gpt.starts.size)
     }
+
+    /** Hermes voice slice: no voice at all (Hermes unreachable, no OpenRouter key) says so before a call; today's gate makes it unreachable. */
+    @Test fun customWithNoVoiceStartsNothing() {
+        val bills = mutableListOf<FakeCall>()
+        val gpt = FakeCall()
+        var voice = false
+        val switch = CallSwitch({ gpt }, { FakeCall().also { bills += it } }, { true }, { true }, voiceReady = { voice })
+        assertEquals(CallPlan.NoVoice, switch.plan())
+        switch.start(CallRequest())
+        assertTrue(bills.isEmpty())
+        assertTrue(gpt.starts.isEmpty())
+        assertEquals("GPT-Live this time still works", CallPlan.Ready(Engine.GptLive), switch.plan(CallRequest(forceGptLive = true)))
+        voice = true
+        assertEquals(CallPlan.Ready(Engine.Cascade), switch.plan())
+    }
 }

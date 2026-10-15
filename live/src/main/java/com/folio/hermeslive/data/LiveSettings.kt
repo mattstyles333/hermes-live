@@ -82,6 +82,21 @@ data class LiveSettings(
      */
     val transcriptCleanup: TranscriptCleanupMode = TranscriptCleanupMode.OnDeviceOnly,
 
+    // ── Settings › Voice › Custom: where the voice and cloud speech recognition come from (Hermes voice slice) ──
+    /**
+     * "Voice from": the user's Hermes server or OpenRouter. [SourceChoice.Auto] ("never chose", new
+     * installs) means Hermes when signed in and it reports a TTS, else OpenRouter. An install that
+     * already used Custom keeps OpenRouter ([SettingsStore] migrates it).
+     */
+    val voiceFrom: SourceChoice = SourceChoice.Auto,
+    /** "Cloud speech recognition from" (only with [SpeechRecognition.Cloud]); Auto as [voiceFrom]. */
+    val sttFrom: SourceChoice = SourceChoice.Auto,
+    /**
+     * The voice picked for Hermes's TTS as `<provider>:<voice id>` (empty: Hermes's configured
+     * voice). Applies only while Hermes's TTS is direct and still that provider.
+     */
+    val hermesVoice: String = "",
+
     // ── Settings › Voice › Grok (off unless [voiceEngine] is Grok and an xAI key is saved) ──
     /** Grok's voice: a built-in one (`GrokVoices.BUILT_IN`); [grokCustomVoice] wins when set. */
     val grokVoice: String = GrokVoices.DEFAULT,
@@ -112,7 +127,15 @@ data class LiveSettings(
         grokVoice = grokVoice.trim().lowercase().takeIf { VOICE_ID.matches(it) } ?: GrokVoices.DEFAULT,
         grokCustomVoice = grokCustomVoice.trim().lowercase().takeIf(GrokVoices::isCustomId).orEmpty(),
         grokModel = grokModel.trim().takeIf { GROK_MODEL.matches(it) } ?: GrokModels.DEFAULT,
+        hermesVoice = hermesVoice.trim().takeIf { HERMES_VOICE.matches(it) }.orEmpty(),
     )
+
+    /** The picked Hermes voice id for [provider], or null (Hermes's own). */
+    fun hermesVoiceFor(provider: String?): String? {
+        val v = normalized().hermesVoice
+        if (provider == null || v.isEmpty()) return null
+        return v.takeIf { it.startsWith("$provider:") }?.substringAfter(':')?.ifEmpty { null }
+    }
 
     /** The voice id a Grok call uses: the custom id when one is set, else the chosen voice. */
     fun grokVoiceId(): String = normalized().let { n -> n.grokCustomVoice.ifEmpty { n.grokVoice } }
@@ -191,6 +214,7 @@ data class LiveSettings(
         private val MODEL_ID = Regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$")
         private val GROK_MODEL = Regex("^grok-voice[A-Za-z0-9._-]*$")
         private val VOICE_ID = Regex("^[a-z0-9][a-z0-9_-]{0,39}$")
+        private val HERMES_VOICE = Regex("^[a-z0-9_-]{1,32}:[A-Za-z0-9._-]{1,64}$")
 
         /** An OpenRouter model id's shape (`vendor/model`). */
         fun isModelId(s: String): Boolean = MODEL_ID.matches(s)
@@ -225,6 +249,24 @@ enum class SpeechRecognition(val wire: String) {
 
     companion object {
         fun parse(wire: String?): SpeechRecognition = entries.firstOrNull { it.wire == wire } ?: OnDevice
+    }
+}
+
+/**
+ * Where a Custom-engine service comes from (Hermes voice slice). [Auto] is "never chose": Hermes
+ * when it can, else OpenRouter. [wire] is what is saved.
+ */
+enum class SourceChoice(val wire: String) {
+    Auto("auto"),
+    Hermes("hermes"),
+    OpenRouter("openrouter"),
+    ;
+
+    /** Hermes is wanted (picked, or the default). */
+    val prefersHermes: Boolean get() = this != OpenRouter
+
+    companion object {
+        fun parse(wire: String?): SourceChoice? = entries.firstOrNull { it.wire == wire }
     }
 }
 

@@ -58,17 +58,18 @@ class SpeechSourceTest {
         val cache = TtsCache(MemoryClipStore())
         val primary = Fixed(VoiceIdentity("hermes:elevenlabs/x", "v"), fail = true)
         val fallback = Fixed(VoiceIdentity("elevenlabs/eleven-v4-turbo", "bill"))
-        val voice = BillVoice(cache, { FallbackSpeechSource(primary, fallback) })
+        val voice = BillVoice(cache, { primary }, fallback = { fallback })
         assertTrue(voice.clip("Got it.") is OpenRouterResult.Ok)
         assertFalse(voice.isCached("Got it."))
         assertTrue(cache.contains(TtsCache.key("elevenlabs/eleven-v4-turbo", "bill", format, "Got it.")))
-        // Next time the primary is asked again (it may be back).
+        // Next time the primary is asked again (it may be back); the fallback's line comes from its cache.
         voice.clip("Got it.")
         assertEquals(2, primary.calls)
+        assertEquals(1, fallback.calls)
     }
 
     @Test fun noFallbackPassesTheFailureOn() = runBlocking {
-        val voice = BillVoice(TtsCache(MemoryClipStore()), { FallbackSpeechSource(Fixed(VoiceIdentity("a", "b"), fail = true), null) })
+        val voice = BillVoice(TtsCache(MemoryClipStore()), { Fixed(VoiceIdentity("a", "b"), fail = true) })
         assertEquals(OpenRouterResult.Failed(FailureKind.Offline), voice.clip("x"))
     }
 

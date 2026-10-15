@@ -48,7 +48,11 @@ class HermesVoice(
     private val ttlMs: Long = TTL_MS,
     private val retryMs: Long = RETRY_MS,
     private val speakTimeoutMs: Long = SPEAK_TIMEOUT_MS,
+    /** After an offline or timed-out request, that side is skipped (fails at once) for this long. */
+    private val downMs: Long = DOWN_MS,
 ) {
+    @Volatile private var ttsDownUntil = 0L
+    @Volatile private var sttDownUntil = 0L
     private val mutex = Mutex()
     @Volatile private var current: HermesVoiceConfig? = null
     @Volatile private var failedAtMs: Long? = null
@@ -73,6 +77,8 @@ class HermesVoice(
     fun forget() {
         current = null
         failedAtMs = null
+        ttsDownUntil = 0L
+        sttDownUntil = 0L
         _state.value = HermesVoiceState.Unknown
     }
 
@@ -86,6 +92,11 @@ class HermesVoice(
                 val cfg = result.value
                 current = cfg
                 failedAtMs = if (cfg == null) now else null
+                if (cfg != null) {
+                    // Reachable again: try both sides at once.
+                    ttsDownUntil = 0L
+                    sttDownUntil = 0L
+                }
                 _state.value = cfg?.let { HermesVoiceState.Ready(it.view()) } ?: HermesVoiceState.Unavailable(NO_ROUTE)
                 attrs["ok"] = cfg != null
                 cfg?.let {
@@ -119,6 +130,8 @@ class HermesVoice(
 
     /** [text] in Hermes's voice ([voice] applies to a direct wire only; the relay speaks the configured one). */
     suspend fun speak(text: String, voice: String?): OpenRouterResult<SpokenClip> {
+        // Unreachable a moment ago: fail at once so the fallback speaks without a wait per line.
+        if (nowMs() < ttsDownUntil) return OpenRouterResult.Failed(FailureKind.Offline)
         val cfg = config() ?: return OpenRouterResult.Failed(unavailableKind())
         val first = speakOnce(cfg, text, voice)
         val failed = first as? OpenRouterResult.Failed ?: return first
@@ -150,6 +163,7 @@ class HermesVoice(
         (out as? OpenRouterResult.Ok)?.let { attrs["audio_ms"] = it.value.clip.durationMs }
         (out as? OpenRouterResult.Failed)?.let { f -> attrs["kind"] = f.kind.wire; f.httpStatus?.let { attrs["http_status"] = it } }
         runCatching { telemetry.event(EVENT_TTS, attrs, warn = out is OpenRouterResult.Failed) }
+        if (out is OpenRouterResult.Failed && out.kind.unreachable) ttsDownUntil = nowMs() + downMs
         return out
     }
 
@@ -159,6 +173,7 @@ class HermesVoice(
      * for them). `Ok("")`: no speech.
      */
     suspend fun transcribe(wav: ByteArray, terms: List<String>, timeoutMs: Long): OpenRouterResult<String> {
+        if (nowMs() < sttDownUntil) return OpenRouterResult.Failed(FailureKind.Offline)
         val cfg = config() ?: return OpenRouterResult.Failed(unavailableKind())
         val started = System.nanoTime()
         val side = cfg.stt
@@ -179,6 +194,8 @@ class HermesVoice(
         (out as? OpenRouterResult.Ok)?.let { attrs["empty"] = it.value.isBlank() }
         (out as? OpenRouterResult.Failed)?.let { f -> attrs["kind"] = f.kind.wire; f.httpStatus?.let { attrs["http_status"] = it } }
         runCatching { telemetry.event(EVENT_STT, attrs, warn = out is OpenRouterResult.Failed && out.kind != FailureKind.Timeout) }
+        // Only an unreachable route trips it: one slow clip past the call's short budget is not "down".
+        if (out is OpenRouterResult.Failed && out.kind == FailureKind.Offline) sttDownUntil = nowMs() + downMs
         return out
     }
 
@@ -197,6 +214,9 @@ class HermesVoice(
         /** After a failed fetch, wait this long before an unforced retry. */
         const val RETRY_MS = 60_000L
         const val SPEAK_TIMEOUT_MS = 20_000L
+        const val DOWN_MS = 60_000L
+
+        private val FailureKind.unreachable: Boolean get() = this == FailureKind.Offline || this == FailureKind.Timeout
         const val NO_ROUTE = "none"
         const val EVENT_CONFIG = "hermes_voice.config"
         const val EVENT_TTS = "hermes_voice.tts"

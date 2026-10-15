@@ -54,6 +54,9 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
             .putString(K_SPEECH_RECOGNITION, next.speechRecognition.wire)
             .putString(K_CLOUD_STT_MODEL, next.cloudSttModel)
             .putString(K_TRANSCRIPT_CLEANUP, next.transcriptCleanup.wire)
+            .putString(K_VOICE_FROM, next.voiceFrom.wire)
+            .putString(K_STT_FROM, next.sttFrom.wire)
+            .putString(K_HERMES_VOICE, next.hermesVoice)
             .putString(K_LIVE_MODEL, next.liveModel)
             .putString(K_ACCURATE_MODEL, next.accurateModel)
             .putBoolean(K_SPEECH_MODELS_CARD, next.speechModelsCard)
@@ -114,6 +117,9 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
             speechRecognition = SpeechRecognition.parse(prefs.getString(K_SPEECH_RECOGNITION, null)),
             cloudSttModel = prefs.getString(K_CLOUD_STT_MODEL, null) ?: d.cloudSttModel,
             transcriptCleanup = TranscriptCleanupMode.parse(prefs.getString(K_TRANSCRIPT_CLEANUP, null)),
+            voiceFrom = SourceChoice.parse(prefs.getString(K_VOICE_FROM, null)) ?: firstVoiceFrom(),
+            sttFrom = SourceChoice.parse(prefs.getString(K_STT_FROM, null)) ?: firstSttFrom(),
+            hermesVoice = prefs.getString(K_HERMES_VOICE, null) ?: d.hermesVoice,
             liveModel = prefs.getString(K_LIVE_MODEL, null),
             accurateModel = prefs.getString(K_ACCURATE_MODEL, null),
             speechModelsCard = prefs.getBoolean(K_SPEECH_MODELS_CARD, d.speechModelsCard),
@@ -124,6 +130,23 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
             gptLiveSaveCost = prefs.getBoolean(K_GPT_LIVE_SAVE_COST, d.gptLiveSaveCost),
         ).normalized()
     }
+
+    /**
+     * Before the Hermes voice slice there was no "Voice from": an install that already used Custom
+     * (engine saved as Custom, or a voice or TTS model picked) keeps OpenRouter's voice; everyone
+     * else has never chosen ([SourceChoice.Auto]: Hermes when available).
+     */
+    private fun firstVoiceFrom(): SourceChoice {
+        val d = LiveSettings()
+        val usedCustom = prefs.getString(K_VOICE_ENGINE, null) == VoiceEngine.Cascade.wire ||
+            (prefs.getString(K_BILL_VOICE, null) ?: d.billVoice) != d.billVoice ||
+            (prefs.getString(K_TTS_MODEL, null) ?: d.ttsModel) != d.ttsModel
+        return if (usedCustom) SourceChoice.OpenRouter else SourceChoice.Auto
+    }
+
+    /** An install that already sent speech to OpenRouter's cloud recognition keeps it; else never chosen. */
+    private fun firstSttFrom(): SourceChoice =
+        if (SpeechRecognition.parse(prefs.getString(K_SPEECH_RECOGNITION, null)) == SpeechRecognition.Cloud) SourceChoice.OpenRouter else SourceChoice.Auto
 
     companion object {
         const val PREFS = "hermes_live"
@@ -166,6 +189,9 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
         private const val K_SPEECH_RECOGNITION = "cascade_speech_recognition"
         private const val K_TRANSCRIPT_CLEANUP = "cascade_transcript_cleanup"
         private const val K_CLOUD_STT_MODEL = "cascade_cloud_stt_model"
+        private const val K_VOICE_FROM = "cascade_voice_from"
+        private const val K_STT_FROM = "cascade_stt_from"
+        private const val K_HERMES_VOICE = "cascade_hermes_voice"
         private const val K_LIVE_MODEL = "cascade_live_model"
         private const val K_ACCURATE_MODEL = "cascade_accurate_model"
         private const val K_SPEECH_MODELS_CARD = "cascade_speech_models_card"

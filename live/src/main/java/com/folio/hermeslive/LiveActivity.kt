@@ -189,7 +189,8 @@ class LiveActivity : ComponentActivity() {
         // The mic belongs to meeting mode while it takes notes: no call starts over it.
         if (MeetingHost.existing()?.flow?.busy == true) return
         micRefused = false
-        if (graph.calls.plan(request) == CallPlan.PreparingBill) {
+        val plan = graph.calls.plan(request)
+        if (plan == CallPlan.PreparingBill || plan == CallPlan.NoVoice) {
             billOutro = false
             preparing = request
             VoiceShell.of(this).autoPrepare()
@@ -345,6 +346,7 @@ class LiveActivity : ComponentActivity() {
                 }
                 PreparingBill(
                     prep = prep,
+                    noVoice = g.calls.plan(pending) == CallPlan.NoVoice,
                     wifi = shell.network.wifi(),
                     onDownload = { shell.prep.start() },
                     onUseGptLive = { requestStart(pending.copy(forceGptLive = true)) },

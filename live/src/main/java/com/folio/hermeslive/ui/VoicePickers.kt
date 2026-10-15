@@ -130,7 +130,7 @@ fun voiceLabel(id: String): String = id.replaceFirstChar { it.uppercase() } + if
 fun priceLine(m: TtsModelInfo): String = "${m.voices.size} voices" + (m.usdPerMillionChars?.let { " · $" + "%.2f".format(java.util.Locale.UK, it) + " per million characters" } ?: "")
 
 @Composable
-private fun Header(title: String, value: String, tag: String, open: Boolean, onClick: () -> Unit) {
+internal fun Header(title: String, value: String, tag: String, open: Boolean, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick).padding(vertical = 10.dp).testTag(tag),
         verticalAlignment = Alignment.CenterVertically,
@@ -144,7 +144,7 @@ private fun Header(title: String, value: String, tag: String, open: Boolean, onC
 }
 
 @Composable
-private fun Option(
+internal fun Option(
     title: String,
     detail: String?,
     chosen: Boolean,
