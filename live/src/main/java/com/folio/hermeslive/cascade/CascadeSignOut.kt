@@ -32,6 +32,8 @@ object CascadeSignOut {
 
     fun apply(shell: VoiceShell) {
         shell.shell.release()
+        // Hermes's voice config and the provider keys in it (memory only) go with the account.
+        shell.hermesVoices.forget()
         wipe(shell)
         if (WIPE_OPENROUTER_KEY) shell.keys.remove()
         shell.onSettingsChanged()

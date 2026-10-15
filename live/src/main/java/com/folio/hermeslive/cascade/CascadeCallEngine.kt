@@ -26,6 +26,7 @@ import com.folio.hermeslive.call.RouteOption
 import com.folio.hermeslive.call.RouteSelector
 import com.folio.hermeslive.call.VoiceCall
 import com.folio.hermeslive.data.LiveSettings
+import com.folio.hermeslive.data.VoiceRoute
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -37,7 +38,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 
 /**
@@ -129,6 +132,8 @@ class CascadeCallEngine(
         val requestedAt = clock()
         startJob = scope.launch {
             try {
+                // Hermes's voice config afresh, beside the model load (bounded: a slow server never holds the call).
+                val voiceReady = async(this@CascadeCallEngine.io) { withTimeoutOrNull(VOICE_REFRESH_MS) { runCatching { r.voiceRefresh() } } }
                 val io = audioFactory().create(callSettings.echoCancel) { level -> rt?.core?.actor?.outputLevel(level) }
                 val src = MutableSource(io.source).also { it.muted = request.muted }
                 val stt = try {
@@ -143,6 +148,14 @@ class CascadeCallEngine(
                     // Hung up while the models loaded: the mic is open now, so close it here.
                     withContext(this@CascadeCallEngine.io + NonCancellable) { runCatching { stt.release() } }
                     io.release()
+                    return@launch
+                }
+                voiceReady.await()
+                if (r.voiceRoute() == VoiceRoute.None) {
+                    // No voice at all (Hermes unreachable and no OpenRouter key): say so instead of a silent call.
+                    withContext(this@CascadeCallEngine.io + NonCancellable) { runCatching { stt.release() } }
+                    io.release()
+                    if (attempt == epoch) finish("failed", error = NO_VOICE)
                     return@launch
                 }
                 audioIo = io
@@ -472,5 +485,9 @@ class CascadeCallEngine(
         /** The goodbye plays to the end, but the call's audio is released within this of the hang-up. */
         const val GOODBYE_CAP_MS = 2_000L
         const val MAX_TYPED_CHARS = 4_000
+
+        /** At most this long for Hermes's voice config at call start (it runs beside the speech-model load). */
+        const val VOICE_REFRESH_MS = 1_500L
+        const val NO_VOICE = "No voice for Custom: Hermes can't be reached and there's no OpenRouter key. Check Settings › Voice."
     }
 }
