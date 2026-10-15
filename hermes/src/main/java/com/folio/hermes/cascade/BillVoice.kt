@@ -1,52 +1,58 @@
 package com.folio.hermes.cascade
 
-import com.folio.hermes.openrouter.OpenRouterException
 import com.folio.hermes.openrouter.OpenRouterResult
-import com.folio.hermes.openrouter.SpeechAudio
 import com.folio.hermes.openrouter.SpeechClient
-import com.folio.hermes.openrouter.SpeechDelivery
 import com.folio.hermes.openrouter.SpeechFormat
-import java.io.ByteArrayOutputStream
 
 /**
  * Text → a whole PCM clip in Bill's voice: from the [TtsCache] when it is there (no request),
- * otherwise one OpenRouter TTS request (whole clip; that is what OpenRouter returns), then cached.
- * [voice] and [model] are read on every call so a Settings change applies at once.
+ * otherwise one request to the [source] (OpenRouter TTS, or the user's Hermes server), then cached
+ * under the identity that actually spoke it. The source (and its voice and model) is read on every
+ * call so a Settings change applies at once.
  */
 class BillVoice(
-    private val speech: SpeechClient,
     private val cache: TtsCache,
-    private val voice: () -> String,
-    private val model: () -> String,
+    private val source: () -> SpeechSource,
     private val format: SpeechFormat.Pcm = SpeechFormat.Pcm(),
 ) {
-    fun key(text: String): String = TtsCache.key(model(), voice(), format, text)
+    /** OpenRouter's voice (today's): [voice] and [model] read per call. Cache keys as before the Hermes voice slice. */
+    constructor(
+        speech: SpeechClient,
+        cache: TtsCache,
+        voice: () -> String,
+        model: () -> String,
+        format: SpeechFormat.Pcm = SpeechFormat.Pcm(),
+    ) : this(cache, OpenRouterSpeechSource(speech, voice, model, format).let { s -> { s } }, format)
 
-    /** True if [text] is cached (no read, no request). */
-    fun isCached(text: String): Boolean = cache.contains(key(text))
+    fun key(text: String): String = key(source().identity(), text)
+
+    private fun key(id: VoiceIdentity?, text: String): String =
+        TtsCache.key(id?.model ?: PENDING, id?.voice ?: PENDING, format, text)
+
+    /** True if [text] is cached (no read, no request). False while the source's identity is unknown. */
+    fun isCached(text: String): Boolean = source().identity()?.let { cache.contains(key(it, text)) } ?: false
 
     /** The clip if it is cached (no request). */
-    fun cached(text: String): AudioClip? = cache.get(key(text))
+    fun cached(text: String): AudioClip? = source().identity()?.let { cache.get(key(it, text)) }
 
     /** The clip, from the cache or one TTS request. */
     suspend fun clip(text: String): OpenRouterResult<AudioClip> {
-        val key = key(text)
-        cache.get(key)?.let { return OpenRouterResult.Ok(it) }
-        return try {
-            var actual: SpeechFormat = format
-            val out = ByteArrayOutputStream()
-            speech.speak(text, format, SpeechDelivery.WholeClip, voice(), model()).collect { part ->
-                when (part) {
-                    is SpeechAudio.Started -> actual = part.format
-                    is SpeechAudio.Chunk -> out.write(part.bytes)
-                    is SpeechAudio.Finished -> Unit
-                }
-            }
-            val clip = AudioClip(out.toByteArray(), actual as? SpeechFormat.Pcm ?: format)
-            cache.put(key, clip)
-            OpenRouterResult.Ok(clip)
-        } catch (e: OpenRouterException) {
-            e.failure
+        val src = source()
+        val id = src.identity() ?: run {
+            src.prepare()
+            src.identity()
         }
+        if (id != null) cache.get(key(id, text))?.let { return OpenRouterResult.Ok(it) }
+        return when (val r = src.synth(text)) {
+            is OpenRouterResult.Ok -> {
+                cache.put(key(r.value.identity, text), r.value.clip)
+                OpenRouterResult.Ok(r.value.clip)
+            }
+            is OpenRouterResult.Failed -> r
+        }
+    }
+
+    private companion object {
+        const val PENDING = "pending"
     }
 }
