@@ -1,6 +1,7 @@
 package com.folio.hermes.cascade
 
 import com.folio.hermes.ApprovalRequest
+import com.folio.hermes.TurnStatus
 import com.folio.hermes.TurnUpdate
 import com.folio.hermes.cascade.ports.MemoryStore
 import com.folio.hermes.cascade.ports.Store
@@ -215,6 +216,61 @@ class TaskApiTest {
             assertEquals(TaskReply.Started("t2", "Safilo", queued = false), reply)
             runCurrent()
             assertEquals(listOf("t1", "t2"), rig.state.tasks.tasks.map { it.id })
+        }
+    }
+
+    // Retry (task-viewer-retry slice): a card's Retry on a Grok or GPT-Live call goes through the
+    // registry exactly as Bill's tap; it used to send "Please try this again." as an update.
+
+    @Test fun retryResendsANotSentTaskAsItself() = runTest {
+        Rig(this).use { rig ->
+            rig.hermes.failSubmits = 2
+            rig.tasks.startTask("check stock of RB2140", "Stock")
+            advanceUntilIdle()
+            assertEquals("not_sent", rig.tasks.status("t1").single().status)
+            assertEquals(TaskReply.Updated("t1", "resent"), rig.tasks.retry("t1"))
+            advanceUntilIdle()
+            assertEquals("no new task", listOf("t1"), rig.state.tasks.tasks.map { it.id })
+            assertEquals(SendState.Accepted, rig.state.tasks["t1"]!!.send)
+            assertEquals("the same brief, sent once", listOf("check stock of RB2140"), rig.server.prompts)
+            assertTrue("nothing is spoken", rig.state.speech.isEmpty)
+        }
+    }
+
+    @Test fun retryStartsAFailedTaskAgainWithExactlyItsBrief() = runTest {
+        Rig(this).use { rig ->
+            val brief = "Check stock of RB2140 in Leeds.\nThen email Safilo."
+            rig.tasks.startTask(brief, "Stock")
+            advanceUntilIdle()
+            rig.server.complete("s1", "", TurnStatus.Error)
+            advanceUntilIdle()
+            assertEquals("failed", rig.tasks.status("t1").single().status)
+            assertEquals(TaskReply.Updated("t2", "retried"), rig.tasks.retry("t1"))
+            advanceUntilIdle()
+            assertEquals(brief, rig.state.tasks["t2"]!!.brief)
+            assertEquals("one new task, the brief unchanged", listOf(brief, brief), rig.server.prompts)
+            assertTrue("nothing is spoken", rig.state.speech.isEmpty)
+        }
+    }
+
+    @Test fun retryAtTheCapSaysNothingAndOtherTasksAreLeftAlone() = runTest {
+        Rig(this, settings = CascadeSettings(maxTasks = 1)).use { rig ->
+            rig.tasks.startTask("check stock", "Stock")
+            advanceUntilIdle()
+            rig.server.complete("s1", "", TurnStatus.Error)
+            advanceUntilIdle()
+            rig.tasks.startTask("email Safilo", "Safilo")
+            advanceUntilIdle()
+            assertEquals(TaskReply.AtCap, rig.tasks.retry("t1"))
+            advanceUntilIdle()
+            assertEquals(listOf("t1", "t2"), rig.state.tasks.tasks.map { it.id })
+            assertTrue("no limit line waits for a later Bill call", rig.state.speech.isEmpty)
+            assertEquals("still running", TaskReply.Started("t2", "Safilo", queued = false, existing = true), rig.tasks.retry("t2"))
+            assertEquals(TaskReply.NotFound("t9"), rig.tasks.retry("t9"))
+            rig.server.complete("s2", "Sent.")
+            advanceUntilIdle()
+            assertEquals("done: nothing to retry", TaskReply.TooLate("t2"), rig.tasks.retry("t2"))
+            assertEquals(listOf("check stock", "email Safilo"), rig.server.prompts)
         }
     }
 }

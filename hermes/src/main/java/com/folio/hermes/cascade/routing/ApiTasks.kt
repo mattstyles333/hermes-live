@@ -6,8 +6,10 @@ import com.folio.hermes.cascade.Effect
 import com.folio.hermes.cascade.Event
 import com.folio.hermes.cascade.OffCallState
 import com.folio.hermes.cascade.RunKind
+import com.folio.hermes.cascade.SendState
 import com.folio.hermes.cascade.TaskCommand
 import com.folio.hermes.cascade.TaskReply
+import com.folio.hermes.cascade.TaskState
 import com.folio.hermes.cascade.Tx
 import com.folio.hermes.cascade.UpdateMode
 
@@ -34,6 +36,7 @@ object ApiTasks {
         is TaskCommand.Update -> update(tx, command)
         is TaskCommand.Cancel -> cancel(tx, command.taskId)
         is TaskCommand.Heard -> heard(tx, command.taskId)
+        is TaskCommand.Retry -> retry(tx, command.taskId)
     }
 
     private fun start(tx: Tx, c: TaskCommand.Start): TaskReply {
@@ -75,6 +78,27 @@ object ApiTasks {
         }
     }
 
+    /**
+     * A card's Retry through the registry, exactly as Bill's tap (`Event.TaskTapped`, which the actor
+     * drops with no Bill call open): a `NotSent` task is resent as itself, a `Failed` one starts again
+     * as a new task with its brief. Off-call the registry speaks nothing, so the reply carries the cap.
+     */
+    private fun retry(tx: Tx, taskId: String): TaskReply {
+        val t = tx.s.tasks[taskId] ?: return TaskReply.NotFound(taskId)
+        val notSent = t.send == SendState.NotSent
+        // The registry's own order: a running task is left alone, a finished one has nothing to retry.
+        if (t.state == TaskState.Running) return TaskReply.Started(t.id, t.label, TaskQueue.isQueued(t), existing = true)
+        if (!notSent && t.state != TaskState.Failed) return TaskReply.TooLate(taskId)
+        val known = tx.s.tasks.tasks.map { it.id }.toSet()
+        tx.env.registry.retry(tx, taskId)
+        val fresh = tx.s.tasks.tasks.firstOrNull { it.id !in known }
+        return when {
+            fresh != null -> TaskReply.Updated(fresh.id, "retried")
+            notSent && tx.s.tasks[taskId]?.send != SendState.NotSent -> TaskReply.Updated(taskId, "resent")
+            else -> TaskReply.AtCap
+        }
+    }
+
     /** The front end told the user: read, and gone from the backlog a later Bill call would speak. */
     private fun heard(tx: Tx, taskId: String): TaskReply {
         val s = tx.s
@@ -94,6 +118,7 @@ object ApiTasks {
         is TaskCommand.Update -> if (c.mode == UpdateMode.Queue) "update_queue" else "update_redirect"
         is TaskCommand.Cancel -> if (c.taskId == CascadeTasks.ALL) "cancel_all" else "cancel"
         is TaskCommand.Heard -> "heard"
+        is TaskCommand.Retry -> "retry"
     }
 
     private fun wire(r: TaskReply): String = when (r) {
