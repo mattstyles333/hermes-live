@@ -23,6 +23,8 @@ data class HermesConfig(
     val promptSubmitTimeoutMs: Long = 60_000L,
     /** How long a connect may take, from ticket to `gateway.ready`. */
     val connectTimeoutMs: Long = 20_000L,
+    /** After `disconnect()` sends close(1000), how long the server has to answer before the socket is cut. */
+    val closeTimeoutMs: Long = 5_000L,
     /** First reconnect delay; doubles per attempt up to [reconnectMaxDelayMs]. */
     val reconnectBaseDelayMs: Long = 1_000L,
     /** Reconnect delay cap. */

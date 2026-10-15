@@ -90,6 +90,19 @@ class GatewayCleanCloseTest {
         assertFalse(gateway.isRunning("s1"))
         assertEquals(GatewayConnection.Idle, gateway.connection.value)
     }
+
+    @Test fun anUnansweredCloseIsCutAfterTheCloseTimeout() = test {
+        fake.answerClose = false
+        val gateway = gateway(fake.config().copy(closeTimeoutMs = 100))
+        gateway.awaitReady()
+        val socket = fake.nextSocket()
+        withContext(main) { gateway.disconnect() }
+        assertEquals(1000, socket.closing.await())
+        // The server never answers: the gateway cuts its socket itself, well before OkHttp's own 60 s.
+        withTimeout(5_000) { gate.closeSocketClosed.await() }
+        assertEquals(GatewayConnection.Idle, gateway.connection.value)
+        socket.ws.close(1000, null) // let the fake finish its side too, or MockWebServer waits on it at shutdown
+    }
 }
 
 /**

@@ -10,6 +10,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -100,13 +101,22 @@ class HermesGateway(
         }
     }
 
-    /** Close the socket and stop reconnecting. Waiting calls fail. */
+    /**
+     * Close the socket and stop reconnecting. Waiting calls fail. The socket closes cleanly (1000):
+     * the server answers the close, or after [HermesConfig.closeTimeoutMs] the gateway cuts it.
+     */
     fun disconnect() {
+        val conn: Conn?
         synchronized(lock) {
+            // Mark first, then cancel, then close. The loop's cleanup must see the mark, or it cuts the
+            // socket under the close frame and the server sees a drop. The close goes last so a fast
+            // answer cannot end the loop normally (and write Waiting after Idle) before the cancel.
+            conn = live
+            conn?.clientClosing = true
             loop?.cancel()
             loop = null
         }
-        live?.ws?.close(1000, "client closing")
+        conn?.ws?.close(1000, "client closing")
         live = null
         failPending("disconnected")
         _connection.value = GatewayConnection.Idle
@@ -298,6 +308,9 @@ class HermesGateway(
 
         /** Set once, before this connection is published as [live] and [connection] says Ready. */
         @Volatile var readyState: GatewayConnection.Ready? = null
+
+        /** [disconnect] is closing this socket: its frames no longer count, and cleanup must not cut it. */
+        @Volatile var clientClosing = false
     }
 
     private data class Closed(val reason: String, val handshakeCode: Int?)
@@ -346,6 +359,8 @@ class HermesGateway(
                 }
                 is Outcome.Failed -> outcome.reason
             }
+            // A disconnect that raced a drop: it already said Idle, so do not write Waiting over it.
+            currentCoroutineContext().ensureActive()
             val base = config.reconnectBaseDelayMs shl (attempt - 1).coerceIn(0, 16)
             val wait = base.coerceAtMost(config.reconnectMaxDelayMs).let { it + Random.nextLong(0, it / 5 + 1) }
             _connection.value = GatewayConnection.Waiting(attempt, wait, reason)
@@ -418,7 +433,20 @@ class HermesGateway(
         } finally {
             if (live === conn) live = null
             failPending("connection lost")
-            if (!conn.closed.isCompleted) ws.cancel()
+            if (!conn.closed.isCompleted) {
+                if (conn.clientClosing) cutIfUnanswered(conn) else ws.cancel()
+            }
+        }
+    }
+
+    /**
+     * After [disconnect]'s close(1000): the server has [HermesConfig.closeTimeoutMs] to answer, then
+     * the socket is cut. If [scope] is already cancelled this never runs, and OkHttp's own cut (60 s
+     * after a close frame) still bounds it.
+     */
+    private fun cutIfUnanswered(conn: Conn) {
+        scope.launch {
+            withTimeoutOrNull(config.closeTimeoutMs) { conn.closed.await() } ?: conn.ws.cancel()
         }
     }
 
@@ -469,6 +497,8 @@ class HermesGateway(
     }
 
     private fun handle(conn: Conn, ws: WebSocket, text: String) {
+        // Frames that arrive while a disconnect's close finishes are dropped, as they were when it cut the socket.
+        if (conn.clientClosing) return
         conn.lastInbound.set(System.nanoTime())
         for (line in text.split('\n')) {
             if (line.isBlank()) continue
