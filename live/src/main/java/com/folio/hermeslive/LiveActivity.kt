@@ -43,6 +43,7 @@ import com.folio.hermeslive.data.VoiceEngine
 import com.folio.hermeslive.service.MemoEntry
 import com.folio.hermeslive.service.ResultNotifications
 import com.folio.hermeslive.ui.CascadeCallRoute
+import com.folio.hermeslive.ui.billRuntime
 import com.folio.hermeslive.ui.MainScreen
 import com.folio.hermeslive.ui.mainScreen
 import androidx.compose.animation.AnimatedContent
@@ -387,13 +388,16 @@ class LiveActivity : ComponentActivity() {
         }
     }
 
-    /** Bill's call screen: the call, its end transition, or the no-call viewer. */
+    /**
+     * Bill's call screen: the call, its end transition, or the no-call viewer. The viewer needs no
+     * Bill engine: under Grok or GPT-Live with agents it shows the runtime [openTask] built.
+     */
     @Composable
     private fun BillScreen(shown: MainScreen, call: CallUiState, pauseMs: Int, haptics: Boolean) {
         val g = graph
         val engine = g.calls.bill() as? CascadeCallEngine
-        val rt = engine?.session ?: (VoiceShell.of(this@LiveActivity).shell.existing() as? CascadeAppRuntime)
-        if (engine == null || rt == null) {
+        val rt = billRuntime(shown, engine, VoiceShell.of(this@LiveActivity).shell.existing() as? CascadeAppRuntime)
+        if (rt == null) {
             LaunchedEffect(Unit) {
                 viewingTask = null
                 billOutro = false
