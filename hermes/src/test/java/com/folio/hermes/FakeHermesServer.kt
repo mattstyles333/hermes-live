@@ -6,6 +6,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,6 +38,9 @@ class FakeHermesServer : Closeable {
     @Volatile var answerPings = true
     @Volatile var sendReady = true
     @Volatile var capabilitiesUnsupported = false
+
+    /** False: the fake never answers the client's close frame (the gateway's own fallback must cut the socket). */
+    @Volatile var answerClose = true
 
     /** Plain HTTP routes beyond the gateway's (path → handler): the voice tests add `/api/audio/…` ([FakeHermesVoice]). */
     val routes = ConcurrentHashMap<String, (RecordedRequest) -> MockResponse>()
@@ -119,7 +123,12 @@ class FakeHermesServer : Closeable {
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-            webSocket.close(1000, null)
+            side.closing.complete(code)
+            if (answerClose) webSocket.close(1000, null)
+        }
+
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
+            side.failed.complete(t)
         }
     }
 
@@ -133,6 +142,14 @@ class FakeHermesServer : Closeable {
     class ServerSide {
         lateinit var ws: WebSocket
         val frames = CopyOnWriteArrayList<JsonObject>()
+
+        /**
+         * How the client left this socket. Shared by every gateway test; only the close tests read it.
+         * [closing]: the close code the client sent (a clean close). [failed]: the socket dropped
+         * without a close frame (the client cut it, or the read failed).
+         */
+        val closing = CompletableDeferred<Int>()
+        val failed = CompletableDeferred<Throwable>()
         private val consumed = HashSet<Int>()
         private val arrived = MutableStateFlow(0)
 
