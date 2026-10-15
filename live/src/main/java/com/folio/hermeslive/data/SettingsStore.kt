@@ -17,6 +17,9 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
     private val _settings = MutableStateFlow(read())
     val settings: StateFlow<LiveSettings> = _settings.asStateFlow()
 
+    /** "Voice from" was saved before this process started (else [VoiceShell.settleVoiceSource] may migrate it). */
+    val voiceFromSavedAtStart: Boolean = prefs.contains(K_VOICE_FROM)
+
     private val _serverUrl = MutableStateFlow(prefs.getString(K_SERVER, null))
 
     /** The signed-in server's base URL, or null. */

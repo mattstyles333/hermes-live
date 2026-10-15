@@ -18,6 +18,9 @@ sealed interface HermesVoiceState {
     /** Not asked yet (signed out, another engine, or the app just started). */
     data object Unknown : HermesVoiceState
 
+    /** The first fetch is in flight: lines speak through the fallback meanwhile, never waiting for it. */
+    data object Fetching : HermesVoiceState
+
     /** The server could not say: [kind] is a failure kind's wire name (`offline`, `refused`, `http`, `none`: no voice-config route). */
     data class Unavailable(val kind: String) : HermesVoiceState
 
@@ -50,6 +53,7 @@ class HermesVoice(
     private val speakTimeoutMs: Long = SPEAK_TIMEOUT_MS,
     /** After an offline or timed-out request, that side is skipped (fails at once) for this long. */
     private val downMs: Long = DOWN_MS,
+    private val configTimeoutMs: Long = HermesVoiceApi.CONFIG_TIMEOUT_MS,
 ) {
     @Volatile private var ttsDownUntil = 0L
     @Volatile private var sttDownUntil = 0L
@@ -64,13 +68,37 @@ class HermesVoice(
     /** The config in memory, without a request (null: not fetched, or dropped). */
     fun cached(): HermesVoiceConfig? = current
 
-    /** The config: the one in memory while fresh, else fetched now. [force]: fetch now (call start). */
-    suspend fun config(force: Boolean = false): HermesVoiceConfig? = mutex.withLock {
+    /**
+     * The config: the one in memory while fresh, else fetched now. [force]: fetch now (app start,
+     * call start, Settings), waiting for a fetch already in flight. Unforced (a line about to be
+     * spoken or heard) never waits: while another fetch is in flight it gets what is in memory.
+     */
+    suspend fun config(force: Boolean = false): HermesVoiceConfig? {
+        if (force) return mutex.withLock { fetchOrGiveUp(nowMs()) }
         val now = nowMs()
         val c = current
-        if (!force && c != null && now - c.fetchedAtMs < ttlMs) return c
-        if (!force && c == null && failedAtMs?.let { now - it < retryMs } == true) return null
-        fetch(now)
+        if (c != null && now - c.fetchedAtMs < ttlMs) return c
+        if (c == null && failedAtMs?.let { now - it < retryMs } == true) return null
+        if (!mutex.tryLock()) return current
+        return try {
+            fetchOrGiveUp(now)
+        } finally {
+            mutex.unlock()
+        }
+    }
+
+    /** [fetch], marking a fetch cut short (cancelled, e.g. by the call start's bound) as a failed attempt. */
+    private suspend fun fetchOrGiveUp(now: Long): HermesVoiceConfig? {
+        if (current == null) _state.value = HermesVoiceState.Fetching
+        var done = false
+        try {
+            return fetch(now).also { done = true }
+        } finally {
+            if (!done) {
+                failedAtMs = now
+                if (current == null) _state.value = HermesVoiceState.Unavailable(FailureKind.Timeout.wire)
+            }
+        }
     }
 
     /** Drop the config and its keys (sign-out, another account). */
@@ -84,7 +112,7 @@ class HermesVoice(
 
     private suspend fun fetch(now: Long): HermesVoiceConfig? {
         val started = System.nanoTime()
-        val result = api.voiceConfig()
+        val result = api.voiceConfig(configTimeoutMs)
         val ms = (System.nanoTime() - started) / 1_000_000
         val attrs = linkedMapOf<String, Any?>("ms" to ms)
         when (result) {

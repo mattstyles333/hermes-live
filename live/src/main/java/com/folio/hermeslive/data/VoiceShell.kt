@@ -250,6 +250,17 @@ class VoiceShell(
     fun wantedModels(): Set<String> = SpeechModelChoice.wanted(settings.settings.value).map { it.id }.toSet()
 
     /**
+     * Hermes voice slice: an install that prepared Custom's voice before "Voice from" existed
+     * (its stock lines are OpenRouter's, even if it is on another engine now) keeps OpenRouter's
+     * voice. Settles once, the first process after the upgrade; reads the store only if it exists.
+     */
+    fun settleVoiceSource() {
+        if (settings.voiceFromSavedAtStart || settings.settings.value.voiceFrom != SourceChoice.Auto) return
+        if (preparedMarker() == null) return
+        settings.update { it.copy(voiceFrom = SourceChoice.OpenRouter) }
+    }
+
+    /**
      * The first time the picker exists here: an install with speech models keeps them (and is
      * told once about better ones), a new one gets the defaults ([SpeechModelChoice.firstRun]).
      */
@@ -353,6 +364,7 @@ class VoiceShell(
                     audioDecoder = { com.folio.hermeslive.audio.MediaCodecDecoder() },
                 ).also {
                     instance = it
+                    it.settleVoiceSource()
                     it.settleSpeechModels()
                 }
             }

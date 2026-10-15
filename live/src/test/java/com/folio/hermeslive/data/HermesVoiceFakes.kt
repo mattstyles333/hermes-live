@@ -50,6 +50,14 @@ class FakeHermesVoiceServer : Closeable {
     val speakCalls = AtomicInteger()
     val voicesCalls = AtomicInteger()
     val providerRequests = CopyOnWriteArrayList<RecordedRequest>()
+
+    /** Set: `voice-config` hangs until [release] (a tailnet host that is down). [configAsked] opens when it is asked. */
+    @Volatile var hang: java.util.concurrent.CountDownLatch? = null
+    val configAsked = java.util.concurrent.CountDownLatch(1)
+
+    fun release() {
+        hang?.countDown()
+    }
     val tokens = object : AccessTokenProvider {
         @Volatile var signedIn = true
         override suspend fun accessToken(): String = if (signedIn) "at-1" else throw HermesAuthException.SignInRequired()
@@ -65,7 +73,12 @@ class FakeHermesVoiceServer : Closeable {
                 if (request.headers["Authorization"] != "Bearer at-1") return json(401, """{"detail":"Unauthorized"}""")
                 if (hermesCode != 200) return json(hermesCode, """{"detail":"down"}""")
                 return when (request.url.encodedPath) {
-                    "/api/audio/voice-config" -> { configCalls.incrementAndGet(); json(200, configBody) }
+                    "/api/audio/voice-config" -> {
+                        configCalls.incrementAndGet()
+                        configAsked.countDown()
+                        hang?.await(30, java.util.concurrent.TimeUnit.SECONDS)
+                        json(200, configBody)
+                    }
                     "/api/audio/transcribe" -> { transcribeCalls.incrementAndGet(); json(200, """{"ok":true,"transcript":"$transcript","provider":"openai"}""") }
                     "/api/audio/speak" -> {
                         speakCalls.incrementAndGet()
@@ -110,6 +123,7 @@ class FakeHermesVoiceServer : Closeable {
         "tts":{"mode":"direct","wire":"$ttsWire","provider":"$ttsProvider","base_url":"$providerBase","api_key":"$LIVE_SENTINEL_KEY","model":"$ttsModel","voice":"$voice","speed":null}}"""
 
     override fun close() {
+        release()
         hermes.close()
         provider.close()
     }

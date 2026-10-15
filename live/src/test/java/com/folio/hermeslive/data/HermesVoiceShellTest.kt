@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -139,6 +140,21 @@ class HermesVoiceShellTest {
         assertTrue(t.server.requests.any { it.url.encodedPath.endsWith("/audio/speech") })
     }
 
+    @Test fun aHangingHermesNeverHoldsTheFirstLines() {
+        val t = shell("hv-hang")
+        fake.hang = java.util.concurrent.CountDownLatch(1)
+        val appStart = CoroutineScope(Dispatchers.IO).launch { t.shell.hermesVoices.refresh() }
+        assertTrue(fake.configAsked.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        val voice = t.shell.routedVoice(com.folio.hermes.openrouter.OpenRouter(com.folio.hermes.openrouter.OpenRouterConfig(baseUrl = "https://openrouter.example/api/v1"), key = t.keys::key, client = t.server.client()).speech)
+        assertEquals(VoiceRoute.OpenRouter, voice.route())
+        val t0 = System.nanoTime()
+        assertTrue(await { voice.billVoice(t.shell.storage.ttsCache(1_000_000)).clip("Got it.") } is OpenRouterResult.Ok)
+        val waited = (System.nanoTime() - t0) / 1_000_000
+        assertTrue("the first line waited $waited ms", waited < 2_000)
+        assertTrue("OpenRouter spoke it", t.server.requests.any { it.url.encodedPath.endsWith("/audio/speech") })
+        appStart.cancel()
+    }
+
     // ── re-render on change ──
 
     @Test fun preparingRendersInHermessVoiceAndAgainWhenTheVoiceChanges() {
@@ -170,6 +186,19 @@ class HermesVoiceShellTest {
         assertTrue("still counts as prepared", t.shell.prep.state.value.ready)
     }
 
+    @Test fun anInstallThatPreparedCustomBeforeKeepsOpenRouterAfterSwitchingEngines() {
+        val t = shell("hv-settle", custom = false)
+        t.shell.storage.store.put(VoiceShell.PREPARED_KEY, "bill|elevenlabs/eleven-v4-turbo|3")
+        assertEquals(SourceChoice.Auto, t.settings.settings.value.voiceFrom)
+        t.shell.settleVoiceSource()
+        assertEquals(SourceChoice.OpenRouter, t.settings.settings.value.voiceFrom)
+        // Control: never prepared, never chose.
+        val fresh = shell("hv-settle-new", custom = false)
+        fresh.shell.settleVoiceSource()
+        assertEquals(SourceChoice.Auto, fresh.settings.settings.value.voiceFrom)
+        assertFalse("nothing created to find out", fresh.shell.dirs.root.exists())
+    }
+
     // ── the key stays in memory ──
 
     @Test fun theProviderKeyIsNeverWrittenOrReported() {
@@ -186,8 +215,16 @@ class HermesVoiceShellTest {
         assertTrue("the provider got the key", fake.providerRequests.any { it.headers["xi-api-key"] == LIVE_SENTINEL_KEY })
 
         val roots = listOf(app.filesDir, app.noBackupFilesDir, app.cacheDir, File(app.applicationInfo.dataDir, "shared_prefs"))
-        val leaks = roots.flatMap { root -> root.walkTopDown().filter { it.isFile }.filter { f -> String(f.readBytes(), Charsets.ISO_8859_1).contains(LIVE_SENTINEL_KEY) }.toList() }
+        val files = roots.flatMap { root -> root.walkTopDown().filter { it.isFile }.toList() }
+        // The scan saw real data: the rendered clips and the cascade store are on disk.
+        assertTrue("TTS clips on disk", t.shell.dirs.tts.listFiles().orEmpty().any { it.name.endsWith(".clip") })
+        assertTrue(files.any { it.path.startsWith(t.shell.dirs.root.path) })
+        val leaks = files.filter { f -> String(f.readBytes(), Charsets.ISO_8859_1).contains(LIVE_SENTINEL_KEY) }
         assertTrue("written to $leaks", leaks.isEmpty())
+        // Preferences as the app reads them (Robolectric may hold them in memory, not in files).
+        val prefs = listOf("hv-key-settings", "hv-key-key", "hv-key-xai").map { app.getSharedPreferences(it, android.content.Context.MODE_PRIVATE).all }
+        assertTrue("the settings were read", prefs[0].containsKey("cascade_voice_from"))
+        prefs.forEach { all -> all.values.forEach { v -> assertFalse("$v", v.toString().contains(LIVE_SENTINEL_KEY)) } }
         assertTrue(raw.isNotEmpty())
         raw.forEach { line ->
             assertFalse(line, line.contains(LIVE_SENTINEL_KEY))
