@@ -2,8 +2,6 @@ package com.folio.hermeslive.meeting
 
 import com.folio.hermes.openrouter.FailureKind
 import com.folio.hermes.telemetry.TelemetrySink
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.time.ZoneId
 
 /**
@@ -16,6 +14,8 @@ import java.time.ZoneId
  *   a retry after a kill or a lost reply never starts a second task.
  * - **Held, not lost:** anything but `Sent` leaves it queued with the reason; [flush] tries
  *   again (on start, when the network comes back, when the user asks).
+ *
+ * The lock, the account check before reading and the submit are [HeldTasks], shared with offline memos.
  */
 class MeetingOutbox(
     private val log: MeetingLog,
@@ -25,7 +25,7 @@ class MeetingOutbox(
     private val wall: () -> Long,
     private val telemetry: TelemetrySink,
 ) {
-    private val lock = Mutex()
+    private val held = HeldTasks(tasks)
 
     /** What a send did, for the screen. */
     sealed interface Outcome {
@@ -38,10 +38,7 @@ class MeetingOutbox(
     }
 
     /** Send meeting [id] now if it is queued (its stored brief, or a fresh one). */
-    suspend fun send(id: String): Outcome = lock.withLock {
-        prepare()
-        sendLocked(id)
-    }
+    suspend fun send(id: String): Outcome = held.exclusive { sendLocked(id) }
 
     /**
      * Ask to send meeting [id] (after the meeting, or from history), then try at once. A queued
@@ -49,10 +46,9 @@ class MeetingOutbox(
      * with the reply lost); only a meeting already **sent** becomes a new request (a new key and a
      * fresh brief, so additions made since count).
      */
-    suspend fun queue(id: String): Outcome = lock.withLock {
-        prepare()
-        val meta = log.meta(id) ?: return@withLock Outcome.Missing
-        if (meta.phase.live) return@withLock Outcome.Missing
+    suspend fun queue(id: String): Outcome = held.exclusive {
+        val meta = log.meta(id) ?: return@exclusive Outcome.Missing
+        if (meta.phase.live) return@exclusive Outcome.Missing
         if (meta.phase != MeetingPhase.Queued) {
             log.putBrief(id, null)
             log.put(meta.copy(phase = MeetingPhase.Queued, queuedAt = wall(), sends = meta.sends + 1, taskId = null, heldReason = null))
@@ -60,12 +56,8 @@ class MeetingOutbox(
         sendLocked(id)
     }
 
-    /** Before any meeting is read: the task side may wipe the store for another account. */
-    private suspend fun prepare() = runCatching { tasks().prepare() }
-
     /** Try everything held: queued meetings, then tasks Hermes has not taken. */
-    suspend fun flush(): Int = lock.withLock {
-        prepare()
+    suspend fun flush(): Int = held.exclusive {
         var sent = 0
         log.all().filter { it.phase == MeetingPhase.Queued }.forEach { if (sendLocked(it.id) is Outcome.Sent) sent++ }
         log.tasks().filter { it.taskId == null }.forEach { if (sendTaskLocked(it) is Outcome.Sent) sent++ }
@@ -73,8 +65,7 @@ class MeetingOutbox(
     }
 
     /** Hold and try one in-meeting task. */
-    suspend fun task(task: MeetingTask): Outcome = lock.withLock {
-        prepare()
+    suspend fun task(task: MeetingTask): Outcome = held.exclusive {
         log.putTask(task)
         sendTaskLocked(task)
     }
@@ -85,26 +76,29 @@ class MeetingOutbox(
         val started = wall()
         var chunked = false
         var chunks = 1
-        val brief = log.brief(id) ?: run {
-            val transcript = log.transcript(id)
-            val compiled = try {
-                MeetingBrief.compile(meta, transcript, zone(), writer())
-            } catch (e: MeetingBrief.WriterUnavailable) {
-                return hold(meta, if (e.kind == FailureKind.Offline || e.kind == FailureKind.Timeout) "offline" else "writer_" + e.kind.wire)
+        var chars = 0
+        val r = held.send(meta.requestKey, MeetingBrief.label(meta)) {
+            val brief = log.brief(id) ?: run {
+                val compiled = try {
+                    MeetingBrief.compile(meta, log.transcript(id), zone(), writer())
+                } catch (e: MeetingBrief.WriterUnavailable) {
+                    return@send HeldTasks.Compiled.Hold(if (e.kind == FailureKind.Offline || e.kind == FailureKind.Timeout) "offline" else "writer_" + e.kind.wire)
+                }
+                chunked = compiled.chunked
+                chunks = compiled.chunks
+                log.putBrief(id, compiled.brief)
+                compiled.brief
             }
-            chunked = compiled.chunked
-            chunks = compiled.chunks
-            log.putBrief(id, compiled.brief)
-            compiled.brief
+            chars = brief.length
+            HeldTasks.Compiled.Brief(brief)
         }
-        return when (val r = runCatching { tasks().submit(brief, MeetingBrief.label(meta), meta.requestKey) }.getOrElse { MeetingSubmit.NotAvailable("failed") }) {
-            is MeetingSubmit.Sent -> {
+        return when (r) {
+            is HeldTasks.Result.Sent -> {
                 log.put(meta.copy(phase = MeetingPhase.Sent, taskId = r.taskId, sentAt = wall(), heldReason = null))
-                event("meeting.sent", mapOf("chars" to brief.length, "chunked" to chunked, "chunks" to chunks, "ms" to wall() - started, "queued" to r.queued, "send" to meta.sends))
+                event("meeting.sent", mapOf("chars" to chars, "chunked" to chunked, "chunks" to chunks, "ms" to wall() - started, "queued" to r.queued, "send" to meta.sends))
                 Outcome.Sent(r.taskId)
             }
-            MeetingSubmit.Offline -> hold(meta, "offline")
-            is MeetingSubmit.NotAvailable -> hold(meta, r.reason)
+            is HeldTasks.Result.Held -> hold(meta, r.reason)
         }
     }
 
@@ -116,15 +110,13 @@ class MeetingOutbox(
 
     private suspend fun sendTaskLocked(task: MeetingTask): Outcome {
         task.taskId?.let { return Outcome.Sent(it) }
-        val r = runCatching { tasks().submit(task.brief, task.label, task.key) }.getOrElse { MeetingSubmit.NotAvailable("failed") }
-        return when (r) {
-            is MeetingSubmit.Sent -> {
+        return when (val r = held.send(task.key, task.label) { HeldTasks.Compiled.Brief(task.brief) }) {
+            is HeldTasks.Result.Sent -> {
                 log.putTask(task.copy(taskId = r.taskId, heldReason = null))
                 event("meeting.task_sent", mapOf("queued" to r.queued))
                 Outcome.Sent(r.taskId)
             }
-            MeetingSubmit.Offline -> Outcome.Held("offline").also { log.putTask(task.copy(heldReason = "offline")) }
-            is MeetingSubmit.NotAvailable -> Outcome.Held(r.reason).also { log.putTask(task.copy(heldReason = r.reason)) }
+            is HeldTasks.Result.Held -> Outcome.Held(r.reason).also { log.putTask(task.copy(heldReason = r.reason)) }
         }
     }
 

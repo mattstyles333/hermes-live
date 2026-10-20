@@ -50,6 +50,8 @@ class CascadeMeetingTasks(
     private val tasks: suspend () -> CascadeTasks?,
     private val signedIn: () -> Boolean,
     private val afterStart: () -> Unit = {},
+    /** The held reason when the runtime can't be built (meetings: `bill_off`; offline memos: `no_runtime`). */
+    private val noRuntime: String = "bill_off",
 ) : MeetingTasks {
     /** Build Bill's runtime now (its account check may wipe the store) before the outbox reads a meeting. */
     override suspend fun prepare() {
@@ -58,7 +60,7 @@ class CascadeMeetingTasks(
 
     override suspend fun submit(brief: String, label: String, key: String): MeetingSubmit {
         if (!signedIn()) return MeetingSubmit.NotAvailable("signed_out")
-        val api = tasks() ?: return MeetingSubmit.NotAvailable("bill_off")
+        val api = tasks() ?: return MeetingSubmit.NotAvailable(noRuntime)
         return when (val r = api.startTask(brief, label, summary = null, key = key)) {
             is TaskReply.Started -> MeetingSubmit.Sent(r.taskId, r.queued).also { runCatching(afterStart) }
             TaskReply.NoReply, TaskReply.NotReady -> MeetingSubmit.NotAvailable("no_reply")
