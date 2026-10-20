@@ -154,5 +154,5 @@ object CallNotifications {
         ApprovalChoice.Deny -> "Deny"
     }
 
-    fun approvalNotificationId(id: String): Int = 1000 + (id.hashCode() and 0x7fff)
+    fun approvalNotificationId(id: String): Int = Notices.id(Notices.Kind.Approval, id)
 }

@@ -1,14 +1,11 @@
 package com.folio.hermeslive.service
 
-import android.Manifest
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
-import androidx.core.content.ContextCompat
 import com.folio.hermeslive.LiveActivity
 import com.folio.hermeslive.R
 
@@ -26,7 +23,7 @@ object ResultNotifications {
     const val ACTION_OPEN_TASK = "com.folio.hermeslive.action.OPEN_TASK"
     const val EXTRA_TASK_ID = "com.folio.hermeslive.extra.TASK_ID"
 
-    fun notificationId(taskId: String): Int = 3000 + (taskId.hashCode() and 0x7fff)
+    fun notificationId(taskId: String): Int = Notices.id(Notices.Kind.Result, taskId)
 
     fun build(context: Context, notice: TaskResultNotice): Notification {
         // Hear it on the public version too: a lock screen that hides sensitive content shows only this.
@@ -52,13 +49,7 @@ object ResultNotifications {
     }
 
     /** Post [notice]. False when the app may not post notifications. */
-    fun post(context: Context, notice: TaskResultNotice): Boolean {
-        val nm = context.getSystemService(NotificationManager::class.java) ?: return false
-        if (!nm.areNotificationsEnabled()) return false
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
-        nm.notify(notificationId(notice.taskId), build(context, notice))
-        return true
-    }
+    fun post(context: Context, notice: TaskResultNotice): Boolean = Notices.post(context, notificationId(notice.taskId), build(context, notice))
 
     fun cancel(context: Context, taskId: String) {
         context.getSystemService(NotificationManager::class.java)?.cancel(notificationId(taskId))
