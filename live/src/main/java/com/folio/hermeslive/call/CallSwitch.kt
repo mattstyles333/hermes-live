@@ -121,7 +121,7 @@ class CallSwitch(
         }
         _active.value?.takeIf { it !== call }?.dismissSummary()
         _active.value = call
-        call.start(if (engine == Engine.Memo && !request.memo) request.copy(memo = true, memoCause = CallFailure.Offline.wire) else request)
+        call.start(if (engine == Engine.Memo && !request.memo) request.copy(memo = true, memoCause = MemoCause.Offline) else request)
     }
 
     override fun end() = current().end()

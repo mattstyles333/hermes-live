@@ -8,6 +8,7 @@ import com.folio.hermeslive.call.Earcon
 import com.folio.hermeslive.call.FakeAudio
 import com.folio.hermeslive.call.FakeEffects
 import com.folio.hermeslive.call.FocusMode
+import com.folio.hermeslive.call.MemoCause
 import com.folio.hermeslive.data.LiveSettings
 import com.folio.hermeslive.meeting.Events
 import kotlinx.coroutines.CoroutineScope
@@ -95,13 +96,13 @@ class MemoCallTest {
 
     @Test fun theStartLinePlaysFirstAndTheMicOpensOnlyAfterIt() = runTest {
         val rig = Rig(this)
-        rig.call.start(CallRequest(memo = true, entry = "memo", memoCause = "offline"))
+        rig.call.start(CallRequest(memo = true, entry = "memo", memoCause = MemoCause.Offline))
         runCurrent()
         assertTrue(rig.call.state.value.inCall)
         assertTrue(rig.call.state.value.memo)
         assertEquals(1, rig.audio.began)
         assertEquals(listOf(FocusMode.Hold), rig.audio.focus)
-        assertEquals(MemoCall.startLine("offline") to 0L, rig.speech.said.single())
+        assertEquals(MemoCall.lines(MemoCause.Offline).start to 0L, rig.speech.said.single())
         advanceTimeBy(1_999)
         assertNull("the line is never recorded", rig.mic.openedAt)
         assertNull(rig.store.get("m1"))
@@ -143,7 +144,7 @@ class MemoCallTest {
 
     @Test fun itRecordsInChunksAndSavesTheMemoWhenEnded() = runTest {
         val rig = Rig(this)
-        rig.call.start(CallRequest(memo = true, memoCause = "offline"))
+        rig.call.start(CallRequest(memo = true, memoCause = MemoCause.Offline))
         advanceTimeBy(2_000 + 2_500)
         rig.call.end()
         runCurrent()
@@ -158,13 +159,13 @@ class MemoCallTest {
         assertEquals(44L + 8_000 * 2, rig.store.chunk("m1", 2).length())
         assertTrue(rig.mic.closed)
         assertEquals(listOf(memo), rig.saved)
-        assertEquals(MemoCall.endLine("offline", capped = false), rig.speech.said.last().first)
+        assertEquals(MemoCall.endLine(MemoCause.Offline, capped = false), rig.speech.said.last().first)
         assertTrue("the end line plays after the mic closed", rig.speech.said.last().second >= 4_500)
         assertEquals(1, rig.speech.shut)
         assertEquals(1, rig.audio.ended)
         assertEquals(CallPhase.Ended, rig.call.state.value.phase)
         assertFalse(rig.call.state.value.inCall)
-        assertEquals(MemoCall.savedNotice("offline"), rig.call.state.value.notice)
+        assertEquals(MemoCall.lines(MemoCause.Offline).saved, rig.call.state.value.notice)
         assertNull(rig.call.recordingId)
         val end = rig.events.all.single { it.first == "memo.end" }.second
         assertEquals(mapOf("reason" to "ended", "duration_s" to 2L, "chunks" to 3, "saved" to true), end)
@@ -197,12 +198,12 @@ class MemoCallTest {
 
     @Test fun theCapStopsTheMemoAndSaysSo() = runTest {
         val rig = Rig(this, MemoSettings(chunkMs = 1_000, capMs = 3_000))
-        rig.call.start(CallRequest(memo = true, memoCause = "offline"))
+        rig.call.start(CallRequest(memo = true, memoCause = MemoCause.Offline))
         advanceTimeBy(2_000 + 6_000)
         advanceTimeBy(10_000)
         val memo = rig.store.get("m1")!!
         assertEquals(3_000L, memo.durationMs)
-        assertEquals(MemoCall.endLine("offline", capped = true), rig.speech.said.last().first)
+        assertEquals(MemoCall.endLine(MemoCause.Offline, capped = true), rig.speech.said.last().first)
         assertTrue(rig.speech.said.last().first.startsWith("That's ten minutes"))
         assertEquals("cap", rig.events.all.single { it.first == "memo.end" }.second["reason"])
         assertFalse(rig.call.state.value.inCall)
@@ -248,6 +249,20 @@ class MemoCallTest {
         assertNull(rig.store.get("m2"))
         assertEquals(CallPhase.Ended, call.state.value.phase)
         assertTrue(call.state.value.error!!.contains("microphone"))
+    }
+
+    @Test fun eachCauseHasItsOwnLinesAndTelemetry() = runTest {
+        val rig = Rig(this)
+        rig.call.start(CallRequest(memo = true, memoCause = MemoCause.CallDropped))
+        runCurrent()
+        val said = rig.speech.said.single().first
+        assertTrue(said.startsWith("The call dropped"))
+        assertEquals("The call dropped. Recording a memo for Hermes.", rig.call.state.value.notice)
+        assertEquals("call_dropped", rig.events.all.single { it.first == "memo.start" }.second["cause"])
+        assertEquals(MemoCause.entries.size, MemoCause.entries.map { MemoCall.lines(it) }.size)
+        assertTrue(MemoCause.entries.filter { it != MemoCause.CallDropped }.none { MemoCall.lines(it).start.contains("dropped") })
+        rig.call.end()
+        advanceTimeBy(10_000)
     }
 
     private companion object {

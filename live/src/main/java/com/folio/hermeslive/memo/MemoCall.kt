@@ -10,6 +10,7 @@ import com.folio.hermeslive.call.CallRequest
 import com.folio.hermeslive.call.CallUiState
 import com.folio.hermeslive.call.Earcon
 import com.folio.hermeslive.call.FocusMode
+import com.folio.hermeslive.call.MemoCause
 import com.folio.hermeslive.call.RouteChoice
 import com.folio.hermeslive.call.RouteKind
 import com.folio.hermeslive.call.RouteOption
@@ -98,15 +99,15 @@ class MemoCall(
         silent = request.muted
         otherCall = false
         recorder = null
-        _state.value = CallUiState(phase = CallPhase.Live, memo = true, muted = request.muted, notice = noticeFor(request.memoCause), startedAtMs = clock())
+        _state.value = CallUiState(phase = CallPhase.Live, memo = true, muted = request.muted, notice = lines(request.memoCause).notice, startedAtMs = clock())
         audio.begin(this)
         devices = audio.devices()
         route = RouteChoice(RouteSelector.auto(devices, settings().fallbackRoute), manual = false)
         applyRoute()
         audio.setFocus(FocusMode.Hold)
-        event("memo.start", mapOf("entry" to request.entry, "cause" to request.memoCause))
+        event("memo.start", mapOf("entry" to request.entry, "cause" to request.memoCause.wire))
         startJob = scope.launch {
-            say(startLine(request.memoCause))
+            say(lines(request.memoCause).start)
             if (!finishing) record(memoId)
         }
     }
@@ -283,7 +284,7 @@ class MemoCall(
             val notice = when {
                 capture?.error != null -> "The microphone is not available. Nothing was saved."
                 !saved -> "Too short. Nothing was saved."
-                else -> savedNotice(request.memoCause)
+                else -> lines(request.memoCause).saved
             }
             if (saved && !skipLine) say(endLine(request.memoCause, capped = capture!!.capped))
             tts?.let { runCatching { it.shutdown() } }
@@ -300,23 +301,37 @@ class MemoCall(
     companion object {
         const val POLL_MS = 10L
 
-        fun startLine(cause: String): String = when (cause) {
-            "offline" -> "You're offline. I'm recording; I'll send this to Hermes when you're back."
-            "asked" -> "Recording. I'll send this to Hermes when you're done."
-            else -> "Hermes can't take a call right now. I'm recording; I'll send this to Hermes when I can."
+        /** What a memo says and shows for its [MemoCause]: spoken [start] and [end], the screen's [notice] and [saved]. */
+        data class Lines(val start: String, val end: String, val notice: String, val saved: String)
+
+        fun lines(cause: MemoCause): Lines = when (cause) {
+            MemoCause.Asked -> Lines(
+                "Recording. I'll send this to Hermes when you're done.",
+                "Saved. I'll send it to Hermes.",
+                "Recording a memo for Hermes.",
+                "Memo saved. It goes to Hermes as a task.",
+            )
+            MemoCause.Offline -> Lines(
+                "You're offline. I'm recording; I'll send this to Hermes when you're back.",
+                "Saved. I'll send it when you're online.",
+                "You're offline. Recording a memo for Hermes.",
+                "Memo saved. It goes to Hermes as a task once you're online.",
+            )
+            MemoCause.HermesUnreachable, MemoCause.VoiceUnavailable -> Lines(
+                "Hermes can't take a call right now. I'm recording; I'll send this to Hermes when I can.",
+                "Saved. I'll send it to Hermes when it's back.",
+                "Hermes can't take a call. Recording a memo for it.",
+                "Memo saved. It goes to Hermes as a task when it's back.",
+            )
+            MemoCause.CallDropped -> Lines(
+                "The call dropped. I'm recording; I'll send this to Hermes.",
+                "Saved. I'll send it to Hermes when it's back.",
+                "The call dropped. Recording a memo for Hermes.",
+                "Memo saved. It goes to Hermes as a task when it's back.",
+            )
         }
 
-        fun endLine(cause: String, capped: Boolean): String =
-            (if (capped) "That's ten minutes, the most for one memo. " else "") +
-                if (cause == "asked") "Saved. I'll send it to Hermes." else "Saved. I'll send it when you're online."
-
-        fun noticeFor(cause: String): String = when (cause) {
-            "offline" -> "You're offline. Recording a memo for Hermes."
-            "asked" -> "Recording a memo for Hermes."
-            else -> "Hermes can't take a call. Recording a memo for it."
-        }
-
-        fun savedNotice(cause: String): String =
-            if (cause == "asked") "Memo saved. It goes to Hermes as a task." else "Memo saved. It goes to Hermes as a task once you're online."
+        fun endLine(cause: MemoCause, capped: Boolean): String =
+            (if (capped) "That's ten minutes, the most for one memo. " else "") + lines(cause).end
     }
 }

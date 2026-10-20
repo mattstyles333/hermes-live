@@ -48,9 +48,33 @@ data class CallRequest(
     val forceGptLive: Boolean = false,
     /** Use Bill for this call even with Grok chosen (Grok offline: "Continue in Bill's memo mode"). */
     val forceBill: Boolean = false,
-    /** Why an offline memo was started, for telemetry: `asked`, or a [CallFailure.wire] (offline-memo slice). */
-    val memoCause: String = "asked",
+    /** Why an offline memo was started: its lines and telemetry (offline-memo slice). */
+    val memoCause: MemoCause = MemoCause.Asked,
 )
+
+/** Why an offline memo is recorded (its spoken lines, its screen notice, `memo.start`'s `cause`). */
+enum class MemoCause(val wire: String) {
+    /** The Memo shortcut, the tile offline, or "Record a memo" with nothing failed. */
+    Asked("asked"),
+    Offline("offline"),
+    HermesUnreachable("hermes_unreachable"),
+    VoiceUnavailable("voice_unavailable"),
+
+    /** A GPT-Live call dropped and could not reconnect: "Continue as memo". */
+    CallDropped("call_dropped"),
+    ;
+
+    companion object {
+        fun of(wire: String?): MemoCause = entries.firstOrNull { it.wire == wire } ?: Asked
+
+        fun of(failure: CallFailure?): MemoCause = when (failure) {
+            CallFailure.Offline -> Offline
+            CallFailure.HermesUnreachable -> HermesUnreachable
+            CallFailure.VoiceUnavailable -> VoiceUnavailable
+            CallFailure.Other, null -> Asked
+        }
+    }
+}
 
 /**
  * Why a GPT-Live call could not start (or could not reconnect), alongside its message (offline-memo

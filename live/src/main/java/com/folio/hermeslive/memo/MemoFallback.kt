@@ -4,6 +4,7 @@ import com.folio.hermeslive.call.CallFailure
 import com.folio.hermeslive.call.CallPhase
 import com.folio.hermeslive.call.CallRequest
 import com.folio.hermeslive.call.CallUiState
+import com.folio.hermeslive.call.MemoCause
 
 /**
  * What the call screen does after a GPT-Live call failed (pure): with Settings › Voice › Offline
@@ -25,12 +26,29 @@ object MemoFallback {
 
     /** The memo call for [state]'s failure. */
     fun request(state: CallUiState, entry: String): CallRequest =
-        CallRequest(memo = true, entry = entry, memoCause = if (state.summary != null) "call_dropped" else state.failure?.wire ?: "asked")
+        CallRequest(memo = true, entry = entry, memoCause = if (state.summary != null) MemoCause.CallDropped else MemoCause.of(state.failure))
 
     fun offerText(state: CallUiState): String = when {
         state.summary != null -> "Continue as memo"
         state.failure == CallFailure.Offline -> "You're offline · Record a memo"
         state.failure == CallFailure.VoiceUnavailable -> "Voice is unavailable · Record a memo"
         else -> "Hermes is unreachable · Record a memo"
+    }
+}
+
+/**
+ * The call screen's auto-start ([MemoFallback.Action.Start]), fired once per failed call: on the
+ * change into the failed state, not again when the screen sees the same state again, and never
+ * for a memo's own states (a memo is not a GPT-Live call).
+ */
+class MemoAutoStart {
+    private var wasStart = false
+
+    /** The memo to start now, or null. */
+    fun onState(state: CallUiState, memosOn: Boolean): CallRequest? {
+        val start = MemoFallback.decide(state, memosOn) == MemoFallback.Action.Start
+        val fire = start && !wasStart
+        wasStart = start
+        return if (fire) MemoFallback.request(state, entry = "fallback") else null
     }
 }

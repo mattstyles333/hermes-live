@@ -125,8 +125,8 @@ class MemoOffStateTest {
         assertEquals(MemoFallback.Action.None, MemoFallback.decide(CallUiState(phase = CallPhase.Failed), memosOn = true))
         val dropped = CallUiState(phase = CallPhase.Ended, summary = CallSummary(1, null, "x"), failure = CallFailure.Offline)
         assertEquals("a dropped call is offered, not taken over", MemoFallback.Action.Offer, MemoFallback.decide(dropped, memosOn = true))
-        assertEquals("call_dropped", MemoFallback.request(dropped, "fallback").memoCause)
-        assertEquals("offline", MemoFallback.request(failed(CallFailure.Offline), "fallback").memoCause)
+        assertEquals(com.folio.hermeslive.call.MemoCause.CallDropped, MemoFallback.request(dropped, "fallback").memoCause)
+        assertEquals(com.folio.hermeslive.call.MemoCause.Offline, MemoFallback.request(failed(CallFailure.Offline), "fallback").memoCause)
         assertTrue(MemoFallback.request(failed(CallFailure.Offline), "fallback").memo)
     }
 

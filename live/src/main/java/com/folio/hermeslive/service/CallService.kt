@@ -17,6 +17,8 @@ import androidx.core.content.ContextCompat
 import com.folio.hermes.telemetry.Telemetry
 import com.folio.hermeslive.call.VoiceCall
 import com.folio.hermeslive.call.CallRequest
+import com.folio.hermeslive.call.CallSwitch
+import com.folio.hermeslive.call.MemoCause
 import com.folio.hermeslive.call.CallUiState
 import com.folio.hermeslive.call.HeadsetButtons
 import com.folio.hermeslive.call.HeadsetCommand
@@ -37,6 +39,9 @@ class CallService : Service() {
     /** Seam for tests; the app's engine by default. */
     internal var engineProvider: () -> VoiceCall = { graph.calls }
     private val engine: VoiceCall get() = engineProvider()
+
+    /** The call this service's latest start began (the switch's engine for it); onDestroy ends only this one. */
+    private var call: VoiceCall? = null
     private var watcher: Job? = null
     private var media: MediaSession? = null
     private var longPressHandled = false
@@ -72,18 +77,27 @@ class CallService : Service() {
                 entry = intent.getStringExtra(EXTRA_ENTRY) ?: "app",
                 memo = intent.getBooleanExtra(EXTRA_MEMO, false),
                 forceGptLive = intent.getBooleanExtra(EXTRA_FORCE_GPT_LIVE, false),
+                memoCause = MemoCause.of(intent.getStringExtra(EXTRA_MEMO_CAUSE)),
             ),
         )
-        watch()
+        val e = engine
+        watch((e as? CallSwitch)?.active?.value ?: e, startId)
         return START_NOT_STICKY
     }
 
-    private fun watch() {
-        if (watcher?.isActive == true) return
+    /**
+     * Follow [started] (the call [startId] began). A newer start re-binds it, so a call that failed
+     * just before (GPT-Live offline, with its memo auto-started) can never stop the service under
+     * the new one; and the stop names its own start ([stopSelfResult]), so Android keeps the service
+     * for a start it has not seen yet.
+     */
+    private fun watch(started: VoiceCall, startId: Int) {
+        watcher?.cancel()
+        call = started
         startMediaSession()
         watcher = graph.mainScope.launch {
             // Only what the notification, approvals and tile show: the orb level changes every 150 ms.
-            engine.state
+            started.state
                 .map { NotificationView(it.inCall, it.muted, CallNotifications.statusLine(it), it.startedAtMs, it.approvals.map { a -> a.id }, it) }
                 .distinctUntilChanged { a, b -> a.copy(state = b.state) == b }
                 .collectLatest { view ->
@@ -93,9 +107,9 @@ class CallService : Service() {
                 TileService.requestListeningState(this@CallService, ComponentName(this@CallService, CallTileService::class.java))
                 if (state.inCall) {
                     nm.notify(CallNotifications.CALL_ID, CallNotifications.call(this@CallService, state))
-                } else {
+                } else if (call === started) {
                     stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+                    stopSelfResult(startId)
                 }
             }
         }
@@ -158,8 +172,9 @@ class CallService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         shownApprovals.forEach { nm.cancel(CallNotifications.approvalNotificationId(it)) }
         shownApprovals.clear()
-        // Never leave a call running without its foreground notice.
-        if (engine.state.value.inCall) engine.end()
+        // Never leave a call running without its foreground notice (only the one this service started).
+        call?.takeIf { it.state.value.inCall }?.end()
+        call = null
         super.onDestroy()
     }
 
@@ -171,6 +186,7 @@ class CallService : Service() {
         const val EXTRA_ENTRY = "entry"
         const val EXTRA_MEMO = "memo"
         const val EXTRA_FORCE_GPT_LIVE = "force_gpt_live"
+        const val EXTRA_MEMO_CAUSE = "memo_cause"
         private val HEADSET_KEYS = setOf(KeyEvent.KEYCODE_HEADSETHOOK, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
 
         /** Start a call. Call only from a visible activity, after RECORD_AUDIO is granted. */
@@ -182,6 +198,7 @@ class CallService : Service() {
                 .putExtra(EXTRA_ENTRY, request.entry)
                 .putExtra(EXTRA_MEMO, request.memo)
                 .putExtra(EXTRA_FORCE_GPT_LIVE, request.forceGptLive)
+                .putExtra(EXTRA_MEMO_CAUSE, request.memoCause.wire)
             ContextCompat.startForegroundService(context, intent)
         }
     }

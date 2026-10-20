@@ -111,7 +111,7 @@ class EngineSwitchTest {
         r.switch.start(CallRequest(entry = "launcher"))
         val start = r.memos.single().starts.single()
         assertTrue(start.memo)
-        assertEquals("offline", start.memoCause)
+        assertEquals(MemoCause.Offline, start.memoCause)
         assertEquals("launcher", start.entry)
         assertTrue(r.gpt.starts.isEmpty())
         assertSame(r.memos.single().state, r.switch.state)
@@ -127,7 +127,7 @@ class EngineSwitchTest {
             val r = MemoRig(active = engine == "bill", grok = engine == "grok")
             assertEquals(engine, CallPlan.Ready(Engine.Memo), r.switch.plan(CallRequest(memo = true)))
             r.switch.start(CallRequest(memo = true, entry = "memo"))
-            assertEquals("asked", r.memos.single().starts.single().memoCause)
+            assertEquals(MemoCause.Asked, r.memos.single().starts.single().memoCause)
         }
     }
 
