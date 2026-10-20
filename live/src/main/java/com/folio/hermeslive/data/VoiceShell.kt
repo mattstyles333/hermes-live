@@ -117,11 +117,11 @@ class VoiceShell(
     /**
      * Hermes's voice may be asked for: signed in, and Custom with "Voice from" Hermes, or cloud
      * speech recognition on (calls or meeting mode) with "Cloud speech recognition from" Hermes, or
-     * offline memos on (Hermes transcribes them). Otherwise nothing is fetched (a GPT-Live, Grok or
+     * offline memos on or one held (Hermes transcribes them). Otherwise nothing is fetched (a GPT-Live, Grok or
      * OpenRouter-only user never holds its keys).
      */
     fun hermesVoiceWanted(s: LiveSettings): Boolean = signedIn() &&
-        ((s.voiceEngine == VoiceEngine.Cascade && s.voiceFrom.prefersHermes) || (s.speechRecognition == SpeechRecognition.Cloud && s.sttFrom.prefersHermes) || s.offlineMemos)
+        ((s.voiceEngine == VoiceEngine.Cascade && s.voiceFrom.prefersHermes) || (s.speechRecognition == SpeechRecognition.Cloud && s.sttFrom.prefersHermes) || s.offlineMemos || memosHeld)
 
     /** Signed in to Hermes now. */
     val isSignedIn: Boolean get() = signedIn()
@@ -135,10 +135,19 @@ class VoiceShell(
     /** Bill's voice routed between Hermes and OpenRouter on [speech] (OpenRouter's TTS client). */
     fun routedVoice(speech: com.folio.hermes.openrouter.SpeechClient, live: () -> LiveSettings = { settings.settings.value }): RoutedVoice =
         RoutedVoice(live, hermesVoices, RoutedVoice.openRouterSource(speech, live), openRouterUsable = { keys.status.value.usable })
+    /**
+     * An offline memo already recorded waits to be sent (kept by `MemoHost`). Such memos are always
+     * sent, even with Settings › Voice › Offline memos switched off since: the task gate opens for them.
+     */
+    @Volatile var memosHeld: Boolean = false
+
+    /** New offline memos may be recorded: the switch on **and** signed in (the recorder, the Memo shortcut, the tile, "Record a memo"). */
+    fun memosOn(): Boolean = settings.settings.value.offlineMemos && signedIn()
+
     val gate = CascadeGate(
         { settings.settings.value }, { keys.status.value }, { xaiKeys?.status?.value ?: KeyStatus() },
         gptLiveAgents = { signedIn() && GptLivePrefs.of(context).agents.value },
-        offlineMemos = { settings.settings.value.offlineMemos && signedIn() },
+        offlineMemos = { signedIn() && (settings.settings.value.offlineMemos || memosHeld) },
     )
     val speechModels: SpeechModels get() = host?.speechModels ?: SpeechModels.None
     val offCallHooks: OffCallHooks get() = host?.offCallHooks ?: OffCallHooks.None

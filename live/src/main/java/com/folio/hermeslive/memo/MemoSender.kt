@@ -32,6 +32,9 @@ interface MemoNotices {
 
     /** "The memo had no speech". */
     fun empty(record: MemoRecord)
+
+    /** "A memo was too long to send" (it can never go). */
+    fun failed(record: MemoRecord)
 }
 
 /** The `JobScheduler` job that wakes the app when the network is back ([MemoJobs] in the app). */
@@ -173,6 +176,9 @@ class MemoSender(
         val memo = store.get(id) ?: return Outcome.Missing
         val f = memo.copy(state = MemoState.Failed, heldReason = reason, attempts = memo.attempts + 1)
         store.put(f)
+        // A terminal state keeps no audio.
+        store.deleteAudio(id)
+        runCatching { notices.failed(f) }
         send("failed", f, started, reason)
         return Outcome.Failed(reason)
     }
@@ -193,11 +199,13 @@ class MemoSender(
     /** The brief Hermes gets: the memo verbatim (≤ 10 min ≈ 1,500 words, far under any cap). */
     fun brief(memo: MemoRecord): String {
         val at = Instant.ofEpochMilli(memo.createdAt).atZone(zone())
-        return "Offline voice memo recorded at ${BRIEF_TIME.format(at)} (${zoneName(at.zone)} time). " +
+        val what = if (memo.typed) "Request saved offline" else "Offline voice memo recorded"
+        return "$what at ${BRIEF_TIME.format(at)} (${zoneName(at.zone)} time). " +
             "Treat it as the user's request(s):\n\n${memo.transcript.orEmpty()}"
     }
 
-    fun label(memo: MemoRecord): String = "Voice memo · " + LABEL_TIME.format(Instant.ofEpochMilli(memo.createdAt).atZone(zone()))
+    fun label(memo: MemoRecord): String =
+        (if (memo.typed) "Text memo · " else "Voice memo · ") + LABEL_TIME.format(Instant.ofEpochMilli(memo.createdAt).atZone(zone()))
 
     companion object {
         /** Retried by the network coming back, the account or the app start, not by a timer. */

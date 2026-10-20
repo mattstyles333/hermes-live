@@ -292,6 +292,9 @@ class VoiceSettingsController(private val shell: VoiceShell, private val scope: 
 
     /** The voice pickers over this shell (lists, previews; a voice change goes through [update]). */
     /** Settings › Voice › Custom's Hermes part (Hermes voice slice). */
+    /** New offline memos may be recorded (the switch on, signed in): the Memo shortcut is published. */
+    fun memosOn(): Boolean = shell.memosOn()
+
     fun hermes(): HermesVoiceSettingsController = HermesVoiceSettingsController(scope, shell, signedIn = { shell.isSignedIn })
 
     fun pickers(): VoicePickerController = VoicePickerController(

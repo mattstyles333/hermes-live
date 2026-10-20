@@ -91,6 +91,11 @@ class MemoCall(
         private set
 
     override fun start(request: CallRequest) {
+        // Shared text or Folio's prompt, offline: a text memo (no mic), sent the same way.
+        request.prompt?.trim()?.takeIf { it.isNotEmpty() }?.let { text ->
+            textMemo(text, request)
+            return
+        }
         if (_state.value.inCall) return
         val memoId = newId()
         id = memoId
@@ -112,6 +117,19 @@ class MemoCall(
             say(lines(request.memoCause).start)
             if (!finishing) record(memoId)
         }
+    }
+
+    /** Store [text] as its own memo, ready to send. During a recording that recording goes on. */
+    private fun textMemo(text: String, request: CallRequest) {
+        val memo = MemoRecord(newId(), createdAt = clock(), state = MemoState.Transcribed, transcript = text, typed = true)
+        val saved = runCatching { store().put(memo) }.isSuccess
+        event("memo.start", mapOf("entry" to request.entry, "cause" to request.memoCause.wire, "kind" to "text"))
+        event("memo.end", mapOf("reason" to "text", "duration_s" to 0L, "chunks" to 0, "saved" to saved))
+        if (!_state.value.inCall) {
+            val notice = if (saved) "Request saved. It goes to Hermes as a task once it can." else "Couldn't save the request on this phone."
+            _state.value = CallUiState(phase = CallPhase.Ended, memo = true, notice = notice, error = if (saved) null else notice)
+        }
+        if (saved) runCatching { onSaved(memo) }
     }
 
     /** End (button, notification, tile, headset). A second press during the end line cuts it. */
@@ -139,8 +157,10 @@ class MemoCall(
         applyRoute()
     }
 
-    /** Typed text has nowhere to go offline. */
-    override fun submitText(text: String) = Unit
+    /** Text shared or typed during a memo: its own text memo. */
+    override fun submitText(text: String) {
+        text.trim().takeIf { it.isNotEmpty() }?.let { textMemo(it, request.copy(entry = "share")) }
+    }
     override fun answerApproval(id: String, choice: ApprovalChoice) = Unit
     override fun answerClarify(id: String, answers: Map<String, String?>) = Unit
 

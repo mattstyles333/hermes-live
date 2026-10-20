@@ -39,7 +39,7 @@ class CallTileService : TileService() {
             Intent(this, LiveActivity::class.java)
                 .setAction(LiveIntents.ACTION_TILE)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            memosOn = graph.settings.settings.value.offlineMemos,
+            memosOn = shell.memosOn(),
             online = shell.network.online(),
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -51,7 +51,7 @@ class CallTileService : TileService() {
 
     private fun memoMode(): MemoEntry.Mode {
         val shell = VoiceShell.of(this)
-        return MemoEntry.mode(graph.settings.settings.value.offlineMemos, shell.network.online())
+        return MemoEntry.mode(shell.memosOn(), shell.network.online())
     }
 
     // API 31-33 have only the Intent overload; 34+ never reaches this.

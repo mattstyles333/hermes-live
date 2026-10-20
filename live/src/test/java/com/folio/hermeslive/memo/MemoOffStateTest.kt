@@ -32,6 +32,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -53,9 +54,13 @@ class MemoOffStateTest {
     private val app: Application = ApplicationProvider.getApplicationContext()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
 
+    /** The process's host is a singleton: every test starts without one, whatever ran before. */
+    @Before fun setUp() = MemoHost.resetForTests()
+
     @After fun tearDown() {
         scope.cancel()
         GptLivePrefs.of(app).setAgents(GptLivePrefs.AGENTS_DEFAULT)
+        MemoHost.resetForTests()
     }
 
     @Test fun offByDefaultAndSaved() {
@@ -67,7 +72,7 @@ class MemoOffStateTest {
 
     @Test fun offNothingIsBuiltScheduledOrWritten() {
         val g = app.graph
-        assertNull("no memo host", MemoHost.ifEnabled(app))
+        assertNull("no memo host", MemoHost.ifNeeded(app))
         // Offline, a GPT-Live call is GPT-Live (it fails as today); a memo asked for is too.
         assertEquals(CallPlan.Ready(Engine.GptLive), g.calls.plan(CallRequest()))
         assertEquals(CallPlan.Ready(Engine.GptLive), g.calls.plan(CallRequest(memo = true)))
@@ -86,12 +91,33 @@ class MemoOffStateTest {
         assertFalse(t.shell.gate.tasksActive)
         assertFalse("Hermes's voice is not wanted", t.shell.hermesVoiceWanted(t.settings.settings.value))
         t.settings.update { it.copy(offlineMemos = true) }
+        assertTrue(t.shell.memosOn())
         assertTrue("the task runtime builds for memos, no OpenRouter key needed", t.shell.gate.tasksActive)
         assertTrue("Hermes transcribes memos", t.shell.hermesVoiceWanted(t.settings.settings.value))
         assertTrue(t.shell.shell.runtime() != null)
         t.signedIn = false
+        assertFalse("recording needs a signed-in Hermes", t.shell.memosOn())
+        assertFalse(MemoHost.wanted(t.shell))
         assertFalse(t.shell.gate.tasksActive)
         assertFalse(t.shell.hermesVoiceWanted(t.settings.settings.value))
+        t.shell.dirs.root.deleteRecursively()
+    }
+
+    /** Review round 1: what was recorded with consent is sent, even with the switch off since; new recordings stop. */
+    @Test fun heldMemosAreSentWithTheSwitchOffButNothingNewIsRecorded() {
+        GptLivePrefs.of(app).setAgents(false)
+        val t = TestShell(app, "memo-held", scope)
+        t.signedIn = true
+        assertFalse(MemoHost.wanted(t.shell))
+        MemoStore({ t.shell.storage.store }, t.shell.dirs.memo).put(MemoRecord("m1", 1L, MemoState.Recorded, chunks = 1))
+        assertFalse("the switch is off", t.shell.memosOn())
+        assertTrue("a held memo still wants sending", MemoHost.wanted(t.shell))
+        t.shell.memosHeld = true
+        assertTrue("the task runtime opens for it", t.shell.gate.tasksActive)
+        assertTrue("Hermes transcribes it", t.shell.hermesVoiceWanted(t.settings.settings.value))
+        t.signedIn = false
+        assertFalse(MemoHost.wanted(t.shell))
+        assertFalse(t.shell.gate.tasksActive)
         t.shell.dirs.root.deleteRecursively()
     }
 

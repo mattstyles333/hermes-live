@@ -17,7 +17,7 @@ class CascadeGate(
      * signed in to Hermes. Signed out, nothing of the task machinery opens for GPT-Live.
      */
     private val gptLiveAgents: () -> Boolean = { false },
-    /** Settings › Voice › Offline memos is on **and** the user is signed in (offline-memo slice): memos are sent as tasks. */
+    /** Signed in **and** Settings › Voice › Offline memos on or a memo held (offline-memo slice): memos are sent as tasks. */
     private val offlineMemos: () -> Boolean = { false },
 ) {
     /** Bill: engine `cascade` and a usable OpenRouter key. */

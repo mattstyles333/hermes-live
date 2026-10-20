@@ -93,10 +93,10 @@ class MemoCallTest {
             newId = { "m1" },
         )
 
-        fun callWith(mic: AudioSource = this.mic, store: MemoStore = this.store) = MemoCall(
+        fun callWith(mic: AudioSource = this.mic, store: MemoStore = this.store, newId: () -> String = { "m1" }) = MemoCall(
             CoroutineScope(test.backgroundScope.coroutineContext), StandardTestDispatcher(test.testScheduler), { store }, audio, effects,
             { speech }, { mic }, { LiveSettings() }, { T0 + test.testScheduler.currentTime }, events, MemoSettings(chunkMs = 1_000),
-            onSaved = { saved += it }, newId = { "m1" },
+            onSaved = { saved += it }, newId = newId,
         )
     }
 
@@ -335,6 +335,41 @@ class MemoCallTest {
         assertTrue(MemoCause.entries.filter { it != MemoCause.CallDropped }.none { MemoCall.lines(it).start.contains("dropped") })
         rig.call.end()
         advanceTimeBy(10_000)
+    }
+
+    /** Review round 1: offline, shared text (or Folio's prompt) is a text memo: no audio, no transcription. */
+    @Test fun offlineSharedTextIsATextMemoWithNoAudio() = runTest {
+        val rig = Rig(this)
+        rig.call.start(CallRequest(prompt = "  Book the dentist for Thursday ", memo = true, memoCause = MemoCause.Offline, entry = "share"))
+        runCurrent()
+        val memo = rig.store.get("m1")!!
+        assertEquals(MemoState.Transcribed, memo.state)
+        assertEquals("Book the dentist for Thursday", memo.transcript)
+        assertTrue(memo.typed)
+        assertEquals(0, memo.chunks)
+        assertFalse(rig.store.audioDir("m1").exists())
+        assertNull(rig.mic.openedAt)
+        assertEquals(0, rig.audio.began)
+        assertTrue(rig.speech.said.isEmpty())
+        assertFalse(rig.call.state.value.inCall)
+        assertEquals(listOf(memo), rig.saved)
+        assertEquals("text", rig.events.all.single { it.first == "memo.start" }.second["kind"])
+    }
+
+    @Test fun textArrivingDuringARecordingIsItsOwnMemoAndTheRecordingGoesOn() = runTest {
+        val rig = Rig(this)
+        var n = 0
+        val call = rig.callWith(newId = { "m${++n}" })
+        call.start(CallRequest(memo = true))
+        advanceTimeBy(2_000 + 1_500)
+        call.start(CallRequest(prompt = "Also call the bank"))
+        runCurrent()
+        assertTrue(call.state.value.inCall)
+        assertEquals("Also call the bank", rig.store.get("m2")!!.transcript)
+        call.end()
+        advanceTimeBy(10_000)
+        assertEquals(MemoState.Recorded, rig.store.get("m1")!!.state)
+        assertEquals(listOf("m2", "m1"), rig.saved.map { it.id })
     }
 
     private companion object {

@@ -36,6 +36,8 @@ object CascadeSignOut {
         shell.hermesVoices.forget()
         wipe(shell)
         if (WIPE_OPENROUTER_KEY) shell.keys.remove()
+        shell.memosHeld = false
+        com.folio.hermeslive.service.MemoEntry.syncShortcut(shell.context, shell.memosOn())
         shell.onSettingsChanged()
     }
 

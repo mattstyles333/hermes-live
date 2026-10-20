@@ -281,9 +281,11 @@ class LiveActivity : ComponentActivity() {
         val meetingScreen by (meetingHost?.flow?.screen ?: remember { MutableStateFlow<MeetingScreen>(MeetingScreen.None) }).collectAsStateWithLifecycle()
         val meetingStarter = meetingHost?.let { rememberMeetingStarter(it) }
         // Offline memos (off by default): a GPT-Live start that failed because the phone is offline records a memo at once.
+        // New memos need the switch and a signed-in Hermes (what is recorded goes to that account).
+        val memosOn = settings.offlineMemos && account is AccountState.SignedIn
         val memoAutoStart = remember { MemoAutoStart() }
-        LaunchedEffect(call, settings.offlineMemos) {
-            memoAutoStart.onState(call, settings.offlineMemos)?.let { memo ->
+        LaunchedEffect(call, memosOn) {
+            memoAutoStart.onState(call, memosOn)?.let { memo ->
                 g.calls.dismissSummary()
                 requestStart(memo)
             }
@@ -337,6 +339,7 @@ class LiveActivity : ComponentActivity() {
                                 signIn = SignInUi()
                                 // Bill's runtime is built for one account: the next call builds it for this one.
                                 VoiceShell.of(this@LiveActivity).shell.release()
+                                MemoEntry.syncShortcut(this@LiveActivity, VoiceShell.of(this@LiveActivity).memosOn())
                                 afterSignIn?.let { pending ->
                                     afterSignIn = null
                                     requestStart(pending)
@@ -388,7 +391,7 @@ class LiveActivity : ComponentActivity() {
                     label = "main",
                 ) { shown ->
                     when {
-                        shown == MainScreen.Home -> Home(call, elapsed, voiceLine, meetingStarter, settings.offlineMemos)
+                        shown == MainScreen.Home -> Home(call, elapsed, voiceLine, meetingStarter, memosOn)
                         grokCall != null && shown != MainScreen.BillViewer -> GrokScreen(grokCall, shown, call, settings.haptics)
                         gptAgents != null && shown != MainScreen.BillViewer -> GptLiveAgentsScreen(gptAgents, shown, call, settings.haptics)
                         else -> BillScreen(shown, call, settings.pauseMs, settings.haptics)

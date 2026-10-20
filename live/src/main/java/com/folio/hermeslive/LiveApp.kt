@@ -26,8 +26,6 @@ import com.folio.hermeslive.cascade.appRuntime
 import com.folio.hermeslive.data.CascadeFactory
 import com.folio.hermeslive.data.CascadeHost
 import com.folio.hermeslive.data.SpeechModels
-import com.folio.hermeslive.data.SpeechRecognition
-import com.folio.hermeslive.data.VoiceEngine
 import com.folio.hermeslive.data.VoiceRoute
 import com.folio.hermeslive.data.VoiceShell
 import com.folio.hermeslive.service.OffCall
@@ -46,6 +44,7 @@ import com.folio.hermeslive.hermes.RealHermesLink
 import com.folio.hermeslive.memo.AndroidMemoSpeech
 import com.folio.hermeslive.memo.MemoCall
 import com.folio.hermeslive.memo.MemoHost
+import com.folio.hermeslive.service.MemoEntry
 import com.folio.hermeslive.hermes.SignedOutLink
 import com.folio.hermeslive.hooks.BuildHooks
 import com.folio.hermeslive.provider.ConnectionProvider
@@ -78,16 +77,16 @@ class LiveApp : Application(), CascadeHost {
         }
         CallNotifications.createChannels(this)
         graph.ready // start restoring the session
-        // Hermes's voice for Custom (Hermes voice slice): its config afresh once per app start, in
-        // memory only. Only signed in with Custom chosen or cloud speech recognition on; else nothing.
+        // Hermes's voice (Hermes voice slice): its config afresh once per app start, in memory only.
+        // Only when VoiceShell.hermesVoiceWanted (signed in; Custom, cloud speech or offline memos); else nothing.
         graph.ioScope.launch {
             graph.ready.await()
-            val s = graph.settings.settings.value
-            val maybe = (s.voiceEngine == VoiceEngine.Cascade && s.voiceFrom.prefersHermes) || (s.speechRecognition == SpeechRecognition.Cloud && s.sttFrom.prefersHermes)
-            if (maybe && graph.account.currentAuth() != null) runCatching { VoiceShell.of(this@LiveApp).hermesVoices.refresh(force = true) }
+            val shell = VoiceShell.of(this@LiveApp)
+            // Offline memos (off by default): memos recorded and not yet sent go once the app starts. Neither: nothing is built.
+            MemoHost.ifNeeded(this@LiveApp)
+            MemoEntry.syncShortcut(this@LiveApp, shell.memosOn())
+            if (shell.hermesVoiceWanted(graph.settings.settings.value)) runCatching { shell.hermesVoices.refresh(force = true) }
         }
-        // Offline memos (off by default): held memos go once the app starts. Off, nothing is built.
-        MemoHost.ifEnabled(this)
     }
 }
 
@@ -213,7 +212,7 @@ class LiveGraph(private val app: Context) {
                     onSaved = { MemoHost.of(app).kick() },
                 )
             },
-            memoActive = { settings.settings.value.offlineMemos },
+            memoActive = { VoiceShell.of(app).memosOn() },
             online = { gptLiveNetwork.isOnline() },
         )
     }

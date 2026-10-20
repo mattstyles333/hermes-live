@@ -75,8 +75,10 @@ class MemoSenderTest {
     class RecordingNotices : MemoNotices {
         val sent = ArrayList<String>()
         val empty = ArrayList<String>()
+        val failed = ArrayList<String>()
         override fun sent(record: MemoRecord) { sent += record.id }
         override fun empty(record: MemoRecord) { empty += record.id }
+        override fun failed(record: MemoRecord) { failed += record.id }
     }
 
     class CountingScheduler : MemoScheduler {
@@ -202,6 +204,8 @@ class MemoSenderTest {
         rig.sender().flush()
         assertEquals(MemoState.Failed, rig.store.get("m1")!!.state)
         assertEquals("too_large", rig.store.get("m1")!!.heldReason)
+        assertFalse("a memo that can never go keeps no audio", rig.store.audioDir("m1").exists())
+        assertEquals(listOf("m1"), rig.notices.failed)
         rig.sender().flush(force = true)
         assertEquals(1, rig.transcriber.sizes.size)
         assertEquals("nothing left to wake for", 0, rig.scheduler.scheduled)
@@ -302,6 +306,19 @@ class MemoSenderTest {
         assertFalse(dump.contains("SECRET"))
         assertFalse(dump.contains("chunk-"))
         assertFalse(dump.contains("m1"))
+    }
+
+    @Test fun aTextMemoIsSentAsItIsWithoutTranscription() = runTest {
+        val rig = Rig()
+        rig.store.put(MemoRecord("t1", T0, MemoState.Transcribed, transcript = "Book the dentist", typed = true))
+        rig.sender().flush()
+        assertTrue(rig.transcriber.sizes.isEmpty())
+        val call = rig.tasks.calls.single()
+        assertEquals("memo-t1", call.key)
+        assertEquals("Text memo · 10:15", call.label)
+        assertTrue(call.brief.startsWith("Request saved offline at 10:15 on Tue 20 Oct 2026 (London time). Treat it as the user's request(s):"))
+        assertTrue(call.brief.endsWith("Book the dentist"))
+        assertEquals(MemoState.Sent, rig.store.get("t1")!!.state)
     }
 
     companion object {

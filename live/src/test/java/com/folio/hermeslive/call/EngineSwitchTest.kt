@@ -122,6 +122,14 @@ class EngineSwitchTest {
         assertEquals("one recorder per memo", 1, r.memos.size)
     }
 
+    @Test fun offlineSharedTextGoesToTheMemo() {
+        val r = MemoRig(online = false)
+        r.switch.start(CallRequest(prompt = "note this", entry = "share"))
+        val start = r.memos.single().starts.single()
+        assertEquals("note this", start.prompt)
+        assertEquals(MemoCause.Offline, start.memoCause)
+    }
+
     @Test fun aMemoAskedForIsAMemoWhateverTheEngine() {
         for (engine in listOf("gpt", "bill", "grok")) {
             val r = MemoRig(active = engine == "bill", grok = engine == "grok")

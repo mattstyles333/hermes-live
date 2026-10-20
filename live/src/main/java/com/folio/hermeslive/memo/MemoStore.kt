@@ -47,6 +47,8 @@ data class MemoRecord(
     val heldReason: String? = null,
     /** Wall clock before which a flush leaves it alone (backoff); 0: now. */
     val nextAttemptAt: Long = 0,
+    /** A text memo (shared text or Folio's prompt, offline): no audio, nothing to transcribe. */
+    val typed: Boolean = false,
 ) {
     /** Waiting to go to Hermes. */
     val pending: Boolean get() = state == MemoState.Recorded || state == MemoState.Transcribed
