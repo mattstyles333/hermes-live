@@ -48,7 +48,30 @@ data class CallRequest(
     val forceGptLive: Boolean = false,
     /** Use Bill for this call even with Grok chosen (Grok offline: "Continue in Bill's memo mode"). */
     val forceBill: Boolean = false,
+    /** Why an offline memo was started, for telemetry: `asked`, or a [CallFailure.wire] (offline-memo slice). */
+    val memoCause: String = "asked",
 )
+
+/**
+ * Why a GPT-Live call could not start (or could not reconnect), alongside its message (offline-memo
+ * slice). The first three offer an offline memo when Settings › Voice › Offline memos is on.
+ */
+enum class CallFailure(val wire: String) {
+    /** The phone has no validated network. */
+    Offline("offline"),
+
+    /** Online, but Hermes did not answer (network error, 5xx, timeout). */
+    HermesUnreachable("hermes_unreachable"),
+
+    /** Hermes answered but voice-live can't start (503: no OpenAI key; 502: OpenAI refused; no `session.started`). */
+    VoiceUnavailable("voice_unavailable"),
+
+    /** Anything else (sign-in, the microphone, a bad answer): no memo offer. */
+    Other("other"),
+    ;
+
+    val offersMemo: Boolean get() = this != Other
+}
 
 /** One caption line: a speaker's turn, merged from transcript deltas. */
 data class Caption(val speaker: Speaker, val text: String)
@@ -109,6 +132,10 @@ data class CallUiState(
     val error: String? = null,
     /** Grok can't reach xAI and the phone is offline: offer Bill's offline memo mode (his models are on the phone). */
     val offerBillMemo: Boolean = false,
+    /** Why the call failed (GPT-Live connect or reconnect), with [error]; null when it did not. */
+    val failure: CallFailure? = null,
+    /** This is an offline memo (`MemoCall`): the mic records to the phone, nothing is live. */
+    val memo: Boolean = false,
 ) {
     /** True from Connecting to Ending: the service stays in the foreground. */
     val inCall: Boolean get() = phase == CallPhase.Connecting || phase == CallPhase.Live || phase == CallPhase.Reconnecting || phase == CallPhase.Ending
