@@ -68,6 +68,7 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
             .putString(K_GROK_MODEL, next.grokModel)
             .putBoolean(K_GROK_SAVE_COST, next.grokSaveCost)
             .putBoolean(K_GPT_LIVE_SAVE_COST, next.gptLiveSaveCost)
+            .putBoolean(K_OFFLINE_MEMOS, next.offlineMemos)
             .apply()
         _settings.value = next
     }
@@ -131,6 +132,7 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
             grokModel = prefs.getString(K_GROK_MODEL, null) ?: d.grokModel,
             grokSaveCost = prefs.getBoolean(K_GROK_SAVE_COST, d.grokSaveCost),
             gptLiveSaveCost = prefs.getBoolean(K_GPT_LIVE_SAVE_COST, d.gptLiveSaveCost),
+            offlineMemos = prefs.getBoolean(K_OFFLINE_MEMOS, d.offlineMemos),
         ).normalized()
     }
 
@@ -203,6 +205,7 @@ class SettingsStore(private val prefs: SharedPreferences) : SessionMemoryStore {
         private const val K_GROK_MODEL = "grok_model"
         private const val K_GROK_SAVE_COST = "grok_save_cost"
         private const val K_GPT_LIVE_SAVE_COST = "gpt_live_save_cost"
+        private const val K_OFFLINE_MEMOS = "offline_memos"
         private const val K_SERVER = "server_url"
         private const val K_USER = "username"
         private const val K_SESSION = "stored_session_id"

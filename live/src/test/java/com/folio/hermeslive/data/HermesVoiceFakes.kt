@@ -45,6 +45,10 @@ class FakeHermesVoiceServer : Closeable {
     @Volatile var transcript = "hello from hermes"
     @Volatile var providerCode = 200
     @Volatile var hermesCode = 200
+
+    /** Per route (offline-memo slice): 404 = an older server without it, 413 = audio too large. */
+    @Volatile var configCode = 200
+    @Volatile var transcribeCode = 200
     val configCalls = AtomicInteger()
     val transcribeCalls = AtomicInteger()
     val speakCalls = AtomicInteger()
@@ -75,11 +79,12 @@ class FakeHermesVoiceServer : Closeable {
                 return when (request.url.encodedPath) {
                     "/api/audio/voice-config" -> {
                         configCalls.incrementAndGet()
+                        if (configCode != 200) return json(configCode, """{"detail":"Not Found"}""")
                         configAsked.countDown()
                         hang?.await(30, java.util.concurrent.TimeUnit.SECONDS)
                         json(200, configBody)
                     }
-                    "/api/audio/transcribe" -> { transcribeCalls.incrementAndGet(); json(200, """{"ok":true,"transcript":"$transcript","provider":"openai"}""") }
+                    "/api/audio/transcribe" -> { transcribeCalls.incrementAndGet(); if (transcribeCode != 200) json(transcribeCode, """{"detail":"no"}""") else json(200, """{"ok":true,"transcript":"$transcript","provider":"openai"}""") }
                     "/api/audio/speak" -> {
                         speakCalls.incrementAndGet()
                         json(200, """{"ok":true,"data_url":"data:audio/mpeg;base64,${Base64.getEncoder().encodeToString(ByteArray(64) { 1 })}","mime_type":"audio/mpeg","provider":"edge"}""")

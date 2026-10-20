@@ -9,13 +9,11 @@ import com.folio.hermeslive.LiveActivity
 import com.folio.hermeslive.R
 
 /**
- * Memo entry (R-OFF-2): with the cascade on, a call never fails just because there is no
- * network; it starts in memo mode (captions and the pause ring work, turns are held and sent on
- * reconnect, R-OFF-1..4). The Quick Settings tile adds [EXTRA_MEMO] when it starts a call
- * offline, and a dynamic "Memo" shortcut ([ACTION_MEMO]) is published while the cascade is on.
- *
- * S-F reads [isMemo] in the activity's intent handling (`LiveIntents` is not this slice's file)
- * and starts the cascade call with memo on.
+ * Memo entry (offline-memo slice; R-OFF-2 before it): with Settings › Voice › Offline memos on,
+ * whatever the engine, the Quick Settings tile adds [EXTRA_MEMO] when it starts a call offline,
+ * and a dynamic "Memo" shortcut ([ACTION_MEMO]) is published. Both open the memo recorder
+ * (`MemoCall`, the first branch of `CallSwitch.plan`). Off: no shortcut, the tile starts a call
+ * as before.
  */
 object MemoEntry {
     const val ACTION_MEMO = "com.folio.hermeslive.action.MEMO"
@@ -23,21 +21,15 @@ object MemoEntry {
     const val SHORTCUT_ID = "memo"
 
     enum class Mode {
-        /** GPT-Live (the cascade is off). It needs the network, as today. */
-        GptLive,
+        /** A call on the chosen engine, as today. */
+        Call,
 
-        /** The cascade, online. */
-        Cascade,
-
-        /** The cascade in memo mode: offline, or asked for. */
+        /** The offline memo recorder: offline, or asked for. */
         Memo,
     }
 
-    fun mode(cascadeActive: Boolean, online: Boolean, memoAsked: Boolean = false): Mode = when {
-        !cascadeActive -> Mode.GptLive
-        !online || memoAsked -> Mode.Memo
-        else -> Mode.Cascade
-    }
+    fun mode(memosOn: Boolean, online: Boolean, memoAsked: Boolean = false): Mode =
+        if (memosOn && (!online || memoAsked)) Mode.Memo else Mode.Call
 
     /** Tell the launcher the Memo shortcut was used (S-F calls this when a memo starts from it). */
     fun reportUsed(context: Context) {
@@ -47,18 +39,18 @@ object MemoEntry {
     fun isMemo(intent: Intent?): Boolean =
         intent != null && (intent.action == ACTION_MEMO || intent.getBooleanExtra(EXTRA_MEMO, false))
 
-    /** The tile's intent, marked memo when the cascade is on and the phone is offline. */
-    fun forTile(intent: Intent, cascadeActive: Boolean, online: Boolean): Intent =
-        if (mode(cascadeActive, online) == Mode.Memo) intent.putExtra(EXTRA_MEMO, true) else intent
+    /** The tile's intent, marked memo when offline memos are on and the phone is offline. */
+    fun forTile(intent: Intent, memosOn: Boolean, online: Boolean): Intent =
+        if (mode(memosOn, online) == Mode.Memo) intent.putExtra(EXTRA_MEMO, true) else intent
 
-    /** Publish the "Memo" launcher shortcut while the cascade is on; remove it when it is off. */
-    fun syncShortcut(context: Context, cascadeActive: Boolean) {
+    /** Publish the "Memo" launcher shortcut while offline memos are on; remove it when off. */
+    fun syncShortcut(context: Context, memosOn: Boolean) {
         val sm = context.getSystemService(ShortcutManager::class.java) ?: return
         runCatching {
-            if (cascadeActive) {
+            if (memosOn) {
                 val shortcut = ShortcutInfo.Builder(context, SHORTCUT_ID)
                     .setShortLabel("Memo")
-                    .setLongLabel("Dictate a memo (works offline)")
+                    .setLongLabel("Record a memo for Hermes (works offline)")
                     .setIcon(Icon.createWithResource(context, R.drawable.ic_shortcut_talk))
                     .setIntent(Intent(context, LiveActivity::class.java).setAction(ACTION_MEMO))
                     .build()

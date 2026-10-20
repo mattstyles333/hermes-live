@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /** Which engine runs a call. */
-enum class Engine { GptLive, Cascade, Grok }
+enum class Engine { GptLive, Cascade, Grok, Memo }
 
 /** Can a call start now, and on which engine. */
 sealed interface CallPlan {
@@ -33,6 +33,11 @@ sealed interface CallPlan {
  * Grok (grok-voice slice) only while [grokActive] (engine Grok **and** a usable xAI key); otherwise
  * [grok] is never called (`GrokOffStateTest`).
  *
+ * Offline memos (offline-memo slice; Settings › Voice › Offline memos, off by default) are the
+ * first branch while [memoActive]: a memo asked for (the Memo shortcut, the tile offline, "Record a
+ * memo"), whatever the engine, or a GPT-Live call with the phone offline. Custom and Grok keep
+ * their own offline paths. Off, [memo] is never called and [online] never asked.
+ *
  * [state] is the active engine's own `StateFlow`, read when asked: the call service reads it right
  * after [start] and so watches the engine that took the call (a mirrored flow could hand it the
  * other engine's idle state first, and the service would stop the microphone).
@@ -51,16 +56,29 @@ class CallSwitch(
     private val billAvailable: () -> Boolean = { false },
     /** Custom has a voice now (Hermes's or OpenRouter's). Asked only when Bill would take the call. */
     private val voiceReady: () -> Boolean = { true },
+    /** The offline memo recorder (built on first use, only while [memoActive]). */
+    private val memo: () -> VoiceCall = { error("no memo recorder") },
+    /** Settings › Voice › Offline memos is on. */
+    private val memoActive: () -> Boolean = { false },
+    /** The phone has a validated network now. Asked only while [memoActive]. */
+    private val online: () -> Boolean = { true },
 ) : VoiceCall {
     private val _active = MutableStateFlow<VoiceCall?>(null)
     private var builtCascade: VoiceCall? = null
     private var builtGrok: VoiceCall? = null
+    private var builtMemo: VoiceCall? = null
 
     /** The engine of the current (or last) call, null before the first. */
     val active: StateFlow<VoiceCall?> = _active.asStateFlow()
 
     /** The engine that would run [request] now. */
-    fun plan(request: CallRequest = CallRequest()): CallPlan = when {
+    fun plan(request: CallRequest = CallRequest()): CallPlan {
+        val base = basePlan(request)
+        if (request.forceBill || !memoActive()) return base
+        return if (request.memo || (base == CallPlan.Ready(Engine.GptLive) && !request.forceGptLive && !online())) CallPlan.Ready(Engine.Memo) else base
+    }
+
+    private fun basePlan(request: CallRequest): CallPlan = when {
         request.forceGptLive -> CallPlan.Ready(Engine.GptLive)
         request.forceBill && (cascadeActive() || billAvailable()) && modelsReady() -> CallPlan.Ready(Engine.Cascade)
         grokActive() -> CallPlan.Ready(Engine.Grok)
@@ -69,6 +87,9 @@ class CallSwitch(
         !voiceReady() -> CallPlan.NoVoice
         else -> CallPlan.Ready(Engine.Cascade)
     }
+
+    /** The memo recorder if a memo ever ran in this process. */
+    val memoEngine: VoiceCall? get() = builtMemo
 
     /** The Grok engine if a Grok call ever ran in this process (tests). */
     val grokEngine: VoiceCall? get() = builtGrok
@@ -100,10 +121,11 @@ class CallSwitch(
             Engine.Cascade -> builtCascade ?: cascade().also { builtCascade = it }
             Engine.Grok -> builtGrok ?: grok().also { builtGrok = it }
             Engine.GptLive -> gptLive()
+            Engine.Memo -> builtMemo ?: memo().also { builtMemo = it }
         }
         _active.value?.takeIf { it !== call }?.dismissSummary()
         _active.value = call
-        call.start(request)
+        call.start(if (engine == Engine.Memo && !request.memo) request.copy(memo = true, memoCause = CallFailure.Offline.wire) else request)
     }
 
     override fun end() = current().end()

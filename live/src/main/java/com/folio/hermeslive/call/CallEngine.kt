@@ -67,6 +67,8 @@ class CallEngine(
     private val onAgentsLive: (Boolean) -> Unit = {},
     /** On-demand sessions for a call (the shared controller), or null: the session stays open, as before. */
     private val onDemandFactory: GptLiveOnDemandFactory = GptLiveOnDemandFactory.Off,
+    /** The phone has a validated network now: a failure while offline is [CallFailure.Offline] (offline-memo slice). */
+    private val online: () -> Boolean = { true },
 ) : CallAudio.Listener, VoiceCall, GptLiveSessionControl {
     private val _state = MutableStateFlow(CallUiState())
 
@@ -377,13 +379,13 @@ class CallEngine(
                     delay(STARTED_TIMEOUT_MS)
                     if (attempt == epoch && b.status.value == BridgeStatus.Connecting) {
                         Telemetry.warn("call.failed", null, mapOf("type" to "session_not_started", "reconnect" to everLive))
-                        connectFailed("Hermes Live did not start. Try again.")
+                        connectFailed("Hermes Live did not start. Try again.", if (online()) CallFailure.VoiceUnavailable else CallFailure.Offline)
                     }
                 }
             } catch (e: CancellationException) {
                 if (attempt == epoch && _state.value.inCall && e is kotlinx.coroutines.TimeoutCancellationException) {
                     Telemetry.warn("call.failed", null, mapOf("type" to "timeout", "after_ms" to clock() - requestedAtMs, "reconnect" to everLive))
-                    connectFailed("Hermes Live took too long to connect.")
+                    connectFailed("Hermes Live took too long to connect.", if (online()) CallFailure.HermesUnreachable else CallFailure.Offline)
                 } else if (e !is kotlinx.coroutines.TimeoutCancellationException) {
                     throw e
                 }
@@ -392,7 +394,7 @@ class CallEngine(
                     val attrs = failureAttrs(e) + mapOf("reconnect" to everLive, "shown" to describe(e))
                     // Expected failures (network, auth, vendor) carry codes only: their messages can echo the server.
                     if (e is java.io.IOException) Telemetry.warn("call.failed", null, attrs) else Telemetry.error("call.failed", e, attrs)
-                    connectFailed(describe(e))
+                    connectFailed(describe(e), failureKind(e, online()))
                 }
             }
         }
@@ -709,9 +711,9 @@ class CallEngine(
     }
 
     /** A connect failed: a reopen goes back to closed (the call stays; the controller retries), anything else ends the call. */
-    private fun connectFailed(message: String) {
+    private fun connectFailed(message: String, failure: CallFailure) {
         if (!reopening) {
-            fail(message)
+            finish("failed", error = message, failure = failure)
             return
         }
         Telemetry.warn("call.session_reopen_failed", null, mapOf("after_ms" to clock() - reopenAtMs))
@@ -912,11 +914,7 @@ class CallEngine(
 
     // ── teardown ───────────────────────────────────────────────────────────────────────────
 
-    private fun fail(message: String) {
-        finish("failed", error = message)
-    }
-
-    private fun finish(reason: String, error: String? = null) {
+    private fun finish(reason: String, error: String? = null, failure: CallFailure? = null) {
         if (!_state.value.inCall) return
         finishing = true
         epoch++
@@ -939,6 +937,7 @@ class CallEngine(
                 "agents" to (lastAgents != null),
                 "tasks_running" to tasksRunning,
                 "off_call" to heldOffCall,
+                "failure" to failure?.wire,
             ),
         )
         tickJob?.cancel()
@@ -965,6 +964,8 @@ class CallEngine(
             summary = summary,
             error = error,
             captions = captions.captions,
+            // A line that dropped for good while offline can go on as a memo too.
+            failure = failure ?: CallFailure.Offline.takeIf { reason == "connection_lost" && !online() },
         )
     }
 
@@ -1041,6 +1042,20 @@ class CallEngine(
                 is HermesRpcException -> put("code", e.code)
                 else -> Unit
             }
+        }
+
+        /** Why a start failed, as a [CallFailure] (the screen offers a memo for all but [CallFailure.Other]). */
+        fun failureKind(e: Throwable, online: Boolean): CallFailure = when {
+            !online -> CallFailure.Offline
+            e is VoiceLiveException -> when {
+                e.kind == VoiceLiveException.Kind.NotConfigured || e.kind == VoiceLiveException.Kind.VendorRejected || e.httpCode == 503 -> CallFailure.VoiceUnavailable
+                e.kind == VoiceLiveException.Kind.Failed && e.httpCode in 500..599 -> CallFailure.HermesUnreachable
+                else -> CallFailure.Other
+            }
+            e is HermesAuthException.Unavailable -> CallFailure.HermesUnreachable
+            e is HermesAuthException -> CallFailure.Other
+            e is java.io.IOException -> CallFailure.HermesUnreachable
+            else -> CallFailure.Other
         }
 
         /** Plain English for a failed start. */

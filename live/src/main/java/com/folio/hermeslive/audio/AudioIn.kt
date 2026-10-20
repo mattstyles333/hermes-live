@@ -9,9 +9,11 @@ import android.media.audiofx.NoiseSuppressor
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * 16 kHz mono 16-bit input for the speech-to-text pipeline. The mic ([MicAudioSource]) in the
- * app; a WAV corpus (`CorpusAudioSource`, debug only) in the emulator tests. Audio is never
- * written anywhere (R-STT-3). Called from the one capture thread.
+ * 16 kHz mono 16-bit input for the speech-to-text pipeline and the offline memo recorder. The
+ * mic ([MicAudioSource]) in the app; a WAV corpus (`CorpusAudioSource`, debug only) in the
+ * emulator tests. Only an offline memo (`MemoCall`, Settings › Voice › Offline memos) writes it
+ * to disk, deleted once Hermes has transcribed it; calls and meetings never do (R-STT-3).
+ * Called from the one capture thread.
  */
 interface AudioSource {
     val sampleRate: Int get() = SAMPLE_RATE

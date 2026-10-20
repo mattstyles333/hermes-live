@@ -10,8 +10,8 @@ import java.security.MessageDigest
  * conversation and its history must never reach a different account's server. So a sign-out
  * - closes Bill's runtime first (its gateway and task sessions go; nothing writes after), then
  * - deletes every `cascade.*` key of his store (the core, tasks, conversations, call times, the
- *   learned vocabulary and the "voice prepared" marker), the store's logs and quarantined values,
- *   and the decision log.
+ *   learned vocabulary and the "voice prepared" marker, meetings and offline memos), the store's
+ *   logs and quarantined values, the decision log, and the offline memos' audio (`cascade/memo/`).
  *
  * Kept: the OpenRouter key (a separate credential with its own Remove button; the user's decision
  * is pending: [WIPE_OPENROUTER_KEY] is the one-line change), the speech models, the TTS cache and
@@ -47,6 +47,8 @@ object CascadeSignOut {
         for (sub in listOf("logs", "corrupt")) File(shell.dirs.store, sub).listFiles()?.forEach { it.deleteRecursively() }
         shell.decisionLog.clear()
         shell.dirs.decisions.delete()
+        // Offline memos' audio not yet transcribed (offline-memo slice).
+        shell.dirs.memo.deleteRecursively()
     }
 
     /**

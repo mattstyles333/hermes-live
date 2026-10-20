@@ -43,6 +43,9 @@ import com.folio.hermeslive.data.KeystoreSecretBox
 import com.folio.hermeslive.data.SecureTokenStore
 import com.folio.hermeslive.data.SettingsStore
 import com.folio.hermeslive.hermes.RealHermesLink
+import com.folio.hermeslive.memo.AndroidMemoSpeech
+import com.folio.hermeslive.memo.MemoCall
+import com.folio.hermeslive.memo.MemoHost
 import com.folio.hermeslive.hermes.SignedOutLink
 import com.folio.hermeslive.hooks.BuildHooks
 import com.folio.hermeslive.provider.ConnectionProvider
@@ -83,6 +86,8 @@ class LiveApp : Application(), CascadeHost {
             val maybe = (s.voiceEngine == VoiceEngine.Cascade && s.voiceFrom.prefersHermes) || (s.speechRecognition == SpeechRecognition.Cloud && s.sttFrom.prefersHermes)
             if (maybe && graph.account.currentAuth() != null) runCatching { VoiceShell.of(this@LiveApp).hermesVoices.refresh(force = true) }
         }
+        // Offline memos (off by default): held memos go once the app starts. Off, nothing is built.
+        MemoHost.ifEnabled(this)
     }
 }
 
@@ -192,6 +197,24 @@ class LiveGraph(private val app: Context) {
             },
             grokActive = { VoiceShell.of(app).gate.grokActive },
             billAvailable = { VoiceShell.of(app).gate.billAvailable },
+            memo = {
+                val shell = VoiceShell.of(app)
+                MemoCall(
+                    scope = mainScope,
+                    io = Dispatchers.IO,
+                    store = { MemoHost.of(app).store },
+                    audio = AndroidCallAudio(app),
+                    effects = cascadeEffects,
+                    speech = { AndroidMemoSpeech(app) },
+                    mic = { MicAudioSource(if (settings.settings.value.echoCancel) CaptureSource.VOICE_COMMUNICATION else CaptureSource.VOICE_RECOGNITION) },
+                    settings = { settings.settings.value },
+                    clock = System::currentTimeMillis,
+                    telemetry = shell.telemetry,
+                    onSaved = { MemoHost.of(app).kick() },
+                )
+            },
+            memoActive = { settings.settings.value.offlineMemos },
+            online = { gptLiveNetwork.isOnline() },
         )
     }
 
@@ -222,6 +245,7 @@ class LiveGraph(private val app: Context) {
                 runtime = { VoiceShell.of(app).shell.appRuntime() },
             ),
             offCall = { running -> OffCall.afterHangUp(app, running) },
+            online = { gptLiveNetwork.isOnline() },
             // As in a Grok call: the voice says results, so task notifications stay quiet during the call.
             onAgentsLive = { cascadeApp.grokLive = it },
             onDemandFactory = GptLiveOnDemandFactory { engine ->

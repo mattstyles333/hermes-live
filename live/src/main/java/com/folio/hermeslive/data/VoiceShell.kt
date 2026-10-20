@@ -116,11 +116,12 @@ class VoiceShell(
 
     /**
      * Hermes's voice may be asked for: signed in, and Custom with "Voice from" Hermes, or cloud
-     * speech recognition on (calls or meeting mode) with "Cloud speech recognition from" Hermes.
-     * Otherwise nothing is fetched (a GPT-Live, Grok or OpenRouter-only user never holds its keys).
+     * speech recognition on (calls or meeting mode) with "Cloud speech recognition from" Hermes, or
+     * offline memos on (Hermes transcribes them). Otherwise nothing is fetched (a GPT-Live, Grok or
+     * OpenRouter-only user never holds its keys).
      */
     fun hermesVoiceWanted(s: LiveSettings): Boolean = signedIn() &&
-        ((s.voiceEngine == VoiceEngine.Cascade && s.voiceFrom.prefersHermes) || (s.speechRecognition == SpeechRecognition.Cloud && s.sttFrom.prefersHermes))
+        ((s.voiceEngine == VoiceEngine.Cascade && s.voiceFrom.prefersHermes) || (s.speechRecognition == SpeechRecognition.Cloud && s.sttFrom.prefersHermes) || s.offlineMemos)
 
     /** Signed in to Hermes now. */
     val isSignedIn: Boolean get() = signedIn()
@@ -137,6 +138,7 @@ class VoiceShell(
     val gate = CascadeGate(
         { settings.settings.value }, { keys.status.value }, { xaiKeys?.status?.value ?: KeyStatus() },
         gptLiveAgents = { signedIn() && GptLivePrefs.of(context).agents.value },
+        offlineMemos = { settings.settings.value.offlineMemos && signedIn() },
     )
     val speechModels: SpeechModels get() = host?.speechModels ?: SpeechModels.None
     val offCallHooks: OffCallHooks get() = host?.offCallHooks ?: OffCallHooks.None

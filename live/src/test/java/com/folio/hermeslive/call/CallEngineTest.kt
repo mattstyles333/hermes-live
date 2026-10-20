@@ -32,6 +32,7 @@ class CallEngineTest {
         val effects = FakeEffects()
         val memory = FakeMemory(memory)
         var linkError: Exception? = null
+        var online = true
         val engine = CallEngine(
             scope = scope.backgroundScope,
             settings = { settings },
@@ -41,6 +42,7 @@ class CallEngineTest {
             effects = effects,
             memory = this.memory,
             clock = { scope.testScheduler.currentTime },
+            online = { online },
         )
         val t: FakeTransport get() = transports.last()
         val link: FakeLink get() = links.last()
@@ -464,5 +466,82 @@ class CallEngineTest {
     @Test fun reasonsReadPlainly() {
         assertEquals("Call ended.", CallEngine.endReason("client_closed"))
         assertEquals("Hermes Live ended the call (max duration).", CallEngine.endReason("max_duration"))
+    }
+
+    // ── offline-memo slice: a structured failure kind beside the message ───────────────────
+
+    @Test fun offlineAStartFailureSaysOffline() = runTest {
+        val r = rig()
+        r.online = false
+        r.linkError = java.net.UnknownHostException("fake-hermes.ts.net")
+        r.engine.start()
+        runCurrent()
+        assertEquals(CallPhase.Failed, r.state.phase)
+        assertEquals(CallFailure.Offline, r.state.failure)
+        assertTrue(r.state.failure!!.offersMemo)
+        assertEquals("the message is unchanged", "Could not connect to Hermes Live.", r.state.error)
+    }
+
+    @Test fun onlineButHermesDownIsHermesUnreachable() = runTest {
+        val r = rig()
+        r.linkError = java.net.ConnectException("refused")
+        r.engine.start()
+        runCurrent()
+        assertEquals(CallFailure.HermesUnreachable, r.state.failure)
+    }
+
+    @Test fun signInProblemsOfferNoMemo() = runTest {
+        val r = rig()
+        r.linkError = HermesAuthException.SignInRequired()
+        r.engine.start()
+        runCurrent()
+        assertEquals(CallFailure.Other, r.state.failure)
+        assertFalse(r.state.failure!!.offersMemo)
+    }
+
+    @Test fun theFailureKinds() {
+        fun kind(e: Throwable, online: Boolean = true) = CallEngine.failureKind(e, online)
+        assertEquals(CallFailure.Offline, kind(RuntimeException("anything"), online = false))
+        assertEquals(CallFailure.VoiceUnavailable, kind(com.folio.hermes.live.VoiceLiveException(com.folio.hermes.live.VoiceLiveException.Kind.NotConfigured, 503, "")))
+        assertEquals(CallFailure.VoiceUnavailable, kind(com.folio.hermes.live.VoiceLiveException(com.folio.hermes.live.VoiceLiveException.Kind.VendorRejected, 502, "")))
+        assertEquals(CallFailure.VoiceUnavailable, kind(com.folio.hermes.live.VoiceLiveException(com.folio.hermes.live.VoiceLiveException.Kind.Failed, 503, "")))
+        assertEquals(CallFailure.HermesUnreachable, kind(com.folio.hermes.live.VoiceLiveException(com.folio.hermes.live.VoiceLiveException.Kind.Failed, 500, "")))
+        assertEquals(CallFailure.Other, kind(com.folio.hermes.live.VoiceLiveException(com.folio.hermes.live.VoiceLiveException.Kind.Unauthorized, 401, "")))
+        assertEquals(CallFailure.HermesUnreachable, kind(HermesAuthException.Unavailable(502, "bad gateway")))
+        assertEquals(CallFailure.Other, kind(HermesAuthException.InvalidCredentials()))
+        assertEquals(CallFailure.HermesUnreachable, kind(java.net.SocketTimeoutException("timeout")))
+        assertEquals(CallFailure.Other, kind(IllegalStateException("microphone busy")))
+    }
+
+    @Test fun noSessionStartedIsVoiceUnavailable() = runTest {
+        val r = rig()
+        r.engine.start()
+        runCurrent()
+        advanceTimeBy(CallEngine.STARTED_TIMEOUT_MS + 1)
+        assertEquals(CallPhase.Failed, r.state.phase)
+        assertEquals(CallFailure.VoiceUnavailable, r.state.failure)
+    }
+
+    @Test fun aDroppedCallWhoseReconnectFailsCarriesTheKind() = runTest {
+        val r = rig()
+        live(r)
+        r.online = false
+        r.link.prepareError = java.net.UnknownHostException("gone")
+        r.t.events.onLost("ice failed")
+        runCurrent()
+        advanceTimeBy(700)
+        assertEquals(CallPhase.Ended, r.state.phase)
+        assertEquals(CallFailure.Offline, r.state.failure)
+        assertTrue(r.state.summary != null)
+    }
+
+    @Test fun aCallThatEndsWellHasNoFailure() = runTest {
+        val r = rig()
+        live(r)
+        r.engine.end()
+        runCurrent()
+        r.t.closedBy("client_closed", 3.0)
+        runCurrent()
+        assertNull(r.state.failure)
     }
 }

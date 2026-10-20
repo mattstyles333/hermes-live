@@ -91,4 +91,71 @@ class EngineSwitchTest {
         voice = true
         assertEquals(CallPlan.Ready(Engine.Cascade), switch.plan())
     }
+
+    /** Offline-memo slice: the memo is the first branch when it is on; off, nothing of it is built. */
+    private class MemoRig(var memosOn: Boolean = true, var online: Boolean = true, var active: Boolean = false, var grok: Boolean = false) {
+        val gpt = FakeCall()
+        val bills = mutableListOf<FakeCall>()
+        val groks = mutableListOf<FakeCall>()
+        val memos = mutableListOf<FakeCall>()
+        val switch = CallSwitch(
+            { gpt }, { FakeCall().also { bills += it } }, { active }, { true },
+            grok = { FakeCall().also { groks += it } }, grokActive = { grok }, billAvailable = { active },
+            memo = { FakeCall().also { memos += it } }, memoActive = { memosOn }, online = { online },
+        )
+    }
+
+    @Test fun offlineWithMemosOnAGptLiveCallIsAMemo() {
+        val r = MemoRig(online = false)
+        assertEquals(CallPlan.Ready(Engine.Memo), r.switch.plan())
+        r.switch.start(CallRequest(entry = "launcher"))
+        val start = r.memos.single().starts.single()
+        assertTrue(start.memo)
+        assertEquals("offline", start.memoCause)
+        assertEquals("launcher", start.entry)
+        assertTrue(r.gpt.starts.isEmpty())
+        assertSame(r.memos.single().state, r.switch.state)
+        r.switch.end()
+        r.online = true
+        r.switch.start(CallRequest())
+        assertEquals("online again: GPT-Live", 1, r.gpt.starts.size)
+        assertEquals("the memo is built once per process", 1, r.memos.size)
+    }
+
+    @Test fun aMemoAskedForIsAMemoWhateverTheEngine() {
+        for (engine in listOf("gpt", "bill", "grok")) {
+            val r = MemoRig(active = engine == "bill", grok = engine == "grok")
+            assertEquals(engine, CallPlan.Ready(Engine.Memo), r.switch.plan(CallRequest(memo = true)))
+            r.switch.start(CallRequest(memo = true, entry = "memo"))
+            assertEquals("asked", r.memos.single().starts.single().memoCause)
+        }
+    }
+
+    @Test fun offlineWithCustomOrGrokChosenKeepsTheirOwnOfflinePaths() {
+        assertEquals(CallPlan.Ready(Engine.Cascade), MemoRig(online = false, active = true).switch.plan())
+        assertEquals(CallPlan.Ready(Engine.Grok), MemoRig(online = false, grok = true).switch.plan())
+        // Grok offline: "Continue with Bill (memo)" stays Bill's memo mode.
+        assertEquals(CallPlan.Ready(Engine.Cascade), MemoRig(online = false, grok = true, active = true).switch.plan(CallRequest(memo = true, forceBill = true)))
+    }
+
+    @Test fun memosOffIsTodaysSwitchAndTheMemoIsNeverBuilt() {
+        val r = MemoRig(memosOn = false, online = false)
+        assertEquals(CallPlan.Ready(Engine.GptLive), r.switch.plan())
+        assertEquals(CallPlan.Ready(Engine.GptLive), r.switch.plan(CallRequest(memo = true)))
+        r.switch.start(CallRequest(memo = true))
+        r.switch.end()
+        r.switch.start(CallRequest())
+        assertEquals(2, r.gpt.starts.size)
+        assertTrue(r.memos.isEmpty())
+        assertNull(r.switch.memoEngine)
+        // Bill chosen, memos off: a memo is Bill's memo mode, as before.
+        assertEquals(CallPlan.Ready(Engine.Cascade), MemoRig(memosOn = false, active = true).switch.plan(CallRequest(memo = true)))
+    }
+
+    @Test fun theOnlineCheckIsAskedOnlyWhenMemosAreOn() {
+        var asked = 0
+        val switch = CallSwitch({ FakeCall() }, { FakeCall() }, { false }, { true }, memo = { FakeCall() }, memoActive = { false }, online = { asked++; false })
+        switch.plan()
+        assertEquals(0, asked)
+    }
 }

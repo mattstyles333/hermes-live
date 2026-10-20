@@ -21,9 +21,12 @@ import java.io.File
  * | `cascade/rotations.json` | each stock slot's line rotation (R-SPK-1) |
  * | `cascade/decisions.jsonl` | the decision log (on-device only; R-Q-2) |
  * | `cascade/models/` | speech models, for S-C's model manager |
+ * | `cascade/memo/<id>/` | an offline memo's WAV chunks, until Hermes has transcribed each (offline-memo slice) |
  * | `cache/share/` | the decision-log export, only while sharing |
  *
- * No audio from the mic is ever written here (R-STT-3).
+ * Mic audio is written here for offline memos only (Settings › Voice › Offline memos), and each
+ * chunk is deleted as soon as its transcript is stored; sign-out deletes the rest. Calls and meeting
+ * mode never write audio (R-STT-3).
  */
 class CascadeDirs(val root: File, val shareDir: File) {
     val store: File get() = File(root, "store")
@@ -31,6 +34,7 @@ class CascadeDirs(val root: File, val shareDir: File) {
     val rotations: File get() = File(root, "rotations.json")
     val decisions: File get() = File(root, "decisions.jsonl")
     val models: File get() = File(root, "models")
+    val memo: File get() = File(root, "memo")
 
     companion object {
         fun of(context: Context): CascadeDirs =

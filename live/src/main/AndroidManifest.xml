@@ -86,6 +86,12 @@
             android:name=".service.CallActionReceiver"
             android:exported="false" />
 
+        <!-- Offline memos: wakes the app once a network is there to send held memos (scheduled only while one is held). -->
+        <service
+            android:name=".memo.MemoJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <!-- Cascade, after hang-up: keeps the Hermes gateway open while voice tasks finish.
              No microphone. specialUse: see AGENTS.md "Off-call service". -->
         <service

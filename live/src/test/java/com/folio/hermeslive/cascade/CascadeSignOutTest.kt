@@ -44,6 +44,7 @@ class CascadeSignOutTest {
 
     private val modelFile get() = File(shell.dirs.models, "zipformer/tokens.txt")
     private val ttsFile get() = File(shell.dirs.tts, "clip.pcm")
+    private val memoFile get() = File(shell.dirs.memo, "m1/chunk-000.wav")
 
     /** A store and files as a few calls would leave them, plus the things that must stay. */
     private fun billHasHistory() {
@@ -62,7 +63,10 @@ class CascadeSignOutTest {
         shell.storage.rotations.save("ack.do", Rotation(listOf("Got it.", "On it."), 1))
         modelFile.apply { parentFile!!.mkdirs() }.writeText("tokens")
         ttsFile.apply { parentFile!!.mkdirs() }.writeText("pcm")
-        assertTrue(store.keys("cascade.").size >= 6)
+        // An offline memo not yet transcribed: its record and its audio (offline-memo slice).
+        store.put("cascade.memo.m1", """{"id":"m1","createdAt":1,"state":"recorded","chunks":1}""")
+        memoFile.apply { parentFile!!.mkdirs() }.writeText("RIFF")
+        assertTrue(store.keys("cascade.").size >= 7)
         assertEquals(1, shell.decisionLog.records().size)
     }
 
@@ -79,6 +83,7 @@ class CascadeSignOutTest {
         assertTrue("quarantine gone", File(shell.dirs.store, "corrupt").listFiles().orEmpty().isEmpty())
         assertTrue("decision log gone", shell.decisionLog.records().isEmpty())
         assertFalse(shell.dirs.decisions.exists())
+        assertFalse("offline memos' audio gone", shell.dirs.memo.exists())
     }
 
     @Test fun signOutKeepsTheKeyTheModelsTheVoiceCacheAndTheRotations() {
@@ -103,6 +108,7 @@ class CascadeSignOutTest {
         assertEquals(listOf(CascadeSignOut.OWNER_KEY), store.keys("cascade."))
         assertEquals(CascadeSignOut.owner("https://a.ts.net", "ben"), store.get(CascadeSignOut.OWNER_KEY))
         assertTrue(shell.decisionLog.records().isEmpty())
+        assertFalse("another account's memo audio is gone too", memoFile.exists())
         assertTrue("key kept", t.keys.status.value.saved)
         assertEquals("pcm", ttsFile.readText())
 

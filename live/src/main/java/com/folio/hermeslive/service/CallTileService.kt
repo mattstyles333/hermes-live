@@ -13,7 +13,7 @@ import com.folio.hermeslive.graph
 
 /**
  * Quick Settings tile: tap to talk (opens the call screen, which starts the call), tap again to
- * end. With the cascade on and no network it starts a memo instead (R-OFF-2, [MemoEntry]).
+ * end. With offline memos on and no network it starts a memo instead ([MemoEntry]).
  */
 class CallTileService : TileService() {
     override fun onStartListening() {
@@ -39,7 +39,7 @@ class CallTileService : TileService() {
             Intent(this, LiveActivity::class.java)
                 .setAction(LiveIntents.ACTION_TILE)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            cascadeActive = shell.gate.active,
+            memosOn = graph.settings.settings.value.offlineMemos,
             online = shell.network.online(),
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -51,7 +51,7 @@ class CallTileService : TileService() {
 
     private fun memoMode(): MemoEntry.Mode {
         val shell = VoiceShell.of(this)
-        return MemoEntry.mode(shell.gate.active, shell.network.online())
+        return MemoEntry.mode(graph.settings.settings.value.offlineMemos, shell.network.online())
     }
 
     // API 31-33 have only the Intent overload; 34+ never reaches this.

@@ -114,6 +114,14 @@ data class LiveSettings(
      * WebRTC while the session reopens) has never run on a phone.
      */
     val gptLiveSaveCost: Boolean = false,
+
+    /**
+     * Settings › Voice › Offline memos (offline-memo slice): when a call can't start (the phone
+     * offline, Hermes unreachable, voice unavailable), record a memo on the phone; Hermes transcribes
+     * it and starts a task once online. **Off** by default until phone-tested: off, nothing records,
+     * no job is scheduled, no memo file is written.
+     */
+    val offlineMemos: Boolean = false,
 ) {
     /** The same settings with every Voice field inside its range (what is saved and used). */
     fun normalized(): LiveSettings = copy(

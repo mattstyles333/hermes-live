@@ -45,7 +45,7 @@ class CascadeOffStateTest {
             refresh()
             prepare()
         }
-        assertEquals(MemoEntry.Mode.GptLive, MemoEntry.mode(shell.gate.active, online = false))
+        assertEquals("offline memos off by default: no memo", MemoEntry.Mode.Call, MemoEntry.mode(t.settings.settings.value.offlineMemos, online = false))
 
         assertTrue("the factory (STT, OpenRouter, sessions) was never called", t.host.cascadeFactory.built.isEmpty())
         assertEquals("no OpenRouter client", 0, t.openRouters.get())
