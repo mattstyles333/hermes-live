@@ -322,7 +322,7 @@ private fun VoiceSettingsWired(controller: VoiceSettingsController) {
     val hermesVoice = remember(controller) { controller.hermes() }
     val hermes by hermesVoice.ui.collectAsState()
     LaunchedEffect(Unit) { controller.refresh() }
-    LaunchedEffect(ui.cascadeActive) { MemoEntry.syncShortcut(context, ui.cascadeActive) }
+    LaunchedEffect(ui.settings.offlineMemos) { MemoEntry.syncShortcut(context, ui.settings.offlineMemos) }
     VoiceSettingsSection(
         ui,
         VoiceActions(
@@ -418,6 +418,13 @@ fun VoiceSettingsSection(
             }
             VoiceEngine.Cascade -> Unit
         }
+        Toggle(
+            "Offline memos",
+            "When a call can't start (no network, Hermes unreachable), record a memo instead. Hermes transcribes it and starts a task " +
+                "once you're back online; the recording stays on this phone until then. Adds a Memo shortcut.",
+            s.offlineMemos,
+            "offline-memos",
+        ) { v -> actions.onChange { it.copy(offlineMemos = v) } }
         KeyBlock(ui, actions)
 
         if (cascade) {

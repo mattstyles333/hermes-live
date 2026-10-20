@@ -85,6 +85,8 @@ data class CallActions(
     val onNewConversation: () -> Unit = {},
     /** Meeting mode's button beside Talk; null hides it (meeting mode off). */
     val onMeeting: (() -> Unit)? = null,
+    /** "Record a memo" after a failed GPT-Live call (offline-memo slice); null hides it (Offline memos off). */
+    val onRecordMemo: (() -> Unit)? = null,
 )
 
 /**
@@ -123,6 +125,7 @@ fun CallScreen(
                 RecentCaptions(state.captions) { expanded = true }
             }
             Cards(state, actions)
+            MemoOffer(state, actions.onRecordMemo)
             Spacer(Modifier.height(16.dp))
             if (state.inCall) CallControls(state, actions) else IdleControls(state, actions)
             Spacer(Modifier.height(12.dp))
@@ -166,10 +169,11 @@ private fun Notices(state: CallUiState) {
 fun statusText(state: CallUiState): String = when {
     state.phase == CallPhase.Connecting -> "Connecting…"
     state.phase == CallPhase.Reconnecting -> "Reconnecting…"
-    state.phase == CallPhase.Ending -> "Ending…"
+    state.phase == CallPhase.Ending -> if (state.memo) "Saving…" else "Ending…"
     state.phase == CallPhase.Failed -> "Could not connect"
     !state.inCall -> if (state.summary != null) "Call ended" else "Tap to talk"
     state.onOtherCall -> "Paused for your other call"
+    state.memo -> if (state.muted) "Muted" else "Recording a memo"
     state.approvals.isNotEmpty() -> "Waiting for your approval"
     state.activity == com.folio.hermeslive.call.CallActivity.HermesSpeaking -> "Hermes is speaking"
     state.muted -> "Muted"
@@ -205,6 +209,20 @@ private fun ColumnScope.StatusText(state: CallUiState, voiceLine: String?) {
         modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp).heightIn(min = 18.dp).testTag("substatus"),
     )
     state.summary?.takeIf { !state.inCall }?.let { SummaryLine(it, Modifier.align(Alignment.CenterHorizontally)) }
+}
+
+/** After a GPT-Live call failed for want of a network, Hermes or its voice: offer the offline memo. */
+@Composable
+private fun ColumnScope.MemoOffer(state: CallUiState, onRecordMemo: (() -> Unit)?) {
+    if (onRecordMemo == null || state.inCall || state.failure?.offersMemo != true) return
+    Text(
+        com.folio.hermeslive.memo.MemoFallback.offerText(state),
+        style = BodyStyle, color = PrintInk,
+        modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 12.dp).clip(RoundedCornerShape(50))
+            .background(SurfaceHigh).border(1.dp, Hairline, RoundedCornerShape(50))
+            .clickable(role = Role.Button, onClick = onRecordMemo)
+            .padding(horizontal = 18.dp, vertical = 10.dp).testTag("record-memo"),
+    )
 }
 
 @Composable

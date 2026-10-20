@@ -56,6 +56,7 @@ import androidx.compose.animation.togetherWith
 import com.folio.hermeslive.ui.PreparingBill
 import com.folio.hermeslive.meeting.MeetingEntry
 import com.folio.hermeslive.meeting.MeetingHost
+import com.folio.hermeslive.memo.MemoFallback
 import com.folio.hermeslive.meeting.MeetingScreen
 import com.folio.hermeslive.ui.meeting.MeetingRoute
 import com.folio.hermeslive.ui.meeting.MeetingStarter
@@ -278,6 +279,14 @@ class LiveActivity : ComponentActivity() {
         val meetingHost = remember(meetingOn.enabled) { MeetingHost.ifEnabled(this@LiveActivity) }
         val meetingScreen by (meetingHost?.flow?.screen ?: remember { MutableStateFlow<MeetingScreen>(MeetingScreen.None) }).collectAsStateWithLifecycle()
         val meetingStarter = meetingHost?.let { rememberMeetingStarter(it) }
+        // Offline memos (off by default): a GPT-Live start that failed because the phone is offline records a memo at once.
+        LaunchedEffect(call.phase, call.failure) {
+            if (MemoFallback.decide(call, settings.offlineMemos) == MemoFallback.Action.Start) {
+                val memo = MemoFallback.request(call, entry = "fallback")
+                g.calls.dismissSummary()
+                requestStart(memo)
+            }
+        }
         LaunchedEffect(meetingAsk, meetingStarter) {
             val entry = meetingAsk ?: return@LaunchedEffect
             meetingAsk = null
@@ -492,6 +501,15 @@ class LiveActivity : ComponentActivity() {
                     requestStart(CallRequest(newConversation = true))
                 },
                 onMeeting = meeting?.let { m -> { m.open("app") } },
+                onRecordMemo = if (g.settings.settings.value.offlineMemos) {
+                    {
+                        val memo = MemoFallback.request(call, entry = "fallback")
+                        g.calls.dismissSummary()
+                        requestStart(memo)
+                    }
+                } else {
+                    null
+                },
             ),
         )
     }
