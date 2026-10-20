@@ -46,7 +46,9 @@ import kotlin.math.abs
  * haptic instead), and only then the mic, so the line is never recorded. Recording: 16 kHz mono
  * PCM through [AudioSource] into WAV chunks of [MemoSettings.chunkMs] under the memo's own
  * directory, its record (`cascade.memo.<id>`, state `recording`) written before the first sample.
- * It stops on End (any of the call's End paths) or at [MemoSettings.capMs] (and says so). Under
+ * Muted, or during another phone call, nothing is written. It stops on End (any of the call's End
+ * paths) or at [MemoSettings.capMs] of wall time (and says so); a mic or storage failure keeps
+ * what was already recorded. Under
  * [MemoSettings.minMs] it is discarded; else it becomes `recorded`, the end line plays, and
  * [onSaved] hands it to the sender.
  *
@@ -160,7 +162,7 @@ class MemoCall(
         applyRoute()
     }
 
-    /** Another call has the audio: record silence until it is over. */
+    /** Another call has the audio: write nothing until it is over. */
     override fun onOtherCall(active: Boolean) {
         if (!_state.value.inCall || active == otherCall) return
         otherCall = active
@@ -192,27 +194,46 @@ class MemoCall(
         val record = MemoRecord(memoId, createdAt = _state.value.startedAtMs ?: clock())
         recordingId = memoId
         val memos = store()
-        memos.put(record)
+        if (runCatching { memos.put(record) }.isFailure) {
+            recorder = scope.async { Capture(0, 0, false, Failure.Storage) }
+            finish("storage_failed")
+            return
+        }
         val capture = scope.async(io) { capture(memos, record) }
         recorder = capture
         scope.launch {
             val result = capture.await()
-            if (!finishing) finish(if (result.error != null) "mic_failed" else if (result.capped) "cap" else "mic_ended")
+            if (!finishing) finish(result.failure?.reason ?: if (result.capped) "cap" else "mic_ended")
         }
     }
 
-    private class Capture(val samples: Long, val chunks: Int, val capped: Boolean, val error: Throwable? = null)
+    /** Why the capture stopped early: the mic (open or read) or the phone's storage (a record or a file write). */
+    private enum class Failure(val reason: String) { Mic("mic_failed"), Storage("storage_failed") }
 
+    private class Capture(val samples: Long, val chunks: Int, val capped: Boolean, val failure: Failure? = null)
+
+    private class StorageFailure(cause: Throwable) : Exception(cause)
+
+    /**
+     * Read the mic until stopped. While muted or during another call the frames are read and
+     * dropped (nothing is written); the cap counts wall time from the first frame either way.
+     */
     private suspend fun capture(memos: MemoStore, record: MemoRecord): Capture {
         val rate = AudioSource.SAMPLE_RATE
         val chunkSamples = limits.chunkMs * rate / 1000
-        val cap = limits.capMs * rate / 1000
-        val source = runCatching { mic().also { it.open() } }.getOrElse { return Capture(0, 0, false, it) }
+        val capSamples = limits.capMs * rate / 1000
+        val source = runCatching { mic().also { it.open() } }.getOrElse { return Capture(0, 0, false, Failure.Mic) }
+        val startedAt = clock()
         var writer: WavWriter? = null
         var chunks = 0
         var total = 0L
         var capped = false
         val buffer = ShortArray(rate / 10)
+        fun storage(block: () -> Unit) = try {
+            block()
+        } catch (e: Exception) {
+            throw StorageFailure(e)
+        }
         try {
             while (currentCoroutineContext().isActive && !stopRequested && !capped) {
                 val n = source.read(buffer)
@@ -221,39 +242,43 @@ class MemoCall(
                     delay(POLL_MS)
                     continue
                 }
-                if (silent) buffer.fill(0, 0, n)
                 var off = 0
-                while (off < n && !capped) {
-                    if (writer == null || writer.samples >= chunkSamples) {
-                        writer?.close()
+                while (!silent && off < n && total < capSamples) {
+                    val w = writer?.takeIf { it.samples < chunkSamples } ?: run {
+                        writer?.let { storage { it.close() } }
+                        writer = null
                         // Counted before its first sample: after a kill the sender repairs every file the record names.
-                        memos.put(record.copy(chunks = chunks + 1))
-                        writer = WavWriter.open(memos.chunk(record.id, chunks), rate)
+                        storage { memos.put(record.copy(chunks = chunks + 1)) }
+                        lateinit var opened: WavWriter
+                        storage { opened = WavWriter.open(memos.chunk(record.id, chunks), rate) }
                         chunks++
+                        opened.also { writer = it }
                     }
-                    val take = minOf((n - off).toLong(), chunkSamples - writer.samples, cap - total).toInt()
-                    writer.write(buffer, off, take)
+                    val take = minOf((n - off).toLong(), chunkSamples - w.samples, capSamples - total).toInt()
+                    storage { w.write(buffer, off, take) }
                     off += take
                     total += take
-                    capped = total >= cap
                 }
-                level(buffer, n)
+                level(buffer, n, silent)
+                capped = clock() - startedAt >= limits.capMs || total >= capSamples
                 yield()
             }
             return Capture(total, chunks, capped)
         } catch (e: CancellationException) {
             throw e
+        } catch (e: StorageFailure) {
+            return Capture(total, chunks, capped, Failure.Storage)
         } catch (e: Exception) {
-            return Capture(total, chunks, capped, e)
+            return Capture(total, chunks, capped, Failure.Mic)
         } finally {
             runCatching { writer?.close() }
             runCatching { source.close() }
         }
     }
 
-    private fun level(buffer: ShortArray, n: Int) {
+    private fun level(buffer: ShortArray, n: Int, silent: Boolean) {
         var peak = 0
-        for (i in 0 until n) peak = maxOf(peak, abs(buffer[i].toInt()))
+        if (!silent) for (i in 0 until n) peak = maxOf(peak, abs(buffer[i].toInt()))
         _state.update { it.copy(level = (peak / 32768f * 2f).coerceIn(0f, 1f)) }
     }
 
@@ -269,30 +294,31 @@ class MemoCall(
             val capture = recorder?.await()
             val memos = store()
             val durationMs = (capture?.samples ?: 0L) * 1000 / AudioSource.SAMPLE_RATE
-            val saved = capture != null && capture.error == null && durationMs >= limits.minMs
-            val record = memos.get(memoId)
-            if (saved && record != null) {
-                memos.put(record.copy(state = MemoState.Recorded, chunks = capture!!.chunks, durationMs = durationMs))
-            } else {
-                memos.delete(memoId)
-            }
+            // What was recorded counts, even if the mic or the storage failed after it.
+            val record = runCatching { memos.get(memoId) }.getOrNull()
+            val keep = capture != null && record != null && durationMs >= limits.minMs
+            val saved = keep && runCatching { memos.put(record!!.copy(state = MemoState.Recorded, chunks = capture!!.chunks, durationMs = durationMs)) }.isSuccess
+            if (!saved) runCatching { memos.delete(memoId) }
             recordingId = null
+            val failure = capture?.failure ?: Failure.Storage.takeIf { keep && !saved }
             event(
                 "memo.end",
-                mapOf("reason" to reason, "duration_s" to durationMs / 1000, "chunks" to (capture?.chunks ?: 0), "saved" to saved),
+                mapOf("reason" to (failure?.reason ?: reason), "duration_s" to durationMs / 1000, "chunks" to (capture?.chunks ?: 0), "saved" to saved),
             )
             val notice = when {
-                capture?.error != null -> "The microphone is not available. Nothing was saved."
-                !saved -> "Too short. Nothing was saved."
-                else -> lines(request.memoCause).saved
+                saved && failure != null -> lines(request.memoCause).saved + " The recording stopped early."
+                saved -> lines(request.memoCause).saved
+                failure == Failure.Storage -> "Couldn't save the memo on this phone. Nothing was saved."
+                failure == Failure.Mic -> "The microphone is not available. Nothing was saved."
+                else -> "Too short. Nothing was saved."
             }
             if (saved && !skipLine) say(endLine(request.memoCause, capped = capture!!.capped))
             tts?.let { runCatching { it.shutdown() } }
             tts = null
             effects.proximity(false)
             audio.end()
-            _state.value = CallUiState(phase = CallPhase.Ended, memo = true, notice = notice, error = if (capture?.error != null) notice else null)
-            if (saved) memos.get(memoId)?.let { runCatching { onSaved(it) } }
+            _state.value = CallUiState(phase = CallPhase.Ended, memo = true, notice = notice, error = if (!saved && failure != null) notice else null)
+            if (saved) runCatching { memos.get(memoId) }.getOrNull()?.let { runCatching { onSaved(it) } }
         }
     }
 

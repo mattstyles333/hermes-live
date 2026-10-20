@@ -92,6 +92,12 @@ class MemoCallTest {
             onSaved = { saved += it },
             newId = { "m1" },
         )
+
+        fun callWith(mic: AudioSource = this.mic, store: MemoStore = this.store) = MemoCall(
+            CoroutineScope(test.backgroundScope.coroutineContext), StandardTestDispatcher(test.testScheduler), { store }, audio, effects,
+            { speech }, { mic }, { LiveSettings() }, { T0 + test.testScheduler.currentTime }, events, MemoSettings(chunkMs = 1_000),
+            onSaved = { saved += it }, newId = { "m1" },
+        )
     }
 
     @Test fun theStartLinePlaysFirstAndTheMicOpensOnlyAfterIt() = runTest {
@@ -209,14 +215,80 @@ class MemoCallTest {
         assertFalse(rig.call.state.value.inCall)
     }
 
-    @Test fun mutedRecordsSilence() = runTest {
-        val rig = Rig(this)
+    @Test fun mutedWritesNothingAndTheCapStillCountsWallTime() = runTest {
+        val rig = Rig(this, MemoSettings(chunkMs = 1_000, capMs = 3_000))
         rig.call.start(CallRequest(memo = true, muted = true))
-        advanceTimeBy(2_000 + 1_500)
+        advanceTimeBy(2_000 + 2_000)
+        assertEquals("no zeros on disk while muted", 0L, rig.store.chunk("m1", 0).let { if (it.exists()) it.length() else 0L })
+        rig.call.toggleMute()
+        advanceTimeBy(20_000)
+        val memo = rig.store.get("m1")!!
+        assertTrue("1 s heard before the 3 s cap (wall time): ${memo.durationMs}", memo.durationMs in 1_000L..1_020L)
+        assertEquals("cap", rig.events.all.single { it.first == "memo.end" }.second["reason"])
+    }
+
+    @Test fun anotherCallWritesNothingUntilItIsOver() = runTest {
+        val rig = Rig(this)
+        rig.call.start(CallRequest(memo = true))
+        advanceTimeBy(2_000 + 1_000)
+        rig.call.onOtherCall(true)
+        advanceTimeBy(5_000)
+        rig.call.onOtherCall(false)
+        advanceTimeBy(1_000)
         rig.call.end()
         advanceTimeBy(10_000)
-        val bytes = rig.store.chunk("m1", 0).readBytes()
-        assertTrue(bytes.drop(44).all { it == 0.toByte() })
+        assertEquals(2_000L, rig.store.get("m1")!!.durationMs)
+    }
+
+    @Test fun aMuteOnlyMemoIsTooShort() = runTest {
+        val rig = Rig(this)
+        rig.call.start(CallRequest(memo = true, muted = true))
+        advanceTimeBy(2_000 + 5_000)
+        rig.call.end()
+        advanceTimeBy(10_000)
+        assertNull(rig.store.get("m1"))
+    }
+
+    /** Review round 1: a mic error at minute 2 keeps what was recorded. */
+    @Test fun aMicErrorMidwayKeepsTheFinishedChunks() = runTest {
+        val rig = Rig(this)
+        val failing = object : AudioSource {
+            val paced = PacedMic { testScheduler.currentTime }
+            override var onRouteChanged: (() -> Unit)? = null
+            override fun open() = paced.open()
+            override fun read(buffer: ShortArray): Int {
+                if (testScheduler.currentTime >= 2_000 + 2_500) throw IllegalStateException("ERROR_DEAD_OBJECT")
+                return paced.read(buffer)
+            }
+            override fun close() = paced.close()
+        }
+        val call = rig.callWith(mic = failing)
+        call.start(CallRequest(memo = true))
+        advanceTimeBy(20_000)
+        val memo = rig.store.get("m1")!!
+        assertEquals(MemoState.Recorded, memo.state)
+        assertEquals(3, memo.chunks)
+        assertTrue(memo.durationMs in 2_400L..2_500L)
+        assertEquals(listOf(memo), rig.saved)
+        assertTrue(call.state.value.error == null)
+        assertFalse(call.state.value.notice!!.contains("microphone"))
+        assertEquals("mic_failed", rig.events.all.single { it.first == "memo.end" }.second["reason"])
+    }
+
+    @Test fun aStorageFailureIsNotTheMicrophone() = runTest {
+        val rig = Rig(this)
+        val broken = object : com.folio.hermes.cascade.ports.Store by rig.kv {
+            override fun put(key: String, value: String?) = throw java.io.IOException("ENOSPC")
+        }
+        val call = rig.callWith(store = MemoStore({ broken }, rig.dir))
+        call.start(CallRequest(memo = true))
+        advanceTimeBy(2_000 + 3_000)
+        call.end()
+        advanceTimeBy(10_000)
+        val shown = call.state.value.error!!
+        assertFalse(shown.contains("microphone"))
+        assertTrue(shown.contains("save"))
+        assertTrue(rig.saved.isEmpty())
     }
 
     @Test fun aSecondEndCutsTheEndLine() = runTest {
