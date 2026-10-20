@@ -84,10 +84,10 @@ enum class CallFailure(val wire: String) {
     /** The phone has no validated network. */
     Offline("offline"),
 
-    /** Online, but Hermes did not answer (network error, 5xx, timeout). */
+    /** Online, but Hermes did not answer (network error, other 5xx, timeout), or the line dropped and could not come back. */
     HermesUnreachable("hermes_unreachable"),
 
-    /** Hermes answered but voice-live can't start (503: no OpenAI key; 502: OpenAI refused; no `session.started`). */
+    /** Hermes answered but voice-live can't start: 503 (no OpenAI key), 502 (OpenAI refused), or no `session.started`. */
     VoiceUnavailable("voice_unavailable"),
 
     /** Anything else (sign-in, the microphone, a bad answer): no memo offer. */

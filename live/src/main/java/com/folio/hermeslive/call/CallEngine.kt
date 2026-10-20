@@ -964,9 +964,15 @@ class CallEngine(
             summary = summary,
             error = error,
             captions = captions.captions,
-            // A line that dropped for good while offline can go on as a memo too.
-            failure = failure ?: CallFailure.Offline.takeIf { reason == "connection_lost" && !online() },
+            // A line that dropped and could not come back (its one reconnect used or failed) can go on as a memo.
+            failure = failure ?: droppedFailure(reason),
         )
+    }
+
+    private fun droppedFailure(reason: String): CallFailure? = when {
+        reason != "connection_lost" || userEnding -> null
+        online() -> CallFailure.HermesUnreachable
+        else -> CallFailure.Offline
     }
 
     private fun dropTransport() {
@@ -1048,7 +1054,7 @@ class CallEngine(
         fun failureKind(e: Throwable, online: Boolean): CallFailure = when {
             !online -> CallFailure.Offline
             e is VoiceLiveException -> when {
-                e.kind == VoiceLiveException.Kind.NotConfigured || e.kind == VoiceLiveException.Kind.VendorRejected || e.httpCode == 503 -> CallFailure.VoiceUnavailable
+                e.kind == VoiceLiveException.Kind.NotConfigured || e.kind == VoiceLiveException.Kind.VendorRejected || e.httpCode == 502 || e.httpCode == 503 -> CallFailure.VoiceUnavailable
                 e.kind == VoiceLiveException.Kind.Failed && e.httpCode in 500..599 -> CallFailure.HermesUnreachable
                 else -> CallFailure.Other
             }

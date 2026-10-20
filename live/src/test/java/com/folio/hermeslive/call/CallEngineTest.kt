@@ -506,6 +506,7 @@ class CallEngineTest {
         assertEquals(CallFailure.VoiceUnavailable, kind(com.folio.hermes.live.VoiceLiveException(com.folio.hermes.live.VoiceLiveException.Kind.VendorRejected, 502, "")))
         assertEquals(CallFailure.VoiceUnavailable, kind(com.folio.hermes.live.VoiceLiveException(com.folio.hermes.live.VoiceLiveException.Kind.Failed, 503, "")))
         assertEquals(CallFailure.HermesUnreachable, kind(com.folio.hermes.live.VoiceLiveException(com.folio.hermes.live.VoiceLiveException.Kind.Failed, 500, "")))
+        assertEquals("502 is the voice, whatever the kind", CallFailure.VoiceUnavailable, kind(com.folio.hermes.live.VoiceLiveException(com.folio.hermes.live.VoiceLiveException.Kind.Failed, 502, "")))
         assertEquals(CallFailure.Other, kind(com.folio.hermes.live.VoiceLiveException(com.folio.hermes.live.VoiceLiveException.Kind.Unauthorized, 401, "")))
         assertEquals(CallFailure.HermesUnreachable, kind(HermesAuthException.Unavailable(502, "bad gateway")))
         assertEquals(CallFailure.Other, kind(HermesAuthException.InvalidCredentials()))
@@ -541,6 +542,47 @@ class CallEngineTest {
         r.engine.end()
         runCurrent()
         r.t.closedBy("client_closed", 3.0)
+        runCurrent()
+        assertNull(r.state.failure)
+    }
+
+    /** Review round 1: a line that drops again after its one reconnect can go on as a memo. */
+    @Test fun aSecondDropOnlineEndsWithAFailureThatOffersContinueAsMemo() = runTest {
+        val r = rig()
+        live(r)
+        r.t.events.onLost("ice failed")
+        runCurrent()
+        advanceTimeBy(700)
+        r.t.started()
+        runCurrent()
+        r.t.events.onLost("again")
+        runCurrent()
+        assertEquals(CallPhase.Ended, r.state.phase)
+        assertEquals(CallFailure.HermesUnreachable, r.state.failure)
+        assertEquals(com.folio.hermeslive.memo.MemoFallback.Action.Offer, com.folio.hermeslive.memo.MemoFallback.decide(r.state, memosOn = true))
+        assertEquals("Continue as memo", com.folio.hermeslive.memo.MemoFallback.offerText(r.state))
+    }
+
+    @Test fun theReconnectsLineDroppingWhileReconnectingOffersContinueAsMemo() = runTest {
+        val r = rig()
+        live(r)
+        r.t.events.onLost("ice failed")
+        runCurrent()
+        advanceTimeBy(700)
+        assertEquals(CallPhase.Reconnecting, r.state.phase)
+        r.t.events.onLost("ice failed again")
+        runCurrent()
+        assertEquals(CallPhase.Ended, r.state.phase)
+        assertEquals(CallFailure.HermesUnreachable, r.state.failure)
+        assertEquals("Continue as memo", com.folio.hermeslive.memo.MemoFallback.offerText(r.state))
+    }
+
+    @Test fun hangingUpYourselfIsNoFailure() = runTest {
+        val r = rig()
+        live(r)
+        r.engine.end()
+        runCurrent()
+        r.t.events.onLost("closed under us")
         runCurrent()
         assertNull(r.state.failure)
     }
