@@ -102,10 +102,11 @@ object CallNotifications {
     fun statusLine(state: CallUiState): String = when {
         state.phase == CallPhase.Connecting -> "Connecting…"
         state.phase == CallPhase.Reconnecting -> "Reconnecting…"
-        state.phase == CallPhase.Ending -> "Ending…"
+        state.phase == CallPhase.Ending -> if (state.memo) "Saving the memo…" else "Ending…"
         state.onOtherCall -> "Paused for your other call"
         state.approvals.isNotEmpty() -> "Waiting for your approval"
         state.muted -> "Muted"
+        state.memo -> "Recording a memo (offline)"
         state.activity == CallActivity.HermesSpeaking -> "Hermes is speaking"
         state.activity == CallActivity.Thinking -> state.tool?.let { "Hermes is working: $it" } ?: "Hermes is working"
         state.musicInGap -> "Listening · music in the gap"

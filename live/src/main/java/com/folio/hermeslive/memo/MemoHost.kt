@@ -78,13 +78,16 @@ class MemoHost private constructor(private val app: Context) {
     init {
         scope.launch {
             withTimeoutOrNull(READY_WAIT_MS) { app.graph.ready.await() }
-            flush(force = true)
+            if (waiting()) flush(force = true)
         }
         // Held memos go when the network comes back.
         scope.launch {
-            network.online.distinctUntilChanged().drop(1).filter { it }.collect { flush(force = true) }
+            network.online.distinctUntilChanged().drop(1).filter { it }.collect { if (waiting()) flush(force = true) }
         }
     }
+
+    /** Anything to send (or left by a kill mid-recording)? Only then is the task runtime built for a flush. */
+    private fun waiting(): Boolean = runCatching { store.all().any { it.pending || it.state == MemoState.Recording } }.getOrDefault(false)
 
     /** A memo ended (or the user asked): try what is due now. */
     fun kick() = scope.launch { flush(force = false) }

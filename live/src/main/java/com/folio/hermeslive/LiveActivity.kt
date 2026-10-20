@@ -387,7 +387,7 @@ class LiveActivity : ComponentActivity() {
                     label = "main",
                 ) { shown ->
                     when {
-                        shown == MainScreen.Home -> Home(call, elapsed, voiceLine, meetingStarter)
+                        shown == MainScreen.Home -> Home(call, elapsed, voiceLine, meetingStarter, settings.offlineMemos)
                         grokCall != null && shown != MainScreen.BillViewer -> GrokScreen(grokCall, shown, call, settings.haptics)
                         gptAgents != null && shown != MainScreen.BillViewer -> GptLiveAgentsScreen(gptAgents, shown, call, settings.haptics)
                         else -> BillScreen(shown, call, settings.pauseMs, settings.haptics)
@@ -475,7 +475,7 @@ class LiveActivity : ComponentActivity() {
 
     /** The idle home screen (and GPT-Live's call screen). */
     @Composable
-    private fun Home(call: CallUiState, elapsed: String?, voiceLine: String?, meeting: MeetingStarter?) {
+    private fun Home(call: CallUiState, elapsed: String?, voiceLine: String?, meeting: MeetingStarter?, memosOn: Boolean) {
         val g = graph
         val gptLive = g.calls.active.collectAsStateWithLifecycle().value as? CallEngine
         val session by (gptLive?.onDemandUi ?: remember { MutableStateFlow(OnDemandUi()) }).collectAsStateWithLifecycle()
@@ -501,7 +501,7 @@ class LiveActivity : ComponentActivity() {
                     requestStart(CallRequest(newConversation = true))
                 },
                 onMeeting = meeting?.let { m -> { m.open("app") } },
-                onRecordMemo = if (g.settings.settings.value.offlineMemos) {
+                onRecordMemo = if (memosOn) {
                     {
                         val memo = MemoFallback.request(call, entry = "fallback")
                         g.calls.dismissSummary()
