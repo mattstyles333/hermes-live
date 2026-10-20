@@ -1,5 +1,7 @@
 package com.folio.hermeslive.meeting
 
+import com.folio.hermeslive.tasks.TaskSubmitter
+import com.folio.hermeslive.tasks.CascadeTaskSubmitter
 import android.annotation.SuppressLint
 import android.content.Context
 import com.folio.hermes.cascade.ports.Clock
@@ -47,7 +49,7 @@ class MeetingHost private constructor(private val app: Context) {
     /** OpenRouter on the user's key: the writer (chunk summaries), cleanup and cloud speech. No key: no request. */
     private val openRouter by lazy { OpenRouter(OpenRouterConfig(), key = shell.keys::key, client = app.graph.client, telemetry = shell.telemetry) }
 
-    val tasks: MeetingTasks = CascadeMeetingTasks(
+    val tasks: TaskSubmitter = CascadeTaskSubmitter(
         tasks = { withContext(Dispatchers.Default) { shell.shell.appRuntime()?.core?.tasks } },
         signedIn = { app.graph.account.state.value is AccountState.SignedIn },
         // Keep the gateway open while the notes task runs, so its result comes back as a notification.

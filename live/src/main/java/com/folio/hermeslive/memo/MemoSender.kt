@@ -2,7 +2,7 @@ package com.folio.hermeslive.memo
 
 import com.folio.hermes.telemetry.TelemetrySink
 import com.folio.hermeslive.audio.AudioSource
-import com.folio.hermeslive.meeting.HeldTasks
+import com.folio.hermeslive.tasks.HeldTasks
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -32,13 +32,6 @@ interface MemoNotices {
 
     /** "The memo had no speech". */
     fun empty(record: MemoRecord)
-
-    companion object {
-        val None = object : MemoNotices {
-            override fun sent(record: MemoRecord) = Unit
-            override fun empty(record: MemoRecord) = Unit
-        }
-    }
 }
 
 /** The `JobScheduler` job that wakes the app when the network is back ([MemoJobs] in the app). */
@@ -48,13 +41,6 @@ interface MemoScheduler {
 
     /** Nothing held: drop the job. */
     fun cancel()
-
-    companion object {
-        val None = object : MemoScheduler {
-            override fun schedule() = Unit
-            override fun cancel() = Unit
-        }
-    }
 }
 
 /**
@@ -79,8 +65,8 @@ class MemoSender(
     private val zone: () -> ZoneId,
     private val wall: () -> Long,
     private val telemetry: TelemetrySink,
-    private val notices: MemoNotices = MemoNotices.None,
-    private val scheduler: MemoScheduler = MemoScheduler.None,
+    private val notices: MemoNotices,
+    private val scheduler: MemoScheduler,
     private val recording: (String) -> Boolean = { false },
     private val limits: MemoSettings = MemoSettings(),
 ) {

@@ -1,5 +1,6 @@
 package com.folio.hermeslive.memo
 
+import com.folio.hermeslive.stt.Wav
 import java.io.File
 import java.io.RandomAccessFile
 
@@ -41,7 +42,7 @@ class WavWriter private constructor(private val file: RandomAccessFile, private 
     }
 
     companion object {
-        const val HEADER = 44
+        const val HEADER = Wav.HEADER
 
         fun open(target: File, sampleRate: Int): WavWriter {
             target.parentFile?.mkdirs()
@@ -72,12 +73,8 @@ class WavWriter private constructor(private val file: RandomAccessFile, private 
         }
 
         private fun header(f: RandomAccessFile, dataBytes: Long, sampleRate: Int) {
-            val h = java.nio.ByteBuffer.allocate(HEADER).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            h.put("RIFF".toByteArray()).putInt((36 + dataBytes).toInt()).put("WAVE".toByteArray())
-            h.put("fmt ".toByteArray()).putInt(16).putShort(1).putShort(1).putInt(sampleRate).putInt(sampleRate * 2).putShort(2).putShort(16)
-            h.put("data".toByteArray()).putInt(dataBytes.toInt())
             f.seek(0)
-            f.write(h.array())
+            f.write(Wav.header(dataBytes, sampleRate))
             f.seek(HEADER + dataBytes)
         }
     }

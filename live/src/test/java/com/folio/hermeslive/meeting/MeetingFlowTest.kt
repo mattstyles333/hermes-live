@@ -1,5 +1,6 @@
 package com.folio.hermeslive.meeting
 
+import com.folio.hermeslive.tasks.HeldSubmit
 import com.folio.hermes.cascade.ports.MemoryStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -95,7 +96,7 @@ class MeetingFlowTest {
     @Test fun offlineAtTheEndTheNotesAreHeldOnThePhone() = runTest {
         val rig = Rig(this)
         taking(rig)
-        rig.tasks.reply = { MeetingSubmit.Offline }
+        rig.tasks.reply = { HeldSubmit.Offline }
         rig.flow.end()
         runCurrent()
         rig.flow.send()

@@ -1,5 +1,7 @@
 package com.folio.hermeslive.meeting
 
+import com.folio.hermeslive.tasks.HeldTasks
+import com.folio.hermeslive.tasks.TaskSubmitter
 import com.folio.hermes.openrouter.FailureKind
 import com.folio.hermes.telemetry.TelemetrySink
 import java.time.ZoneId
@@ -19,7 +21,7 @@ import java.time.ZoneId
  */
 class MeetingOutbox(
     private val log: MeetingLog,
-    private val tasks: () -> MeetingTasks,
+    private val tasks: () -> TaskSubmitter,
     private val writer: () -> MeetingWriter,
     private val zone: () -> ZoneId,
     private val wall: () -> Long,

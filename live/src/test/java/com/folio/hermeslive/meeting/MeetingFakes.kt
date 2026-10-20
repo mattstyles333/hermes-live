@@ -1,5 +1,7 @@
 package com.folio.hermeslive.meeting
 
+import com.folio.hermeslive.tasks.HeldSubmit
+import com.folio.hermeslive.tasks.TaskSubmitter
 import com.folio.hermes.cascade.Transcript
 import com.folio.hermes.cascade.TranscriptPass
 import com.folio.hermes.cascade.Word
@@ -77,12 +79,12 @@ class FakeMeetingSpeech : MeetingSpeech {
 }
 
 /** A task table that records every submit. [reply] decides each one. */
-class FakeTasks(var reply: (key: String) -> MeetingSubmit = { MeetingSubmit.Sent("task-$it") }) : MeetingTasks {
+class FakeTasks(var reply: (key: String) -> HeldSubmit = { HeldSubmit.Sent("task-$it") }) : TaskSubmitter {
     data class Call(val brief: String, val label: String, val key: String)
 
     val calls = ArrayList<Call>()
 
-    override suspend fun submit(brief: String, label: String, key: String): MeetingSubmit {
+    override suspend fun submit(brief: String, label: String, key: String): HeldSubmit {
         calls += Call(brief, label, key)
         return reply(key)
     }

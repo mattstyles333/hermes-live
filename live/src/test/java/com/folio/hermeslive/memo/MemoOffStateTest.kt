@@ -71,7 +71,7 @@ class MemoOffStateTest {
         // Offline, a GPT-Live call is GPT-Live (it fails as today); a memo asked for is too.
         assertEquals(CallPlan.Ready(Engine.GptLive), g.calls.plan(CallRequest()))
         assertEquals(CallPlan.Ready(Engine.GptLive), g.calls.plan(CallRequest(memo = true)))
-        assertNull("no recorder", g.calls.memoEngine)
+        assertFalse("no recorder", g.calls.active.value is MemoCall)
         val jobs = app.getSystemService(JobScheduler::class.java)
         assertTrue("no job", jobs.allPendingJobs.isEmpty())
         assertFalse("no memo file", File(app.noBackupFilesDir, "cascade/memo").exists())
@@ -86,7 +86,6 @@ class MemoOffStateTest {
         assertFalse(t.shell.gate.tasksActive)
         assertFalse("Hermes's voice is not wanted", t.shell.hermesVoiceWanted(t.settings.settings.value))
         t.settings.update { it.copy(offlineMemos = true) }
-        assertTrue(t.shell.gate.offlineMemosActive)
         assertTrue("the task runtime builds for memos, no OpenRouter key needed", t.shell.gate.tasksActive)
         assertTrue("Hermes transcribes memos", t.shell.hermesVoiceWanted(t.settings.settings.value))
         assertTrue(t.shell.shell.runtime() != null)

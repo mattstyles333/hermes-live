@@ -56,7 +56,7 @@ class CallSwitch(
     private val billAvailable: () -> Boolean = { false },
     /** Custom has a voice now (Hermes's or OpenRouter's). Asked only when Bill would take the call. */
     private val voiceReady: () -> Boolean = { true },
-    /** The offline memo recorder (built on first use, only while [memoActive]). */
+    /** A new offline memo recorder (one per memo, only while [memoActive]). */
     private val memo: () -> VoiceCall = { error("no memo recorder") },
     /** Settings › Voice › Offline memos is on. */
     private val memoActive: () -> Boolean = { false },
@@ -66,7 +66,6 @@ class CallSwitch(
     private val _active = MutableStateFlow<VoiceCall?>(null)
     private var builtCascade: VoiceCall? = null
     private var builtGrok: VoiceCall? = null
-    private var builtMemo: VoiceCall? = null
 
     /** The engine of the current (or last) call, null before the first. */
     val active: StateFlow<VoiceCall?> = _active.asStateFlow()
@@ -87,9 +86,6 @@ class CallSwitch(
         !voiceReady() -> CallPlan.NoVoice
         else -> CallPlan.Ready(Engine.Cascade)
     }
-
-    /** The memo recorder if a memo ever ran in this process. */
-    val memoEngine: VoiceCall? get() = builtMemo
 
     /** The Grok engine if a Grok call ever ran in this process (tests). */
     val grokEngine: VoiceCall? get() = builtGrok
@@ -121,7 +117,7 @@ class CallSwitch(
             Engine.Cascade -> builtCascade ?: cascade().also { builtCascade = it }
             Engine.Grok -> builtGrok ?: grok().also { builtGrok = it }
             Engine.GptLive -> gptLive()
-            Engine.Memo -> builtMemo ?: memo().also { builtMemo = it }
+            Engine.Memo -> memo()
         }
         _active.value?.takeIf { it !== call }?.dismissSummary()
         _active.value = call

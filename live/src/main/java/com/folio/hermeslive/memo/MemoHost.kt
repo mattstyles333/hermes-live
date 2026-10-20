@@ -20,8 +20,8 @@ import com.folio.hermeslive.cascade.appRuntime
 import com.folio.hermeslive.data.AccountState
 import com.folio.hermeslive.data.VoiceShell
 import com.folio.hermeslive.graph
-import com.folio.hermeslive.meeting.CascadeMeetingTasks
-import com.folio.hermeslive.meeting.HeldTasks
+import com.folio.hermeslive.tasks.CascadeTaskSubmitter
+import com.folio.hermeslive.tasks.HeldTasks
 import com.folio.hermeslive.service.CallNotifications
 import com.folio.hermeslive.service.OffCall
 import kotlinx.coroutines.CoroutineScope
@@ -53,7 +53,7 @@ class MemoHost private constructor(private val app: Context) {
     private val network by lazy { AndroidNetwork(app) }
     val store = MemoStore({ shell.storage.store }, shell.dirs.memo)
 
-    private val tasks = CascadeMeetingTasks(
+    private val tasks = CascadeTaskSubmitter(
         tasks = { withContext(Dispatchers.Default) { shell.shell.appRuntime()?.core?.tasks } },
         signedIn = { app.graph.account.state.value is AccountState.SignedIn },
         // Keep the gateway open while the memo's task runs (only allowed while the app is in front).
@@ -70,7 +70,7 @@ class MemoHost private constructor(private val app: Context) {
         telemetry = shell.telemetry,
         notices = AndroidMemoNotices(app),
         scheduler = MemoJobs(app),
-        recording = { id -> (app.graph.calls.memoEngine as? MemoCall)?.recordingId == id },
+        recording = { id -> (app.graph.calls.active.value as? MemoCall)?.recordingId == id },
     )
 
     private var retry: Job? = null

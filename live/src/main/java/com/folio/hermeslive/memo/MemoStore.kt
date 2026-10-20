@@ -47,8 +47,6 @@ data class MemoRecord(
     val heldReason: String? = null,
     /** Wall clock before which a flush leaves it alone (backoff); 0: now. */
     val nextAttemptAt: Long = 0,
-    /** Where the memo was started from, for telemetry. */
-    val entry: String = "app",
 ) {
     /** Waiting to go to Hermes. */
     val pending: Boolean get() = state == MemoState.Recorded || state == MemoState.Transcribed

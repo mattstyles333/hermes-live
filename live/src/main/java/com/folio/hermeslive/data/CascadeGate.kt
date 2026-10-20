@@ -29,15 +29,12 @@ class CascadeGate(
     /** GPT-Live with parallel agents (Settings, on by default) while signed in: its delegations run as tasks on the shared task API. */
     val gptLiveAgentsActive: Boolean get() = settings().voiceEngine == VoiceEngine.GptLive && gptLiveAgents()
 
-    /** Offline memos on while signed in: they become tasks through the shared task API (no OpenRouter key needed). */
-    val offlineMemosActive: Boolean get() = offlineMemos()
-
     /**
      * The Hermes task machinery (the runtime: actor, store, gateway, off-call service) is wanted:
      * Bill, Grok or GPT-Live with agents (which drive the same tasks through the shared task API),
      * or offline memos (sent as tasks the same way).
      */
-    val tasksActive: Boolean get() = active || grokActive || gptLiveAgentsActive || offlineMemosActive
+    val tasksActive: Boolean get() = active || grokActive || gptLiveAgentsActive || offlineMemos()
 
     /** Bill could run a call (a usable OpenRouter key), whichever engine is chosen: Grok's offline fallback. */
     val billAvailable: Boolean get() = key().usable

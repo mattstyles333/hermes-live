@@ -27,14 +27,22 @@ class OpenRouterCloudStt(private val client: TranscriptionClient, private val on
 
 /** 16-bit PCM WAV in memory (never a file). */
 object Wav {
+    /** The canonical header's length. */
+    const val HEADER = 44
+
+    /** The 44-byte header of a 16-bit mono PCM WAV holding [dataBytes] at [rate] (also the offline memo's `WavWriter`). */
+    fun header(dataBytes: Long, rate: Int): ByteArray {
+        val h = ByteBuffer.allocate(HEADER).order(ByteOrder.LITTLE_ENDIAN)
+        h.put("RIFF".toByteArray()).putInt((36 + dataBytes).toInt()).put("WAVE".toByteArray())
+        h.put("fmt ".toByteArray()).putInt(16).putShort(1).putShort(1).putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
+        h.put("data".toByteArray()).putInt(dataBytes.toInt())
+        return h.array()
+    }
+
     fun encode(pcm: FloatArray, rate: Int = AudioRate.HZ): ByteArray {
         val data = pcm.size * 2
-        val out = ByteArrayOutputStream(44 + data)
-        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
-        header.put("RIFF".toByteArray()).putInt(36 + data).put("WAVE".toByteArray())
-        header.put("fmt ".toByteArray()).putInt(16).putShort(1).putShort(1).putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
-        header.put("data".toByteArray()).putInt(data)
-        out.write(header.array())
+        val out = ByteArrayOutputStream(HEADER + data)
+        out.write(header(data.toLong(), rate))
         val body = ByteBuffer.allocate(data).order(ByteOrder.LITTLE_ENDIAN)
         for (s in pcm) body.putShort((s.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
         out.write(body.array())

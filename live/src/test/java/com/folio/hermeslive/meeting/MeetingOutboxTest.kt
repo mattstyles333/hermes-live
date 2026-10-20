@@ -1,5 +1,7 @@
 package com.folio.hermeslive.meeting
 
+import com.folio.hermeslive.tasks.HeldSubmit
+import com.folio.hermeslive.tasks.TaskSubmitter
 import com.folio.hermes.cascade.ports.MemoryStore
 import com.folio.hermes.openrouter.FailureKind
 import com.folio.hermes.openrouter.OpenRouterResult
@@ -31,7 +33,7 @@ class MeetingOutboxTest {
     @Test fun offlineTheNotesAreHeldThenSentOnceWhenBackOnline() = runTest {
         val rig = Rig()
         rig.ended()
-        rig.tasks.reply = { MeetingSubmit.Offline }
+        rig.tasks.reply = { HeldSubmit.Offline }
         assertEquals(MeetingOutbox.Outcome.Held("offline"), rig.outbox.queue("m1"))
         val held = rig.log.meta("m1")!!
         assertEquals(MeetingPhase.Queued, held.phase)
@@ -39,7 +41,7 @@ class MeetingOutboxTest {
         // The brief was stored before the submit: a retry sends exactly the same text.
         val stored = rig.log.brief("m1")!!
         assertEquals(stored, rig.tasks.calls.single().brief)
-        rig.tasks.reply = { MeetingSubmit.Sent("t-42") }
+        rig.tasks.reply = { HeldSubmit.Sent("t-42") }
         assertEquals(1, rig.outbox.flush())
         val sent = rig.log.meta("m1")!!
         assertEquals(MeetingPhase.Sent, sent.phase)
@@ -59,11 +61,11 @@ class MeetingOutboxTest {
     @Test fun aLongMeetingIsSummarisedOnceEvenWhenTheSubmitIsRetried() = runTest {
         val rig = Rig()
         rig.ended(segments = 800, chars = 120)
-        rig.tasks.reply = { MeetingSubmit.NotAvailable("no_reply") }
+        rig.tasks.reply = { HeldSubmit.NotAvailable("no_reply") }
         assertEquals(MeetingOutbox.Outcome.Held("no_reply"), rig.outbox.queue("m1"))
         val calls = rig.writer.calls
         assertTrue(calls > 1)
-        rig.tasks.reply = { MeetingSubmit.Sent("t-1") }
+        rig.tasks.reply = { HeldSubmit.Sent("t-1") }
         rig.outbox.flush()
         assertEquals(calls, rig.writer.calls)
         assertTrue(rig.tasks.calls.last().brief.contains("summarised in"))
@@ -84,10 +86,10 @@ class MeetingOutboxTest {
     @Test fun billOffOrNotConnectedIsHeldWithItsReason() = runTest {
         val rig = Rig()
         rig.ended()
-        rig.tasks.reply = { MeetingSubmit.NotAvailable("bill_off") }
+        rig.tasks.reply = { HeldSubmit.NotAvailable("bill_off") }
         assertEquals(MeetingOutbox.Outcome.Held("bill_off"), rig.outbox.queue("m1"))
         assertEquals("bill_off", rig.log.meta("m1")!!.heldReason)
-        val none = MeetingOutbox(rig.log, { MeetingTasks.None }, { MeetingWriter.None }, { ZoneId.of("UTC") }, { rig.now }, Events())
+        val none = MeetingOutbox(rig.log, { TaskSubmitter.None }, { MeetingWriter.None }, { ZoneId.of("UTC") }, { rig.now }, Events())
         assertEquals(MeetingOutbox.Outcome.Held("not_connected"), none.send("m1"))
     }
 
@@ -106,9 +108,9 @@ class MeetingOutboxTest {
         val rig = Rig()
         rig.ended()
         // The first start may be in the task table already; only its reply was lost.
-        rig.tasks.reply = { MeetingSubmit.NotAvailable("no_reply") }
+        rig.tasks.reply = { HeldSubmit.NotAvailable("no_reply") }
         rig.outbox.queue("m1")
-        rig.tasks.reply = { MeetingSubmit.Sent("t-1") }
+        rig.tasks.reply = { HeldSubmit.Sent("t-1") }
         rig.outbox.queue("m1")
         assertEquals(listOf("meeting-m1-1", "meeting-m1-1"), rig.tasks.calls.map { it.key })
         assertEquals(1, rig.log.meta("m1")!!.sends)
@@ -117,15 +119,15 @@ class MeetingOutboxTest {
     @Test fun anotherAccountsWipeBeforeTheSendMeansNothingIsSent() = runTest {
         val rig = Rig()
         rig.ended()
-        rig.tasks.reply = { MeetingSubmit.Offline }
+        rig.tasks.reply = { HeldSubmit.Offline }
         rig.outbox.queue("m1")
         assertEquals(1, rig.tasks.calls.size)
         // Building Bill's runtime for a different account wipes the store first.
-        val wiping = object : MeetingTasks {
+        val wiping = object : TaskSubmitter {
             override suspend fun prepare() {
                 rig.store.keys(MeetingLog.PREFIX).forEach { rig.store.put(it, null) }
             }
-            override suspend fun submit(brief: String, label: String, key: String): MeetingSubmit = rig.tasks.submit(brief, label, key)
+            override suspend fun submit(brief: String, label: String, key: String): HeldSubmit = rig.tasks.submit(brief, label, key)
         }
         val outbox = MeetingOutbox(rig.log, { wiping }, { rig.writer }, { ZoneId.of("UTC") }, { rig.now }, Events())
         assertEquals(0, outbox.flush())
@@ -134,12 +136,12 @@ class MeetingOutboxTest {
         assertTrue(rig.log.all().isEmpty())
     }
 
-    @Test fun inMeetingTasksAreHeldAndRetriedWithTheirOwnKey() = runTest {
+    @Test fun inTaskSubmitterAreHeldAndRetriedWithTheirOwnKey() = runTest {
         val rig = Rig()
-        rig.tasks.reply = { MeetingSubmit.Offline }
+        rig.tasks.reply = { HeldSubmit.Offline }
         val task = MeetingTask("m1", 7, "Goal: draft it.", "Meeting task · draft it", WALL0)
         assertEquals(MeetingOutbox.Outcome.Held("offline"), rig.outbox.task(task))
-        rig.tasks.reply = { MeetingSubmit.Sent("t-9") }
+        rig.tasks.reply = { HeldSubmit.Sent("t-9") }
         rig.outbox.flush()
         assertEquals("t-9", rig.log.tasks("m1").single().taskId)
         assertEquals(listOf("meeting-m1-task-7", "meeting-m1-task-7"), rig.tasks.calls.map { it.key })

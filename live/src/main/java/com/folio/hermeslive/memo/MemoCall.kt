@@ -188,7 +188,7 @@ class MemoCall(
     }
 
     private fun record(memoId: String) {
-        val record = MemoRecord(memoId, createdAt = _state.value.startedAtMs ?: clock(), entry = request.entry)
+        val record = MemoRecord(memoId, createdAt = _state.value.startedAtMs ?: clock())
         recordingId = memoId
         val memos = store()
         memos.put(record)

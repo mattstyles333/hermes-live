@@ -3,9 +3,9 @@ package com.folio.hermeslive.memo
 import com.folio.hermes.cascade.ports.MemoryStore
 import com.folio.hermeslive.meeting.Events
 import com.folio.hermeslive.meeting.FakeTasks
-import com.folio.hermeslive.meeting.HeldTasks
-import com.folio.hermeslive.meeting.MeetingSubmit
-import com.folio.hermeslive.meeting.MeetingTasks
+import com.folio.hermeslive.tasks.HeldTasks
+import com.folio.hermeslive.tasks.HeldSubmit
+import com.folio.hermeslive.tasks.TaskSubmitter
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runCurrent
@@ -35,7 +35,7 @@ class MemoSenderTest {
         var now = T0
         var live = setOf<String>()
         var prepare: suspend () -> Unit = {}
-        private val task = object : MeetingTasks {
+        private val task = object : TaskSubmitter {
             override suspend fun prepare() = this@Rig.prepare()
             override suspend fun submit(brief: String, label: String, key: String) = tasks.submit(brief, label, key)
         }
@@ -122,13 +122,13 @@ class MemoSenderTest {
         val rig = Rig()
         rig.recorded(seconds = 130.0)
         // The start reached the task table but its reply was lost (a kill): held, transcript kept.
-        rig.tasks.reply = { MeetingSubmit.NotAvailable("no_reply") }
+        rig.tasks.reply = { HeldSubmit.NotAvailable("no_reply") }
         rig.sender().flush()
         assertEquals(MemoState.Transcribed, rig.store.get("m1")!!.state)
         assertEquals("part 1 part 2 part 3", rig.store.get("m1")!!.transcript)
         assertEquals(3, rig.transcriber.sizes.size)
         // A new process: the stored transcript goes again under the same key (the task API answers `existing`).
-        rig.tasks.reply = { MeetingSubmit.Sent("t-1") }
+        rig.tasks.reply = { HeldSubmit.Sent("t-1") }
         rig.sender().flush(force = true)
         assertEquals(listOf("memo-m1", "memo-m1"), rig.tasks.calls.map { it.key })
         assertEquals(rig.tasks.calls[0].brief, rig.tasks.calls[1].brief)

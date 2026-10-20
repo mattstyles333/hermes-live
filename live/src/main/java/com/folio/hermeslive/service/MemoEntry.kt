@@ -28,8 +28,7 @@ object MemoEntry {
         Memo,
     }
 
-    fun mode(memosOn: Boolean, online: Boolean, memoAsked: Boolean = false): Mode =
-        if (memosOn && (!online || memoAsked)) Mode.Memo else Mode.Call
+    fun mode(memosOn: Boolean, online: Boolean): Mode = if (memosOn && !online) Mode.Memo else Mode.Call
 
     /** Tell the launcher the Memo shortcut was used (S-F calls this when a memo starts from it). */
     fun reportUsed(context: Context) {

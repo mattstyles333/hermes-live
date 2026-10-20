@@ -23,9 +23,8 @@ class MemoEntryTest {
     @Test fun offlineWithMemosOnIsAMemoNotAFailure() {
         assertEquals(MemoEntry.Mode.Memo, MemoEntry.mode(memosOn = true, online = false))
         assertEquals(MemoEntry.Mode.Call, MemoEntry.mode(memosOn = true, online = true))
-        assertEquals(MemoEntry.Mode.Memo, MemoEntry.mode(memosOn = true, online = true, memoAsked = true))
         assertEquals("memos off: today's call, unchanged", MemoEntry.Mode.Call, MemoEntry.mode(memosOn = false, online = false))
-        assertEquals(MemoEntry.Mode.Call, MemoEntry.mode(memosOn = false, online = true, memoAsked = true))
+        assertEquals(MemoEntry.Mode.Call, MemoEntry.mode(memosOn = false, online = true))
     }
 
     @Test fun theTileMarksItsIntentMemoOnlyWhenOfflineWithMemosOn() {

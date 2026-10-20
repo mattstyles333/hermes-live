@@ -119,7 +119,7 @@ class EngineSwitchTest {
         r.online = true
         r.switch.start(CallRequest())
         assertEquals("online again: GPT-Live", 1, r.gpt.starts.size)
-        assertEquals("the memo is built once per process", 1, r.memos.size)
+        assertEquals("one recorder per memo", 1, r.memos.size)
     }
 
     @Test fun aMemoAskedForIsAMemoWhateverTheEngine() {
@@ -147,7 +147,6 @@ class EngineSwitchTest {
         r.switch.start(CallRequest())
         assertEquals(2, r.gpt.starts.size)
         assertTrue(r.memos.isEmpty())
-        assertNull(r.switch.memoEngine)
         // Bill chosen, memos off: a memo is Bill's memo mode, as before.
         assertEquals(CallPlan.Ready(Engine.Cascade), MemoRig(memosOn = false, active = true).switch.plan(CallRequest(memo = true)))
     }
