@@ -21,7 +21,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import com.folio.hermes.cascade.CascadeTasks
 import com.folio.hermes.cascade.TaskTap
-import com.folio.hermes.cascade.UpdateMode
 import com.folio.hermeslive.call.CallEngine
 import com.folio.hermeslive.call.GptLiveScreen
 import com.folio.hermeslive.call.RouteKind
@@ -110,14 +109,7 @@ internal fun gptLiveIntents(
     onCallAgain: () -> Unit,
 ): CascadeIntents = object : CascadeIntents {
     override fun task(taskId: String, tap: TaskTap) {
-        scope.launch {
-            when (tap) {
-                TaskTap.Cancel -> tasks.cancelTask(taskId)
-                is TaskTap.Tell -> tasks.updateTask(taskId, tap.text, tap.mode)
-                TaskTap.ReadAll, TaskTap.Play -> tasks.heard(taskId)
-                TaskTap.Retry -> tasks.status(taskId).firstOrNull()?.let { tasks.updateTask(taskId, "Please try this again.", UpdateMode.Queue) }
-            }
-        }
+        scope.launch { tasks.apiTap(taskId, tap) }
     }
 
     override fun mute() = engine.toggleMute()

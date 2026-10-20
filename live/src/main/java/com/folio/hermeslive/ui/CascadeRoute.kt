@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -42,6 +43,8 @@ import com.folio.hermeslive.ui.cascade.CascadeHistoryItem
 import com.folio.hermeslive.ui.cascade.CascadeIntents
 import com.folio.hermeslive.ui.cascade.EventIntents
 import com.folio.hermeslive.ui.cascade.HapticIntent
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 
 /** Which main screen the activity shows (below settings, sign-in and "Preparing Bill…"). */
 enum class MainScreen {
@@ -69,6 +72,18 @@ fun mainScreen(billActive: Boolean, inCall: Boolean, hasSession: Boolean, outro:
     else -> MainScreen.Home
 }
 
+/**
+ * The task runtime Bill's screen shows, or null (nothing to show: the activity goes home). Caller:
+ * `LiveActivity.BillScreen`. A call and its end transition need Bill's engine ([bill], null unless
+ * Custom is chosen with a voice). The no-call viewer (a result notification's Open) needs only the
+ * runtime [built] by the shell, which Grok and GPT-Live with agents build too
+ * (`CascadeGate.tasksActive`), so Open shows the task under every engine (`TaskViewerOpenTest`).
+ */
+fun billRuntime(shown: MainScreen, bill: CascadeCallEngine?, built: CascadeAppRuntime?): CascadeAppRuntime? = when {
+    bill == null && shown != MainScreen.BillViewer -> null
+    else -> bill?.session ?: built
+}
+
 /** How Bill's call ended, from the engine's state once it is over (null while it runs). */
 fun callEndOf(call: CallUiState): CallEnd? {
     if (call.inCall || (call.phase != CallPhase.Ended && call.phase != CallPhase.Failed)) return null
@@ -81,12 +96,13 @@ fun callEndOf(call: CallUiState): CallEnd? {
  * Bill's call screen on a running cascade (S-D's [CascadeCallScreen] on the actor's state and
  * events), with the approvals slot filled by the tap-only cards (R-TASK-6). [viewer]: no call is
  * running (a result notification's Open): the task cards and their results, and End closes it.
- * [ending]: the call has ended and the screen plays its end transition; [onCloseEnded] leaves for
- * home and [onCallAgain] starts a new call.
+ * [engine] is null only in the viewer under Grok or GPT-Live (no Bill engine): the screen then reads
+ * the runtime alone and approvals go straight to it. [ending]: the call has ended and the screen
+ * plays its end transition; [onCloseEnded] leaves for home and [onCallAgain] starts a new call.
  */
 @Composable
 fun CascadeCallRoute(
-    engine: CascadeCallEngine,
+    engine: CascadeCallEngine?,
     runtime: CascadeAppRuntime,
     pauseMs: Int,
     viewer: Boolean,
@@ -97,10 +113,11 @@ fun CascadeCallRoute(
     onCloseEnded: () -> Unit = onClose,
     onCallAgain: () -> Unit = {},
 ) {
-    val call by engine.state.collectAsState()
+    val call by (engine?.state ?: remember { MutableStateFlow(CallUiState()) }).collectAsState()
     val approvals by runtime.approvals.collectAsState()
     val clarify by runtime.clarify.collectAsState()
     val actor = runtime.core.actor
+    val scope = rememberCoroutineScope()
     val intents = remember(engine, runtime, viewer) { cascadeIntents(engine, runtime, viewer, onHaptic, onClose, onCloseEnded, onCallAgain) }
     val history = remember(runtime, call.phase) {
         runCatching { runtime.core.history() }.getOrDefault(emptyList()).filterNot { it.current }.map {
@@ -116,11 +133,15 @@ fun CascadeCallRoute(
             muted = call.muted,
             speakerOn = call.route?.kind == com.folio.hermeslive.call.RouteKind.Speaker,
         ),
-        micLevel = { engine.micLevel },
+        micLevel = { engine?.micLevel ?: 0f },
         pauseMs = pauseMs,
         decisions = decisions,
         history = history,
-        approvals = approvalsSlot(approvals, clarify, engine::answerApproval, engine::answerClarify),
+        approvals = if (engine != null) {
+            approvalsSlot(approvals, clarify, engine::answerApproval, engine::answerClarify)
+        } else {
+            approvalsSlot(approvals, clarify, { id, choice -> scope.launch { runtime.answerApproval(id, choice) } }, { id, answers -> scope.launch { runtime.answerClarify(id, answers) } })
+        },
         ended = if (ending) callEndOf(call) else null,
     )
 }
@@ -141,9 +162,12 @@ internal fun approvalsSlot(
     }
 }
 
-/** The screen's intents: actor events through [EventIntents]; hold-to-talk through the pipeline; app intents to the engine. */
+/**
+ * The screen's intents: actor events through [EventIntents]; hold-to-talk through the pipeline; app
+ * intents to the engine ([engine] null: the viewer with no Bill engine, where those do nothing).
+ */
 internal fun cascadeIntents(
-    engine: CascadeCallEngine,
+    engine: CascadeCallEngine?,
     runtime: CascadeAppRuntime,
     viewer: Boolean,
     onHaptic: (HapticIntent) -> Unit,
@@ -152,9 +176,13 @@ internal fun cascadeIntents(
     onCallAgain: () -> Unit = {},
 ): CascadeIntents {
     val app = object : CascadeIntents {
-        override fun mute() = engine.toggleMute()
-        override fun end() = if (viewer) onClose() else engine.end()
-        override fun speaker() = engine.toggleSpeaker()
+        override fun mute() {
+            engine?.toggleMute()
+        }
+        override fun end() = if (viewer || engine == null) onClose() else engine.end()
+        override fun speaker() {
+            engine?.toggleSpeaker()
+        }
         override fun closeEnded() = onCloseEnded()
         override fun callAgain() = onCallAgain()
         override fun openConversation(conversationId: String) = runtime.core.openConversation(conversationId)
@@ -163,7 +191,9 @@ internal fun cascadeIntents(
     val events = EventIntents(runtime.core.actor::send, app)
     return object : CascadeIntents by events {
         // The pipeline opens and closes the held segment and sends the actor its events (R-STT-8).
-        override fun holdToTalk(pressed: Boolean) = engine.holdToTalk(pressed)
+        override fun holdToTalk(pressed: Boolean) {
+            engine?.holdToTalk(pressed)
+        }
 
         // No call: the actor is restored but not started, and drops card taps. The viewer is
         // read-only (the cards and their results); approvals still go out (the slot answers them).

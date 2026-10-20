@@ -33,6 +33,13 @@ sealed interface TaskCommand {
 
     /** The front end told the user task [taskId]'s result or request: mark it read and drop it from the off-call backlog. */
     data class Heard(val taskId: String, override val key: String) : TaskCommand
+
+    /**
+     * A card's Retry, as Bill's own tap (the registry's retry, R-DUR-4 / R-TASK-7): a task that never
+     * reached Hermes (`not_sent`) is sent again as the same task; a failed one starts again as a new
+     * task with exactly its brief. Not deduplicated by [key] (neither is Bill's tap).
+     */
+    data class Retry(val taskId: String, override val key: String) : TaskCommand
 }
 
 /** A command's outcome. */
@@ -40,7 +47,10 @@ sealed interface TaskReply {
     /** [queued]: over the cap, it waits on the phone for a free slot. [existing]: the key had already started it. */
     data class Started(val taskId: String, val label: String, val queued: Boolean, val existing: Boolean = false) : TaskReply
 
-    /** [how]: `queue`, `interrupt_first`, `amended` (not started yet), `retried` (a failed task, as new task [taskId]) or `already_sent` (same key). */
+    /**
+     * [how]: `queue`, `interrupt_first`, `amended` (not started yet), `retried` (a failed task, as new
+     * task [taskId]), `resent` (a `not_sent` task, sent again as itself) or `already_sent` (same key).
+     */
     data class Updated(val taskId: String, val how: String) : TaskReply
 
     /** The tasks stopped (empty: nothing was running). */
@@ -115,6 +125,14 @@ class CascadeTasks internal constructor(
 
     /** The front end told the user about [taskId] (its result or request): read, and never replayed by Bill later. */
     suspend fun heard(taskId: String): TaskReply = send(TaskCommand.Heard(taskId, newKey()))
+
+    /**
+     * Retry [taskId] (a card's Retry on a Grok or GPT-Live call; [TaskCommand.Retry]). Replies
+     * `Updated(taskId, "resent")`, `Updated(newTaskId, "retried")`, [TaskReply.AtCap] (nothing is
+     * spoken), `Started(existing = true)` while it still runs, [TaskReply.TooLate] once it is done
+     * or cancelled, or [TaskReply.NotFound].
+     */
+    suspend fun retry(taskId: String): TaskReply = send(TaskCommand.Retry(taskId, newKey()))
 
     /** Every task (or just [taskId]), oldest first, from the event log only. */
     fun status(taskId: String? = null): List<TaskView> = views(actor.state.value, taskId)
