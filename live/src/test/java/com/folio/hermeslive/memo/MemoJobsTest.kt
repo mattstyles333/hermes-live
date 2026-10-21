@@ -69,6 +69,7 @@ class MemoJobsTest {
         val posted = shadowOf(nm).allNotifications.single()
         assertEquals(Notification.VISIBILITY_PRIVATE, posted.visibility)
         assertEquals("A memo was too long to send", posted.extras.getString(Notification.EXTRA_TITLE))
+        assertTrue(posted.extras.getString(Notification.EXTRA_TEXT)!!.contains("recording was deleted"))
         for (key in listOf("m1", "task-1", "a", "")) {
             val ids = setOf(Notices.id(Notices.Kind.Memo, key), ResultNotifications.notificationId(key), CallNotifications.approvalNotificationId(key))
             assertEquals(3, ids.size)

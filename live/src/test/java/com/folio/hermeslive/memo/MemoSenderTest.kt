@@ -95,7 +95,6 @@ class MemoSenderTest {
         val first = rig.sender().flush()
         assertEquals(1, first.held)
         assertEquals("offline", rig.store.get("m1")!!.heldReason)
-        assertEquals("offline is retried by the network, not a timer", 0L, rig.store.get("m1")!!.nextAttemptAt)
         assertTrue(rig.tasks.calls.isEmpty())
         assertEquals(1, rig.scheduler.scheduled)
         assertTrue("the audio stays until Hermes has the text", rig.store.chunk("m1", 0).exists())
@@ -106,6 +105,11 @@ class MemoSenderTest {
         val sent = rig.store.get("m1")!!
         assertEquals(MemoState.Sent, sent.state)
         assertEquals("task-memo-m1", sent.taskId)
+        // Review round 2: a sent memo keeps no words, only what says what became of it.
+        assertNull(sent.transcript)
+        assertTrue(sent.parts.isEmpty())
+        assertEquals("Voice memo · 10:15", sent.label)
+        assertEquals(T0, sent.doneAt)
         val call = rig.tasks.calls.single()
         assertEquals("memo-m1", call.key)
         assertEquals("Voice memo · 10:15", call.label)
@@ -129,9 +133,10 @@ class MemoSenderTest {
         assertEquals(MemoState.Transcribed, rig.store.get("m1")!!.state)
         assertEquals("part 1 part 2 part 3", rig.store.get("m1")!!.transcript)
         assertEquals(3, rig.transcriber.sizes.size)
-        // A new process: the stored transcript goes again under the same key (the task API answers `existing`).
-        rig.tasks.reply = { HeldSubmit.Sent("t-1") }
-        rig.sender().flush(force = true)
+        // A new process: the stored transcript goes again under the same key, and the task API answers `existing`.
+        rig.tasks.reply = { HeldSubmit.Sent("t-1", existing = true) }
+        rig.sender().flush()
+        assertEquals(true, rig.events.all.last { it.first == "memo.send" }.second["existing"])
         assertEquals(listOf("memo-m1", "memo-m1"), rig.tasks.calls.map { it.key })
         assertEquals(rig.tasks.calls[0].brief, rig.tasks.calls[1].brief)
         assertEquals("never transcribed twice", 3, rig.transcriber.sizes.size)
@@ -155,21 +160,15 @@ class MemoSenderTest {
         assertFalse("its text is stored: its audio goes", rig.store.chunk("m1", 0).exists())
         assertTrue(rig.store.chunk("m1", 1).exists())
         assertEquals(1, memo.attempts)
-        assertEquals(T0 + MemoSender.BACKOFF_MIN_MS, memo.nextAttemptAt)
-        // Not due yet: nothing is asked.
+        // The next try carries on from the chunk that failed (the job's own backoff spaces the tries).
         rig.transcriber.reply = { MemoText.Text("part ${it + 1}") }
         rig.sender().flush()
-        assertEquals(2, rig.transcriber.sizes.size)
-        rig.now += MemoSender.BACKOFF_MIN_MS
-        rig.sender().flush()
-        assertEquals("part 1 part 3 part 4", rig.store.get("m1")!!.transcript)
+        assertEquals(4, rig.transcriber.sizes.size)
+        assertEquals(MemoState.Sent, rig.store.get("m1")!!.state)
+        assertEquals("part 1 part 3 part 4", rig.tasks.calls.single().brief.substringAfter("\n\n"))
     }
 
-    @Test fun backoffDoublesToAnHour() {
-        assertEquals(60_000L, MemoSender.backoffMs(1))
-        assertEquals(120_000L, MemoSender.backoffMs(2))
-        assertEquals(3_600_000L, MemoSender.backoffMs(7))
-        assertEquals(3_600_000L, MemoSender.backoffMs(40))
+    @Test fun theTranscribeTimeoutScalesWithTheClip() {
         assertEquals(15_000L + 15_000L, MemoSender.timeoutFor(60L * RATE))
     }
 
@@ -193,7 +192,6 @@ class MemoSenderTest {
         val memo = rig.store.get("m1")!!
         assertEquals(MemoState.Recorded, memo.state)
         assertEquals("server_old", memo.heldReason)
-        assertTrue(memo.nextAttemptAt > T0)
         assertTrue(rig.store.chunk("m1", 0).exists())
     }
 
@@ -206,7 +204,7 @@ class MemoSenderTest {
         assertEquals("too_large", rig.store.get("m1")!!.heldReason)
         assertFalse("a memo that can never go keeps no audio", rig.store.audioDir("m1").exists())
         assertEquals(listOf("m1"), rig.notices.failed)
-        rig.sender().flush(force = true)
+        rig.sender().flush()
         assertEquals(1, rig.transcriber.sizes.size)
         assertEquals("nothing left to wake for", 0, rig.scheduler.scheduled)
     }
@@ -229,7 +227,7 @@ class MemoSenderTest {
         val sender = rig.sender()
         val a = async { sender.flush() }
         val b = async { sender.send("m1") }
-        val c = async { sender.flush(force = true) }
+        val c = async { sender.flush() }
         runCurrent()
         gate.complete(Unit)
         a.await(); b.await(); c.await()
@@ -319,6 +317,45 @@ class MemoSenderTest {
         assertTrue(call.brief.startsWith("Request saved offline at 10:15 on Tue 20 Oct 2026 (London time). Treat it as the user's request(s):"))
         assertTrue(call.brief.endsWith("Book the dentist"))
         assertEquals(MemoState.Sent, rig.store.get("t1")!!.state)
+    }
+
+    @Test fun twoMemosAreIndependentAndOneHeldDoesNotBlockTheOther() = runTest {
+        val rig = Rig()
+        rig.recorded("m1", seconds = 2.0, createdAt = T0)
+        rig.recorded("m2", seconds = 3.0, createdAt = T0 + 1)
+        rig.transcriber.reply = { MemoText.Text("words") }
+        val held = 44 + 2 * RATE * 2
+        val transcriber = rig.transcriber
+        val picky = object : MemoTranscriber {
+            override suspend fun transcribe(wav: ByteArray, timeoutMs: Long): MemoText =
+                if (wav.size == held) MemoText.Hold("timeout") else transcriber.transcribe(wav, timeoutMs)
+        }
+        val sender = MemoSender(
+            rig.store, HeldTasks { rig.tasks }, { picky }, { ZoneId.of("Europe/London") }, { rig.now }, rig.events, rig.notices, rig.scheduler,
+        )
+        val r = sender.flush()
+        assertEquals(1, r.sent)
+        assertEquals(1, r.held)
+        assertEquals(listOf("memo-m2"), rig.tasks.calls.map { it.key })
+        assertEquals("timeout", rig.store.get("m1")!!.heldReason)
+        assertEquals(MemoState.Sent, rig.store.get("m2")!!.state)
+    }
+
+    /** Review round 2: finished memos are pruned after 7 days (as meetings are by their setting); waiting ones never. */
+    @Test fun finishedMemosArePrunedAfterSevenDays() = runTest {
+        val rig = Rig()
+        val day = MemoRetention.DAY_MS
+        rig.now = T0 + 30 * day
+        rig.store.put(MemoRecord("old-sent", T0, MemoState.Sent, taskId = "t", doneAt = rig.now - 8 * day))
+        rig.store.put(MemoRecord("old-empty", T0, MemoState.Empty, doneAt = rig.now - 8 * day))
+        rig.store.put(MemoRecord("old-failed", T0, MemoState.Failed, doneAt = rig.now - 9 * day))
+        rig.store.put(MemoRecord("new-sent", T0, MemoState.Sent, taskId = "t", doneAt = rig.now - 6 * day))
+        rig.store.put(MemoRecord("old-text", T0, MemoState.Transcribed, transcript = "still to go", typed = true))
+        rig.tasks.reply = { HeldSubmit.Offline }
+        rig.sender().flush()
+        assertEquals(setOf("new-sent", "old-text"), rig.store.all().map { it.id }.toSet())
+        assertEquals(3, rig.events.all.single { it.first == "memo.deleted" }.second["count"])
+        assertEquals(0, MemoRetention.prune(rig.store, rig.now, rig.events))
     }
 
     companion object {

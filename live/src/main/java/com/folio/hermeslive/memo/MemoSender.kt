@@ -52,8 +52,8 @@ interface MemoScheduler {
  * joined transcript stored (state `transcribed`), then one task through the shared task API with
  * the key `memo-<id>` ([HeldTasks]: a repeat after a kill returns the same task). No speech:
  * state `empty` and a quiet notice. 413: state `failed`. Anything else is held with a reason and
- * tried again ([flush]: on app start, after each memo, when the network is back, from the job),
- * backing off 1 min → 1 h for errors (not for `offline`, which the network itself retries).
+ * tried again ([flush]: on app start, after each memo, when the network is back, and from the job,
+ * whose own exponential backoff spaces the retries while a memo waits).
  *
  * A memo whose record says `recording` but is not [recording] in this process was cut off by a
  * kill: its WAV files are repaired from their length and it is sent like any other.
@@ -81,28 +81,36 @@ class MemoSender(
         data object Missing : Outcome
     }
 
-    /** What a flush did: [sent] now, [held] still waiting (the earliest backoff in [nextAttemptAt]). */
-    data class Flush(val sent: Int, val held: Int, val nextAttemptAt: Long?, val reasons: Set<String> = emptySet())
+    /** What a flush did: [sent] now, [held] still waiting. */
+    data class Flush(val sent: Int, val held: Int)
 
-    /** Try every memo that is due ([force]: also those backing off). One flush at a time. */
-    suspend fun flush(force: Boolean = false): Flush = held.exclusive {
-        recover()
+    /**
+     * Try every memo that waits, one flush at a time. The records are read once; finished ones past
+     * [MemoRetention] are pruned from that same read. Retries are spaced by the job's own backoff.
+     */
+    suspend fun flush(): Flush = held.exclusive {
+        val memos = store.all()
+        recover(memos)
         var sent = 0
-        for (memo in store.all().filter { it.pending }) {
-            if (!force && memo.nextAttemptAt > wall()) continue
-            if (sendLocked(memo.id) is Outcome.Sent) sent++
+        var left = 0
+        for (memo in memos.filter { it.pending || it.state == MemoState.Recording }) {
+            when (sendLocked(memo.id)) {
+                is Outcome.Sent -> sent++
+                is Outcome.Held -> left++
+                else -> if (store.get(memo.id)?.pending == true) left++
+            }
         }
-        val left = store.all().filter { it.pending }
-        if (left.isEmpty()) scheduler.cancel() else scheduler.schedule()
-        Flush(sent, left.size, left.map { it.nextAttemptAt }.filter { it > wall() }.minOrNull(), left.mapNotNull { it.heldReason }.toSet())
+        MemoRetention.prune(store, wall(), telemetry, memos)
+        if (left == 0) scheduler.cancel() else scheduler.schedule()
+        Flush(sent, left)
     }
 
     /** Send memo [id] now, if it waits. */
     suspend fun send(id: String): Outcome = held.exclusive { sendLocked(id) }
 
     /** Memos cut off by a kill mid-recording: repair their files, then treat them as recorded (or discard a too-short one). */
-    private fun recover() {
-        for (memo in store.all().filter { it.state == MemoState.Recording && !recording(it.id) }) {
+    private fun recover(memos: List<MemoRecord>) {
+        for (memo in memos.filter { it.state == MemoState.Recording && !recording(it.id) }) {
             val samples = (0 until memo.chunks).sumOf { WavWriter.repair(store.chunk(memo.id, it), AudioSource.SAMPLE_RATE) }
             val durationMs = samples * 1000 / AudioSource.SAMPLE_RATE
             val saved = durationMs >= limits.minMs
@@ -138,7 +146,7 @@ class MemoSender(
             val transcript = memo.parts.filter { it.isNotBlank() }.joinToString(" ").trim()
             store.deleteAudio(id)
             if (transcript.isEmpty()) {
-                memo = memo.copy(state = MemoState.Empty, heldReason = null)
+                memo = memo.copy(state = MemoState.Empty, heldReason = null, parts = emptyList(), doneAt = wall())
                 store.put(memo)
                 runCatching { notices.empty(memo) }
                 send("empty", memo, started)
@@ -152,10 +160,11 @@ class MemoSender(
         return when (r) {
             is HeldTasks.Result.Sent -> {
                 val now = store.get(id) ?: return Outcome.Missing
-                val sent = now.copy(state = MemoState.Sent, taskId = r.taskId, heldReason = null)
+                // Hermes has the words now: the phone keeps only what became of the memo.
+                val sent = now.copy(state = MemoState.Sent, taskId = r.taskId, heldReason = null, transcript = null, parts = emptyList(), label = label(transcribed), doneAt = wall())
                 store.put(sent)
                 runCatching { notices.sent(sent) }
-                send("sent", sent, started)
+                send("sent", sent, started, existing = r.existing)
                 Outcome.Sent(r.taskId)
             }
             is HeldTasks.Result.Held -> hold(id, r.reason, started)
@@ -164,9 +173,7 @@ class MemoSender(
 
     private fun hold(id: String, reason: String, started: Long): Outcome {
         val memo = store.get(id) ?: return Outcome.Missing
-        val attempts = memo.attempts + 1
-        val next = if (reason in NO_BACKOFF) 0L else wall() + backoffMs(attempts)
-        val heldMemo = memo.copy(attempts = attempts, heldReason = reason, nextAttemptAt = next)
+        val heldMemo = memo.copy(attempts = memo.attempts + 1, heldReason = reason)
         store.put(heldMemo)
         send("held", heldMemo, started, reason)
         return Outcome.Held(reason)
@@ -174,7 +181,7 @@ class MemoSender(
 
     private fun failed(id: String, reason: String, started: Long): Outcome {
         val memo = store.get(id) ?: return Outcome.Missing
-        val f = memo.copy(state = MemoState.Failed, heldReason = reason, attempts = memo.attempts + 1)
+        val f = memo.copy(state = MemoState.Failed, heldReason = reason, attempts = memo.attempts + 1, parts = emptyList(), doneAt = wall())
         store.put(f)
         // A terminal state keeps no audio.
         store.deleteAudio(id)
@@ -183,7 +190,7 @@ class MemoSender(
         return Outcome.Failed(reason)
     }
 
-    private fun send(outcome: String, memo: MemoRecord, started: Long, reason: String? = null) = event(
+    private fun send(outcome: String, memo: MemoRecord, started: Long, reason: String? = null, existing: Boolean = false) = event(
         "memo.send",
         buildMap {
             put("outcome", outcome)
@@ -191,6 +198,7 @@ class MemoSender(
             put("ms", wall() - started)
             put("chunks", memo.chunks)
             reason?.let { put("reason", it) }
+            if (outcome == "sent") put("existing", existing)
         },
     )
 
@@ -208,13 +216,6 @@ class MemoSender(
         (if (memo.typed) "Text memo · " else "Voice memo · ") + LABEL_TIME.format(Instant.ofEpochMilli(memo.createdAt).atZone(zone()))
 
     companion object {
-        /** Retried by the network coming back, the account or the app start, not by a timer. */
-        val NO_BACKOFF = setOf("offline", "signed_out", "no_runtime", "not_connected")
-        const val BACKOFF_MIN_MS = 60_000L
-        const val BACKOFF_MAX_MS = 60 * 60_000L
-
-        fun backoffMs(attempts: Int): Long = (BACKOFF_MIN_MS shl (attempts - 1).coerceIn(0, 6)).coerceAtMost(BACKOFF_MAX_MS)
-
         /** 15 s plus 1 s for every 4 s of audio. */
         fun timeoutFor(samples: Long): Long = 15_000L + samples * 1000 / AudioSource.SAMPLE_RATE / 4
 

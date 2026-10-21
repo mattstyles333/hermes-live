@@ -1,6 +1,7 @@
 package com.folio.hermeslive.memo
 
 import com.folio.hermes.cascade.ports.Store
+import com.folio.hermes.telemetry.TelemetrySink
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -42,13 +43,15 @@ data class MemoRecord(
     /** The whole transcript, once every chunk is in. */
     val transcript: String? = null,
     val taskId: String? = null,
-    /** Failed send attempts (the backoff). */
+    /** Failed send attempts. */
     val attempts: Int = 0,
     val heldReason: String? = null,
-    /** Wall clock before which a flush leaves it alone (backoff); 0: now. */
-    val nextAttemptAt: Long = 0,
     /** A text memo (shared text or Folio's prompt, offline): no audio, nothing to transcribe. */
     val typed: Boolean = false,
+    /** Wall clock when it became `sent`, `empty` or `failed` ([MemoRetention] prunes it 7 days on). */
+    val doneAt: Long? = null,
+    /** The task's label, kept once sent (the words are dropped). */
+    val label: String? = null,
 ) {
     /** Waiting to go to Hermes. */
     val pending: Boolean get() = state == MemoState.Recorded || state == MemoState.Transcribed
@@ -94,6 +97,25 @@ class MemoStore(private val store: () -> Store, val dir: File) {
             encodeDefaults = false
         }
     }
+}
+
+/**
+ * Finished memos (`sent`, `empty`, `failed`) are deleted [DAYS] after they finished, at start and
+ * after each flush (as `MeetingRetention` does for meetings). Memos still waiting are never pruned.
+ */
+object MemoRetention {
+    const val DAYS = 7
+    const val DAY_MS = 86_400_000L
+
+    fun prune(store: MemoStore, nowWall: Long, telemetry: TelemetrySink = TelemetrySink.None, memos: List<MemoRecord> = store.all()): Int {
+        val cutoff = nowWall - DAYS * DAY_MS
+        val old = memos.filter { m -> m.state in DONE && (m.doneAt ?: m.createdAt) < cutoff }
+        old.forEach { store.delete(it.id) }
+        if (old.isNotEmpty()) runCatching { telemetry.event("memo.deleted", mapOf("count" to old.size, "reason" to "retention"), false) }
+        return old.size
+    }
+
+    private val DONE = setOf(MemoState.Sent, MemoState.Empty, MemoState.Failed)
 }
 
 /** A memo's limits. */

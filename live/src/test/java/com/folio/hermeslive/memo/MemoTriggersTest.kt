@@ -12,44 +12,44 @@ class MemoTriggersTest {
     @Test fun startAfterTheAccountThenEachTimeTheNetworkIsBack() = runTest {
         val online = MutableStateFlow(false)
         val ready = CompletableDeferred<Unit>()
-        val flushes = ArrayList<Boolean>()
-        val triggers = MemoTriggers(backgroundScope, online, { ready.await() }, { true }, { flushes += it })
+        var flushes = 0
+        val triggers = MemoTriggers(backgroundScope, online, { ready.await() }, { true }, { flushes++ })
         triggers.start()
         runCurrent()
-        assertEquals("not before the account is read back", emptyList<Boolean>(), flushes)
+        assertEquals("not before the account is read back", 0, flushes)
         ready.complete(Unit)
         runCurrent()
-        assertEquals(listOf(true), flushes)
+        assertEquals(1, flushes)
         online.value = true
         runCurrent()
-        assertEquals(listOf(true, true), flushes)
+        assertEquals(2, flushes)
         online.value = false
         runCurrent()
         online.value = true
         runCurrent()
-        assertEquals(3, flushes.size)
+        assertEquals(3, flushes)
         triggers.memoSaved()
         runCurrent()
-        assertEquals("after a memo: what is due, no force", listOf(true, true, true, false), flushes)
+        assertEquals("after a memo", 4, flushes)
     }
 
     @Test fun nothingWaitingNothingIsFlushed() = runTest {
         val online = MutableStateFlow(true)
-        val flushes = ArrayList<Boolean>()
-        MemoTriggers(backgroundScope, online, {}, { false }, { flushes += it }).start()
+        var flushes = 0
+        MemoTriggers(backgroundScope, online, {}, { false }, { flushes++ }).start()
         runCurrent()
         online.value = false
         runCurrent()
         online.value = true
         runCurrent()
-        assertEquals(emptyList<Boolean>(), flushes)
+        assertEquals(0, flushes)
     }
 
     @Test fun theFirstNetworkReadingIsNotABackOnline() = runTest {
         val online = MutableStateFlow(true)
-        val flushes = ArrayList<Boolean>()
-        MemoTriggers(backgroundScope, online, {}, { true }, { flushes += it }).start()
+        var flushes = 0
+        MemoTriggers(backgroundScope, online, {}, { true }, { flushes++ }).start()
         runCurrent()
-        assertEquals("only the start flush", listOf(true), flushes)
+        assertEquals("only the start flush", 1, flushes)
     }
 }

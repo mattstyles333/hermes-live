@@ -8,7 +8,7 @@ import kotlinx.coroutines.sync.withLock
 /** What happened to a submit. Anything but [Sent] leaves the brief held on the phone, to try again. */
 sealed interface HeldSubmit {
     /** Hermes's task table has it (durably: the cascade sends it, and resends it after a restart). */
-    data class Sent(val taskId: String, val queued: Boolean = false) : HeldSubmit
+    data class Sent(val taskId: String, val queued: Boolean = false, val existing: Boolean = false) : HeldSubmit
 
     /** No network now: try again when it is back. */
     data object Offline : HeldSubmit
@@ -69,7 +69,8 @@ class HeldTasks(private val tasks: () -> TaskSubmitter) {
     }
 
     sealed interface Result {
-        data class Sent(val taskId: String, val queued: Boolean) : Result
+        /** [existing]: the key had started this task before (a retry after a lost reply). */
+        data class Sent(val taskId: String, val queued: Boolean, val existing: Boolean = false) : Result
 
         /** [reason]: `offline`, `signed_out`, `no_reply`, `failed`, or the compile hook's. */
         data class Held(val reason: String) : Result
@@ -88,7 +89,7 @@ class HeldTasks(private val tasks: () -> TaskSubmitter) {
             is Compiled.Brief -> c.text
         }
         return when (val r = runCatching { tasks().submit(brief, label, key) }.getOrElse { HeldSubmit.NotAvailable("failed") }) {
-            is HeldSubmit.Sent -> Result.Sent(r.taskId, r.queued)
+            is HeldSubmit.Sent -> Result.Sent(r.taskId, r.queued, r.existing)
             HeldSubmit.Offline -> Result.Held("offline")
             is HeldSubmit.NotAvailable -> Result.Held(r.reason)
         }
@@ -122,7 +123,7 @@ class CascadeTaskSubmitter(
         if (!signedIn()) return HeldSubmit.NotAvailable("signed_out")
         val api = tasks() ?: return HeldSubmit.NotAvailable(noRuntime)
         return when (val r = api.startTask(brief, label, summary = null, key = key)) {
-            is TaskReply.Started -> HeldSubmit.Sent(r.taskId, r.queued).also { runCatching(afterStart) }
+            is TaskReply.Started -> HeldSubmit.Sent(r.taskId, r.queued, r.existing).also { runCatching(afterStart) }
             TaskReply.NoReply, TaskReply.NotReady -> HeldSubmit.NotAvailable("no_reply")
             else -> HeldSubmit.NotAvailable("refused")
         }
