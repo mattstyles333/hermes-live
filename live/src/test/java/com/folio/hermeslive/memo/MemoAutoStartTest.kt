@@ -30,6 +30,15 @@ class MemoAutoStartTest {
         assertNull(auto.onState(CallUiState(phase = CallPhase.Ended, memo = true), memosOn = true))
     }
 
+    /** Review round 2: switching memos on while a failed-offline screen is up records nothing; only a new failure does. */
+    @Test fun theSettingFlippingOnNeverStartsAMemo() {
+        val auto = MemoAutoStart()
+        assertNull(auto.onState(failed, memosOn = false))
+        assertNull(auto.onState(failed, memosOn = true))
+        auto.onState(CallUiState(phase = CallPhase.Connecting), memosOn = true)
+        assertEquals(MemoCause.Offline, auto.onState(failed, memosOn = true)!!.memoCause)
+    }
+
     @Test fun aLaterCallFailingOfflineStartsAgainAndOffStartsNothing() {
         val auto = MemoAutoStart()
         auto.onState(failed, memosOn = true)

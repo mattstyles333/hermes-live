@@ -208,6 +208,7 @@ class LiveGraph(private val app: Context) {
                     mic = { MicAudioSource(if (settings.settings.value.echoCancel) CaptureSource.VOICE_COMMUNICATION else CaptureSource.VOICE_RECOGNITION) },
                     settings = { settings.settings.value },
                     clock = System::currentTimeMillis,
+                    elapsed = android.os.SystemClock::elapsedRealtime,
                     telemetry = shell.telemetry,
                     onSaved = { MemoHost.of(app).kick() },
                 )

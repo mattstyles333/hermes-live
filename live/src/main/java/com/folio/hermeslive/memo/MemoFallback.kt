@@ -38,17 +38,17 @@ object MemoFallback {
 
 /**
  * The call screen's auto-start ([MemoFallback.Action.Start]), fired once per failed call: on the
- * change into the failed state, not again when the screen sees the same state again, and never
- * for a memo's own states (a memo is not a GPT-Live call).
+ * change into the failed state, not again when the screen sees the same state again, not when the
+ * setting is switched on over it, and never for a memo's own states (a memo is not a GPT-Live call).
  */
 class MemoAutoStart {
-    private var wasStart = false
+    private var wasFailedOffline = false
 
-    /** The memo to start now, or null. */
+    /** The memo to start now, or null. Only on a new failure: switching memos on over a failed screen starts nothing. */
     fun onState(state: CallUiState, memosOn: Boolean): CallRequest? {
-        val start = MemoFallback.decide(state, memosOn) == MemoFallback.Action.Start
-        val fire = start && !wasStart
-        wasStart = start
+        val failedOffline = MemoFallback.decide(state, memosOn = true) == MemoFallback.Action.Start
+        val fire = failedOffline && !wasFailedOffline && memosOn
+        wasFailedOffline = failedOffline
         return if (fire) MemoFallback.request(state, entry = "fallback") else null
     }
 }

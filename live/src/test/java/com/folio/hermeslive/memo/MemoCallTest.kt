@@ -77,6 +77,8 @@ class MemoCallTest {
         val mic = PacedMic { test.testScheduler.currentTime }
         val events = Events()
         val saved = ArrayList<MemoRecord>()
+        /** The wall clock may jump (NTP); the cap must not. */
+        var wallJump = 0L
         val call = MemoCall(
             scope = CoroutineScope(test.backgroundScope.coroutineContext),
             io = StandardTestDispatcher(test.testScheduler),
@@ -86,7 +88,8 @@ class MemoCallTest {
             speech = { speech },
             mic = { mic },
             settings = { LiveSettings() },
-            clock = { T0 + test.testScheduler.currentTime },
+            clock = { T0 + test.testScheduler.currentTime + wallJump },
+            elapsed = { test.testScheduler.currentTime },
             telemetry = events,
             limits = limits,
             onSaved = { saved += it },
@@ -95,7 +98,7 @@ class MemoCallTest {
 
         fun callWith(mic: AudioSource = this.mic, store: MemoStore = this.store, newId: () -> String = { "m1" }) = MemoCall(
             CoroutineScope(test.backgroundScope.coroutineContext), StandardTestDispatcher(test.testScheduler), { store }, audio, effects,
-            { speech }, { mic }, { LiveSettings() }, { T0 + test.testScheduler.currentTime }, events, MemoSettings(chunkMs = 1_000),
+            { speech }, { mic }, { LiveSettings() }, { T0 + test.testScheduler.currentTime }, { test.testScheduler.currentTime }, events, MemoSettings(chunkMs = 1_000),
             onSaved = { saved += it }, newId = newId,
         )
     }
@@ -314,7 +317,7 @@ class MemoCallTest {
         }
         val call = MemoCall(
             CoroutineScope(backgroundScope.coroutineContext), StandardTestDispatcher(testScheduler), { rig.store }, rig.audio, rig.effects,
-            { rig.speech }, { broken }, { LiveSettings() }, { T0 }, rig.events, newId = { "m2" },
+            { rig.speech }, { broken }, { LiveSettings() }, { T0 }, { testScheduler.currentTime }, rig.events, newId = { "m2" },
         )
         call.start(CallRequest(memo = true))
         advanceTimeBy(10_000)
@@ -370,6 +373,53 @@ class MemoCallTest {
         advanceTimeBy(10_000)
         assertEquals(MemoState.Recorded, rig.store.get("m1")!!.state)
         assertEquals(listOf("m2", "m1"), rig.saved.map { it.id })
+    }
+
+    /** Review round 2: sign-out while recording wipes the memo, and nothing brings it back. */
+    @Test fun signOutMidRecordingLeavesNothingBehind() = runTest {
+        val rig = Rig(this)
+        rig.call.start(CallRequest(memo = true))
+        advanceTimeBy(2_000 + 1_500)
+        assertTrue(rig.store.chunk("m1", 1).exists())
+        // CascadeSignOut.wipe: every cascade.* key and the memo directory.
+        rig.kv.keys("cascade.").forEach { rig.kv.put(it, null) }
+        rig.dir.deleteRecursively()
+        advanceTimeBy(3_000)
+        assertTrue("capture stopped at the next chunk", rig.mic.closed)
+        rig.call.end()
+        advanceTimeBy(10_000)
+        assertTrue(rig.kv.keys("cascade.").isEmpty())
+        assertFalse(rig.dir.exists())
+        assertTrue(rig.saved.isEmpty())
+        assertEquals("no end line", 1, rig.speech.said.size)
+        assertNull(rig.call.state.value.notice)
+        assertNull(rig.call.state.value.error)
+        assertFalse(rig.call.state.value.inCall)
+    }
+
+    @Test fun aWallClockJumpNeitherEndsNorExtendsTheCap() = runTest {
+        val rig = Rig(this, MemoSettings(chunkMs = 1_000, capMs = 5_000))
+        rig.call.start(CallRequest(memo = true))
+        advanceTimeBy(2_000 + 1_000)
+        rig.wallJump = 3_600_000L
+        advanceTimeBy(1_000)
+        assertTrue("an hour's NTP jump did not end it", rig.call.state.value.inCall)
+        rig.wallJump = -3_600_000L
+        advanceTimeBy(5_000)
+        assertEquals("cap", rig.events.all.single { it.first == "memo.end" }.second["reason"])
+        assertTrue(rig.store.get("m1")!!.durationMs in 4_900L..5_000L)
+        advanceTimeBy(10_000)
+    }
+
+    @Test fun submitTextIsATextMemoFromShareAndIgnoresBlanks() = runTest {
+        val rig = Rig(this)
+        rig.call.submitText("   ")
+        assertTrue(rig.kv.keys("cascade.").isEmpty())
+        rig.call.submitText(" Pay the invoice ")
+        val memo = rig.store.get("m1")!!
+        assertEquals("Pay the invoice", memo.transcript)
+        assertTrue(memo.typed)
+        assertEquals("share", rig.events.all.single { it.first == "memo.start" }.second["entry"])
     }
 
     private companion object {

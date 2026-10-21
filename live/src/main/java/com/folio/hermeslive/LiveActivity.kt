@@ -281,8 +281,8 @@ class LiveActivity : ComponentActivity() {
         val meetingScreen by (meetingHost?.flow?.screen ?: remember { MutableStateFlow<MeetingScreen>(MeetingScreen.None) }).collectAsStateWithLifecycle()
         val meetingStarter = meetingHost?.let { rememberMeetingStarter(it) }
         // Offline memos (off by default): a GPT-Live start that failed because the phone is offline records a memo at once.
-        // New memos need the switch and a signed-in Hermes (what is recorded goes to that account).
-        val memosOn = settings.offlineMemos && account is AccountState.SignedIn
+        // New memos need the switch and a signed-in Hermes: the same predicate as the plan and the tile, recomputed with the settings and the account.
+        val memosOn = remember(settings, account) { VoiceShell.of(this@LiveActivity).memosOn() }
         val memoAutoStart = remember { MemoAutoStart() }
         LaunchedEffect(call, memosOn) {
             memoAutoStart.onState(call, memosOn)?.let { memo ->

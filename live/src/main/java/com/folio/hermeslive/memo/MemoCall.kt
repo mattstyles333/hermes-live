@@ -65,6 +65,8 @@ class MemoCall(
     private val settings: () -> LiveSettings,
     /** Wall clock, epoch ms (the record's `created_at`). */
     private val clock: () -> Long,
+    /** Monotonic ms (`SystemClock.elapsedRealtime` in the app): the cap, so an NTP jump can't end or extend a memo. */
+    private val elapsed: () -> Long,
     private val telemetry: TelemetrySink,
     private val limits: MemoSettings = MemoSettings(),
     private val onSaved: (MemoRecord) -> Unit = {},
@@ -223,16 +225,19 @@ class MemoCall(
         recorder = capture
         scope.launch {
             val result = capture.await()
-            if (!finishing) finish(result.failure?.reason ?: if (result.capped) "cap" else "mic_ended")
+            if (!finishing) finish(result.failure?.reason ?: if (result.wiped) "wiped" else if (result.capped) "cap" else "mic_ended")
         }
     }
 
     /** Why the capture stopped early: the mic (open or read) or the phone's storage (a record or a file write). */
     private enum class Failure(val reason: String) { Mic("mic_failed"), Storage("storage_failed") }
 
-    private class Capture(val samples: Long, val chunks: Int, val capped: Boolean, val failure: Failure? = null)
+    /** [wiped]: the record went while recording (a sign-out): nothing is written back. */
+    private class Capture(val samples: Long, val chunks: Int, val capped: Boolean, val failure: Failure? = null, val wiped: Boolean = false)
 
     private class StorageFailure(cause: Throwable) : Exception(cause)
+
+    private class Wiped : Exception()
 
     /**
      * Read the mic until stopped. While muted or during another call the frames are read and
@@ -243,7 +248,7 @@ class MemoCall(
         val chunkSamples = limits.chunkMs * rate / 1000
         val capSamples = limits.capMs * rate / 1000
         val source = runCatching { mic().also { it.open() } }.getOrElse { return Capture(0, 0, false, Failure.Mic) }
-        val startedAt = clock()
+        val startedAt = elapsed()
         var writer: WavWriter? = null
         var chunks = 0
         var total = 0L
@@ -267,6 +272,10 @@ class MemoCall(
                     val w = writer?.takeIf { it.samples < chunkSamples } ?: run {
                         writer?.let { storage { it.close() } }
                         writer = null
+                        // Signed out meanwhile (the record and the directory wiped): stop, recreate nothing.
+                        var exists = false
+                        storage { exists = memos.get(record.id) != null }
+                        if (!exists) throw Wiped()
                         // Counted before its first sample: after a kill the sender repairs every file the record names.
                         storage { memos.put(record.copy(chunks = chunks + 1)) }
                         lateinit var opened: WavWriter
@@ -280,12 +289,14 @@ class MemoCall(
                     total += take
                 }
                 level(buffer, n, silent)
-                capped = clock() - startedAt >= limits.capMs || total >= capSamples
+                capped = elapsed() - startedAt >= limits.capMs || total >= capSamples
                 yield()
             }
             return Capture(total, chunks, capped)
         } catch (e: CancellationException) {
             throw e
+        } catch (e: Wiped) {
+            return Capture(total, chunks, capped, wiped = true)
         } catch (e: StorageFailure) {
             return Capture(total, chunks, capped, Failure.Storage)
         } catch (e: Exception) {
@@ -316,16 +327,19 @@ class MemoCall(
             val durationMs = (capture?.samples ?: 0L) * 1000 / AudioSource.SAMPLE_RATE
             // What was recorded counts, even if the mic or the storage failed after it.
             val record = runCatching { memos.get(memoId) }.getOrNull()
-            val keep = capture != null && record != null && durationMs >= limits.minMs
+            // A sign-out wiped it mid-recording: end quietly, write nothing back.
+            val wiped = capture != null && (capture.wiped || (record == null && capture.failure == null))
+            val keep = !wiped && capture != null && record != null && durationMs >= limits.minMs
             val saved = keep && runCatching { memos.put(record!!.copy(state = MemoState.Recorded, chunks = capture!!.chunks, durationMs = durationMs)) }.isSuccess
-            if (!saved) runCatching { memos.delete(memoId) }
+            if (!saved && !wiped) runCatching { memos.delete(memoId) }
             recordingId = null
-            val failure = capture?.failure ?: Failure.Storage.takeIf { keep && !saved }
+            val failure = capture?.failure?.takeIf { !wiped } ?: Failure.Storage.takeIf { keep && !saved }
             event(
                 "memo.end",
-                mapOf("reason" to (failure?.reason ?: reason), "duration_s" to durationMs / 1000, "chunks" to (capture?.chunks ?: 0), "saved" to saved),
+                mapOf("reason" to (failure?.reason ?: if (wiped) "wiped" else reason), "duration_s" to durationMs / 1000, "chunks" to (capture?.chunks ?: 0), "saved" to saved),
             )
             val notice = when {
+                wiped -> null
                 saved && failure != null -> lines(request.memoCause).saved + " The recording stopped early."
                 saved -> lines(request.memoCause).saved
                 failure == Failure.Storage -> "Couldn't save the memo on this phone. Nothing was saved."
