@@ -101,6 +101,12 @@ class HermesVoice(
         }
     }
 
+    /** The network is back (the app saw it): try both sides at once instead of waiting out the 60 s skip. Additive. */
+    fun resetBreakers() {
+        ttsDownUntil = 0L
+        sttDownUntil = 0L
+    }
+
     /** Drop the config and its keys (sign-out, another account). */
     fun forget() {
         current = null
