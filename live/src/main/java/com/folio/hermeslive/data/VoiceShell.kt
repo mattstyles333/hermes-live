@@ -147,7 +147,7 @@ class VoiceShell(
     val gate = CascadeGate(
         { settings.settings.value }, { keys.status.value }, { xaiKeys?.status?.value ?: KeyStatus() },
         gptLiveAgents = { signedIn() && GptLivePrefs.of(context).agents.value },
-        offlineMemos = { signedIn() && (settings.settings.value.offlineMemos || memosHeld) },
+        memosOnOrHeld = { signedIn() && (settings.settings.value.offlineMemos || memosHeld) },
     )
     val speechModels: SpeechModels get() = host?.speechModels ?: SpeechModels.None
     val offCallHooks: OffCallHooks get() = host?.offCallHooks ?: OffCallHooks.None

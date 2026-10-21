@@ -136,7 +136,7 @@ class MeetingOutboxTest {
         assertTrue(rig.log.all().isEmpty())
     }
 
-    @Test fun inTaskSubmitterAreHeldAndRetriedWithTheirOwnKey() = runTest {
+    @Test fun inMeetingTasksAreHeldAndRetriedWithTheirOwnKey() = runTest {
         val rig = Rig()
         rig.tasks.reply = { HeldSubmit.Offline }
         val task = MeetingTask("m1", 7, "Goal: draft it.", "Meeting task · draft it", WALL0)

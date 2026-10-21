@@ -180,4 +180,12 @@ class CallServiceTest {
         controller.destroy()
         assertEquals(0, other.ends)
     }
+
+    /** Review round 2: an approval's command stays off the lock screen, as results and memos do. */
+    @Test fun approvalNotificationsArePrivate() {
+        CallNotifications.createChannels(app)
+        val request = com.folio.hermes.ApprovalRequest("a1", "rt", "apr", "rm -rf build", "Delete the build folder", listOf(com.folio.hermes.ApprovalChoice.Once), "terminal", kotlinx.serialization.json.JsonObject(emptyMap()))
+        val n = CallNotifications.approval(app, com.folio.hermeslive.call.ApprovalCard(request))
+        assertEquals(android.app.Notification.VISIBILITY_PRIVATE, n.visibility)
+    }
 }

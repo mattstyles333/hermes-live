@@ -18,7 +18,7 @@ class CascadeGate(
      */
     private val gptLiveAgents: () -> Boolean = { false },
     /** Signed in **and** Settings › Voice › Offline memos on or a memo held (offline-memo slice): memos are sent as tasks. */
-    private val offlineMemos: () -> Boolean = { false },
+    private val memosOnOrHeld: () -> Boolean = { false },
 ) {
     /** Bill: engine `cascade` and a usable OpenRouter key. */
     val active: Boolean get() = settings().voiceEngine == VoiceEngine.Cascade && key().usable
@@ -34,7 +34,7 @@ class CascadeGate(
      * Bill, Grok or GPT-Live with agents (which drive the same tasks through the shared task API),
      * or offline memos (sent as tasks the same way).
      */
-    val tasksActive: Boolean get() = active || grokActive || gptLiveAgentsActive || offlineMemos()
+    val tasksActive: Boolean get() = active || grokActive || gptLiveAgentsActive || memosOnOrHeld()
 
     /** Bill could run a call (a usable OpenRouter key), whichever engine is chosen: Grok's offline fallback. */
     val billAvailable: Boolean get() = key().usable

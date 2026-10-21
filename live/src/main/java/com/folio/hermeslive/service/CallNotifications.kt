@@ -125,6 +125,8 @@ object CallNotifications {
         val builder = Notification.Builder(context, CHANNEL_APPROVALS)
             .setSmallIcon(R.drawable.ic_stat_call)
             .setContentTitle("Hermes needs your approval")
+            // The command stays off the lock screen (as results and memos).
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setContentText(request.description.ifBlank { request.command })
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setCategory(Notification.CATEGORY_REMINDER)
