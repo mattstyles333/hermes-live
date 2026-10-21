@@ -108,7 +108,6 @@ class MemoHost private constructor(private val app: Context) {
         scheduler = MemoJobs(app),
         recording = { id -> (app.graph.calls.active.value as? MemoCall)?.recordingId == id },
         taskStatus = { id -> MemoSender.statusIn(runtimeTasks(), id) },
-        retryTask = { id -> runtimeTasks()?.retry(id) },
     )
 
     private suspend fun runtimeTasks() = withContext(Dispatchers.Default) { shell.shell.appRuntime()?.core?.tasks }
@@ -197,10 +196,11 @@ class MemoTaskGate(
         return r
     }
 
+    /** Every task finished, or `not_sent` (parked until a card's Retry: nothing happens without a tap). */
     private fun idle(rt: CascadeAppRuntime): Boolean = rt.core.tasks.status().all { it.status in FINISHED }
 
     private companion object {
-        val FINISHED = setOf("done", "failed", "cancelled")
+        val FINISHED = setOf("done", "failed", "cancelled", "not_sent")
     }
 }
 
@@ -280,7 +280,8 @@ class MemoJobWork(
     suspend fun run(): Boolean {
         ready()
         val r = flush() ?: return false
-        if (r.sent > 0) {
+        // Sent now, or sent earlier (the app-start flush) with the task still open: wait for its result.
+        if (r.sent > 0 || r.open > 0) {
             val hold = runCatching(holdGateway).getOrNull()
             try {
                 withTimeoutOrNull(holdMs) { tasksRunning.first { it == 0 } }

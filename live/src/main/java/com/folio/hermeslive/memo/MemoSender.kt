@@ -73,8 +73,6 @@ class MemoSender(
     private val recording: (String) -> Boolean = { false },
     /** A sent memo's task status in the phone's task table ([statusIn]), or null when it can't be read now. */
     private val taskStatus: suspend (taskId: String) -> String? = { null },
-    /** Resend a task the registry gave up on (`not_sent`): `CascadeTasks.retry`. */
-    private val retryTask: suspend (taskId: String) -> Unit = {},
     private val limits: MemoSettings = MemoSettings(),
 ) {
     sealed interface Outcome {
@@ -127,17 +125,24 @@ class MemoSender(
         Flush(sent, left, open, wake + open)
     }
 
-    /** Sent memos whose task is not known to be finished: ask the task table (never Hermes); a `not_sent` one is resent. */
+    /**
+     * Sent memos whose task is not known to be finished: ask the task table (never Hermes). A memo
+     * never resends a task: `not_sent` (the registry gave up, or recovery can't say whether the
+     * prompt arrived) counts as finished; only the card's Retry resends, as in the cascade. A task
+     * that never ends (no result, an approval never tapped) holds the gate for at most
+     * [OPEN_FOR_MS] after the memo was sent.
+     */
     private suspend fun checkTasks(): Int {
         var open = 0
         for (memo in store.all().filter { it.state == MemoState.Sent && !it.taskDone }) {
             val id = memo.taskId ?: continue
-            val status = runCatching { taskStatus(id) }.getOrNull()
-            if (status in TERMINAL) {
-                store.get(memo.id)?.let { store.put(it.copy(taskDone = true, doneAt = wall())) }
-            } else {
-                if (status == "not_sent") runCatching { retryTask(id) }
-                open++
+            val sentAt = memo.doneAt ?: memo.createdAt
+            val status = if (wall() - sentAt >= OPEN_FOR_MS) null else runCatching { taskStatus(id) }.getOrNull()
+            when {
+                status in TERMINAL -> store.get(memo.id)?.let { store.put(it.copy(taskDone = true, doneAt = wall())) }
+                // Past the cap: finished for the gate; pruned 7 days after it was sent.
+                wall() - sentAt >= OPEN_FOR_MS -> store.get(memo.id)?.let { store.put(it.copy(taskDone = true)) }
+                else -> open++
             }
         }
         return open
@@ -254,8 +259,11 @@ class MemoSender(
         (if (memo.typed) "Text memo · " else "Voice memo · ") + LABEL_TIME.format(Instant.ofEpochMilli(memo.createdAt).atZone(zone()))
 
     companion object {
-        /** Finished in the task table (`gone`: not in the restored table at all). */
-        val TERMINAL = setOf("done", "failed", "cancelled", "gone")
+        /** Finished for a memo (`gone`: not in the restored table; `not_sent`: only the card's Retry resends it). */
+        val TERMINAL = setOf("done", "failed", "cancelled", "gone", "not_sent")
+
+        /** A sent memo's task holds the task gate for at most this long after the memo was sent. */
+        const val OPEN_FOR_MS = 24 * 60 * 60_000L
 
         /** Held for these, the app tries again at its next start; no job wakes it (an older server won't change soon). */
         val NOT_WORTH_A_WAKE = setOf("server_old", "no_stt")

@@ -349,7 +349,7 @@ class MemoSenderTest {
         val day = MemoRetention.DAY_MS
         rig.now = T0 + 30 * day
         rig.store.put(MemoRecord("old-sent", T0, MemoState.Sent, taskId = "t", doneAt = rig.now - 8 * day, taskDone = true))
-        // Sent long ago but its task not known to be finished: it still needs the runtime, so it stays.
+        // Sent long ago, its task never known to finish: past the 24 h gate cap it counts finished, and is pruned next.
         rig.store.put(MemoRecord("old-open", T0, MemoState.Sent, taskId = "t2", doneAt = rig.now - 8 * day))
         rig.store.put(MemoRecord("old-empty", T0, MemoState.Empty, doneAt = rig.now - 8 * day))
         rig.store.put(MemoRecord("old-failed", T0, MemoState.Failed, doneAt = rig.now - 9 * day))
@@ -362,33 +362,53 @@ class MemoSenderTest {
         ).flush()
         assertEquals(setOf("new-sent", "old-open", "old-text"), rig.store.all().map { it.id }.toSet())
         assertEquals(3, rig.events.all.single { it.first == "memo.deleted" }.second["count"])
+        assertTrue(rig.store.get("old-open")!!.taskDone)
+        assertEquals(1, MemoRetention.prune(rig.store, rig.now, rig.events))
         assertEquals(0, MemoRetention.prune(rig.store, rig.now, rig.events))
     }
 
-    /** Final review: a sent memo stays open until its task is finished in the task table; a not_sent one is resent. */
+    /** A sent memo stays open until its task is finished in the task table; `not_sent` counts as finished (only the card resends). */
     @Test fun aSentMemoStaysOpenUntilItsTaskIsFinished() = runTest {
         val rig = Rig()
         rig.recorded()
         var status: String? = "queued"
-        val retried = ArrayList<String>()
         val sender = MemoSender(
             rig.store, HeldTasks { rig.tasks }, { rig.transcriber }, { ZoneId.of("Europe/London") }, { rig.now }, rig.events, rig.notices, rig.scheduler,
-            taskStatus = { status }, retryTask = { retried += it },
+            taskStatus = { status },
         )
         assertEquals(1, sender.flush().open)
         assertTrue("it still needs the runtime", rig.store.get("m1")!!.needsRuntime)
-        status = "not_sent"
-        assertEquals(1, sender.flush().open)
-        assertEquals(listOf("task-memo-m1"), retried)
         status = null
         assertEquals("unknown (no runtime yet) is not finished", 1, sender.flush().open)
-        status = "done"
+        status = "not_sent"
         val r = sender.flush()
         assertEquals(0, r.open)
         assertEquals(0, r.wake)
         assertTrue(rig.store.get("m1")!!.taskDone)
         assertFalse(rig.store.get("m1")!!.needsRuntime)
         assertEquals("one task, never started again", 1, rig.tasks.calls.size)
+    }
+
+    /** Review: a task that never ends (no result, an approval never tapped) holds the gate for at most 24 h after the memo was sent. */
+    @Test fun aNeverEndingTaskHoldsTheGateForAtMost24Hours() = runTest {
+        val rig = Rig()
+        rig.recorded()
+        val sender = MemoSender(
+            rig.store, HeldTasks { rig.tasks }, { rig.transcriber }, { ZoneId.of("Europe/London") }, { rig.now }, rig.events, rig.notices, rig.scheduler,
+            taskStatus = { "waiting_on_user" },
+        )
+        assertEquals(1, sender.flush().open)
+        rig.now += 24 * 60 * 60_000L - 1
+        assertEquals(1, sender.flush().open)
+        rig.now += 1
+        val r = sender.flush()
+        assertEquals(0, r.open)
+        assertEquals(0, r.wake)
+        assertFalse(rig.store.get("m1")!!.needsRuntime)
+        assertEquals("pruned 7 days after it was sent, as usual", T0, rig.store.get("m1")!!.doneAt)
+        rig.now = T0 + 7 * MemoRetention.DAY_MS + 1
+        sender.flush()
+        assertNull(rig.store.get("m1"))
     }
 
     companion object {

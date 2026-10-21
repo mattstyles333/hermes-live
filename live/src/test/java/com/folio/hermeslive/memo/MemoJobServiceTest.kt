@@ -22,7 +22,7 @@ import org.robolectric.shadows.ShadowJobService
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
 class MemoJobServiceTest {
-    private class Fakes(var held: Int = 0, var sent: Int = 0, running: Int = 0) {
+    private class Fakes(var held: Int = 0, var sent: Int = 0, running: Int = 0, var open: Int = 0) {
         val ready = CompletableDeferred<Unit>()
         var flushes = 0
         var holds = 0
@@ -31,7 +31,7 @@ class MemoJobServiceTest {
         var noHost = false
         fun work() = MemoJobWork(
             ready = { ready.await() },
-            flush = { if (noHost) null else MemoSender.Flush(sent, held).also { flushes++ } },
+            flush = { if (noHost) null else MemoSender.Flush(sent, held, open).also { flushes++ } },
             holdGateway = { holds++; AutoCloseable { released++ } },
             tasksRunning = running,
             memosHeld = { held > 0 },
@@ -72,6 +72,21 @@ class MemoJobServiceTest {
         assertEquals(1, f.released)
         assertTrue(shadow.isJobFinished)
         assertFalse(shadow.isRescheduleNeeded)
+    }
+
+    /** Review: woken where the app-start flush already sent it, the job still waits for the open task's result. */
+    @Test fun anOpenTaskIsWaitedForEvenWhenThisFlushSentNothing() = runTest {
+        val f = Fakes(open = 1, running = 1)
+        val (svc, shadow) = service(f)
+        f.ready.complete(Unit)
+        svc.onStartJob(null)
+        runCurrent()
+        assertEquals(1, f.holds)
+        assertFalse(shadow.isJobFinished)
+        f.running.value = 0
+        runCurrent()
+        assertEquals(1, f.released)
+        assertTrue(shadow.isJobFinished)
     }
 
     @Test fun theHoldEndsWithinTheJobsBudget() = runTest {

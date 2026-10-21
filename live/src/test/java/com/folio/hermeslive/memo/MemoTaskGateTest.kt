@@ -61,6 +61,8 @@ class MemoTaskGateTest {
         fun finish() = done.complete(Unit)
 
         override fun open(taskId: String, label: String, storedSessionId: String?) = Unit
+        /** Session first, as the gateway does: the stored id is durable before any prompt leaves. */
+        override suspend fun create(taskId: String, label: String): String = "sess-$taskId"
         override fun submit(taskId: String, text: String, voiceContext: String, queued: Boolean, interruptFirst: Boolean): Flow<TurnUpdate> {
             if (hang) return flow { awaitCancellation() }
             prompts += text
@@ -78,12 +80,18 @@ class MemoTaskGateTest {
     }
 
     /** One process: its own runtime scope, shell, gate and sender, on the stores that outlive it. */
-    private inner class Process(scope: TestScope, val hermes: ScriptedHermes, coreStore: MemoryStore, val memos: MemoStore) {
+    private inner class Process(
+        scope: TestScope,
+        val hermes: ScriptedHermes,
+        coreStore: MemoryStore,
+        val memos: MemoStore,
+        probe: com.folio.hermes.cascade.registry.SessionRecovery = com.folio.hermes.cascade.registry.SessionRecovery { _, _ -> com.folio.hermes.cascade.registry.SessionProbe.NeverPrompted },
+    ) {
         val job = SupervisorJob()
         private val work = CoroutineScope(scope.coroutineContext + job)
         var held = MemoHost.waiting(memos)
         val gate = CascadeGate({ LiveSettings() }, { KeyStatus() }, gptLiveAgents = { false }, memosOnOrHeld = { held })
-        val shell = CascadeShell(gate, CascadeFactory { TestRuntime(work, hermes = hermes, clock = TestClock(scope), store = coreStore).runtime }) {
+        val shell = CascadeShell(gate, CascadeFactory { TestRuntime(work, hermes = hermes, clock = TestClock(scope), store = coreStore, probe = probe).runtime }) {
             CascadeEnvironment({ com.folio.hermes.cascade.CascadeSettings() }, { null }, CascadeStorage(CascadeDirs(tmp.root, tmp.root)), SpeechModels.None, TelemetrySink.None)
         }
         private fun tasks() = (shell.runtime() as? CascadeAppRuntime)?.core?.tasks
@@ -93,7 +101,6 @@ class MemoTaskGateTest {
             { MemoTranscriber { _, _ -> MemoText.Text("book the dentist") } },
             { ZoneId.of("Europe/London") }, { 0L }, Events(), MemoSenderTest.RecordingNotices(), MemoSenderTest.CountingScheduler(),
             taskStatus = { id -> MemoSender.statusIn(tasks(), id) },
-            retryTask = { id -> tasks()?.retry(id) },
         )
         val memoGate = MemoTaskGate(sender, shell) { held = it }
         val runtime get() = shell.existing() as? CascadeAppRuntime
@@ -152,6 +159,27 @@ class MemoTaskGateTest {
         flush(second)
         assertNull(second.runtime)
         assertEquals(1, second.hermes.prompts.size)
+        second.job.cancel()
+    }
+
+    /**
+     * Review: a task recovery can't vouch for (Hermes can't say whether the prompt arrived: `not_sent`,
+     * UNCERTAIN) is never resent by a memo flush; only the card's Retry resends, as in the cascade.
+     * For the memo it is finished: the gate shuts.
+     */
+    @Test fun anUncertainTaskIsNeverResentAndTheGateShuts() = runTest {
+        val (_, memos) = heldMemo()
+        val coreStore = MemoryStore()
+        val first = Process(this, ScriptedHermes(hang = true), coreStore, memos)
+        flush(first)
+        first.job.cancel()
+
+        val second = Process(this, ScriptedHermes(), coreStore, memos, probe = { _, _ -> com.folio.hermes.cascade.registry.SessionProbe.Unknown })
+        repeat(3) { flush(second) }
+        assertEquals("never resent by a flush", 0, second.hermes.prompts.size)
+        assertTrue(memos.get("m1")!!.taskDone)
+        assertFalse("the gate shuts", second.gate.tasksActive)
+        assertNull(second.runtime)
         second.job.cancel()
     }
 }
