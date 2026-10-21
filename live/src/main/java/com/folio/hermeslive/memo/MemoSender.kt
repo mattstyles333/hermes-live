@@ -71,6 +71,10 @@ class MemoSender(
     private val notices: MemoNotices,
     private val scheduler: MemoScheduler,
     private val recording: (String) -> Boolean = { false },
+    /** A sent memo's task status in the phone's task table ([statusIn]), or null when it can't be read now. */
+    private val taskStatus: suspend (taskId: String) -> String? = { null },
+    /** Resend a task the registry gave up on (`not_sent`): `CascadeTasks.retry`. */
+    private val retryTask: suspend (taskId: String) -> Unit = {},
     private val limits: MemoSettings = MemoSettings(),
 ) {
     sealed interface Outcome {
@@ -81,28 +85,62 @@ class MemoSender(
         data object Missing : Outcome
     }
 
-    /** What a flush did: [sent] now, [held] still waiting. */
-    data class Flush(val sent: Int, val held: Int)
+    /**
+     * What a flush did: [sent] now, [held] still waiting, [open] sent but with their task not
+     * finished in the phone's task table (they still need the task runtime), and [wake] what is
+     * worth waking the app for (transient holds and open tasks; not `server_old`, which waits for
+     * the next app start).
+     */
+    data class Flush(val sent: Int, val held: Int, val open: Int = 0, val wake: Int = held + open)
 
     /**
-     * Try every memo that waits, one flush at a time. The records are read once; finished ones past
-     * [MemoRetention] are pruned from that same read. Retries are spaced by the job's own backoff.
+     * Try every memo that waits, one flush at a time, then check sent memos' tasks in the task
+     * table. The records are read once; finished ones past [MemoRetention] are pruned from that
+     * same read. Retries are spaced by the job's own backoff. [inJob]: running inside the job,
+     * which retires itself (`jobFinished`); cancelling it here would stop it mid-wait.
      */
-    suspend fun flush(): Flush = held.exclusive {
+    suspend fun flush(inJob: Boolean = false): Flush = held.exclusive {
         val memos = store.all()
         recover(memos)
         var sent = 0
         var left = 0
+        var wake = 0
         for (memo in memos.filter { it.pending || it.state == MemoState.Recording }) {
-            when (sendLocked(memo.id)) {
+            when (val o = sendLocked(memo.id)) {
                 is Outcome.Sent -> sent++
-                is Outcome.Held -> left++
-                else -> if (store.get(memo.id)?.pending == true) left++
+                is Outcome.Held -> {
+                    left++
+                    if (o.reason !in NOT_WORTH_A_WAKE) wake++
+                }
+                else -> if (store.get(memo.id)?.pending == true) {
+                    left++
+                    wake++
+                }
             }
         }
+        val open = checkTasks()
         MemoRetention.prune(store, wall(), telemetry, memos)
-        if (left == 0) scheduler.cancel() else scheduler.schedule()
-        Flush(sent, left)
+        when {
+            wake + open > 0 -> scheduler.schedule()
+            !inJob -> scheduler.cancel()
+        }
+        Flush(sent, left, open, wake + open)
+    }
+
+    /** Sent memos whose task is not known to be finished: ask the task table (never Hermes); a `not_sent` one is resent. */
+    private suspend fun checkTasks(): Int {
+        var open = 0
+        for (memo in store.all().filter { it.state == MemoState.Sent && !it.taskDone }) {
+            val id = memo.taskId ?: continue
+            val status = runCatching { taskStatus(id) }.getOrNull()
+            if (status in TERMINAL) {
+                store.get(memo.id)?.let { store.put(it.copy(taskDone = true, doneAt = wall())) }
+            } else {
+                if (status == "not_sent") runCatching { retryTask(id) }
+                open++
+            }
+        }
+        return open
     }
 
     /** Send memo [id] now, if it waits. */
@@ -216,6 +254,19 @@ class MemoSender(
         (if (memo.typed) "Text memo · " else "Voice memo · ") + LABEL_TIME.format(Instant.ofEpochMilli(memo.createdAt).atZone(zone()))
 
     companion object {
+        /** Finished in the task table (`gone`: not in the restored table at all). */
+        val TERMINAL = setOf("done", "failed", "cancelled", "gone")
+
+        /** Held for these, the app tries again at its next start; no job wakes it (an older server won't change soon). */
+        val NOT_WORTH_A_WAKE = setOf("server_old", "no_stt")
+
+        /** [taskId]'s status in [tasks]'s table once it is read back; null when there is no runtime or it isn't restored yet. */
+        suspend fun statusIn(tasks: com.folio.hermes.cascade.CascadeTasks?, taskId: String): String? {
+            val t = tasks ?: return null
+            if (!t.ready()) return null
+            return t.status(taskId).singleOrNull()?.status ?: "gone"
+        }
+
         /** 15 s plus 1 s for every 4 s of audio. */
         fun timeoutFor(samples: Long): Long = 15_000L + samples * 1000 / AudioSource.SAMPLE_RATE / 4
 

@@ -52,4 +52,19 @@ class MemoTriggersTest {
         runCurrent()
         assertEquals("only the start flush", 1, flushes)
     }
+
+    @Test fun aTaskEndingChecksAgainAndTheNetworkBackResetsTheBreakerFirst() = runTest {
+        val online = MutableStateFlow(false)
+        val tasks = MutableStateFlow(1)
+        val order = ArrayList<String>()
+        MemoTriggers(backgroundScope, online, {}, { true }, { order += "flush" }, tasks = tasks, networkBack = { order += "reset" }).start()
+        runCurrent()
+        assertEquals(listOf("flush"), order)
+        tasks.value = 0
+        runCurrent()
+        assertEquals(listOf("flush", "flush"), order)
+        online.value = true
+        runCurrent()
+        assertEquals(listOf("flush", "flush", "reset", "flush"), order)
+    }
 }

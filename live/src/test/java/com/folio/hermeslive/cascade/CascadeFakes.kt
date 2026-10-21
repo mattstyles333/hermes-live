@@ -77,6 +77,8 @@ class TestRuntime(
     settings: CascadeSettings = CascadeSettings(),
     hermes: HermesPort = IdleHermes(),
     clock: com.folio.hermes.cascade.ports.Clock = com.folio.hermes.cascade.ports.Clock.System,
+    /** The runtime's durable store: pass the same one to a second runtime to model a process restart. */
+    store: com.folio.hermes.cascade.ports.Store = MemoryStore(),
 ) {
     val gateway = FakeGateway()
     val openRouter = QuietOpenRouter()
@@ -85,7 +87,7 @@ class TestRuntime(
     val audio = AudioSlot()
     val core = CascadeCore.create(
         scope = scope,
-        ports = CascadePorts(openRouter, hermes, { _, _ -> SessionProbe.NeverPrompted }, audio, MemoryStore(), clock = clock, stt = stt),
+        ports = CascadePorts(openRouter, hermes, { _, _ -> SessionProbe.NeverPrompted }, audio, store, clock = clock, stt = stt),
         bank = PhraseBank.load(),
         settings = { settings },
         telemetry = TelemetrySink.None,

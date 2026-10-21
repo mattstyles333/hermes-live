@@ -15,6 +15,8 @@ import com.folio.hermeslive.service.CallNotifications
 import com.folio.hermeslive.service.Notices
 import com.folio.hermeslive.service.ResultNotifications
 import com.folio.hermeslive.tasks.HeldTasks
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -37,6 +39,7 @@ class MemoJobsTest {
 
     private fun sender(store: MemoStore, transcriber: MemoTranscriber) = MemoSender(
         store, HeldTasks { FakeTasks() }, { transcriber }, { ZoneId.of("UTC") }, { 0L }, Events(), AndroidMemoNotices(app), MemoJobs(app),
+        taskStatus = { "done" },
     )
 
     @Test fun aHeldMemoSchedulesOnePersistedAnyNetworkJob() = runTest {
@@ -59,6 +62,39 @@ class MemoJobsTest {
         val store = MemoryStore().let { kv -> MemoStore({ kv }, tmp.newFolder("memo")) }
         sender(store) { _, _ -> error("never asked") }.flush()
         assertTrue(jobs.allPendingJobs.isEmpty())
+    }
+
+    /** Final review: the flush inside the job must not cancel the job (that would stop the 9-minute result wait). */
+    @Test fun aFlushInsideTheJobNeverCancelsTheRunningJob() = runTest {
+        val store = MemoryStore().let { kv -> MemoStore({ kv }, tmp.newFolder("memo")) }
+        MemoSenderTest.wav(store.chunk("m1", 0), 32_000)
+        store.put(MemoRecord("m1", 0, MemoState.Recorded, chunks = 1))
+        MemoJobs(app).schedule()
+        val real = sender(store) { _, _ -> MemoText.Text("call the bank") }
+        val running = kotlinx.coroutines.flow.MutableStateFlow(1)
+        var released = 0
+        val work = MemoJobWork(ready = {}, flush = { real.flush(inJob = true) }, holdGateway = { AutoCloseable { released++ } }, tasksRunning = running, memosHeld = { false })
+        val run = async { work.run() }
+        runCurrent()
+        assertEquals(MemoState.Sent, store.get("m1")!!.state)
+        assertTrue("still waiting for the task's result", run.isActive)
+        assertTrue("the job is not cancelled under itself", jobs.getPendingJob(MemoJobs.JOB_ID) != null)
+        running.value = 0
+        runCurrent()
+        assertEquals(1, released)
+        run.await()
+    }
+
+    /** Round 3: an older server (404) is held for the next app start, not woken for by a persisted job. */
+    @Test fun anOlderServerSchedulesNoJob() = runTest {
+        val store = MemoryStore().let { kv -> MemoStore({ kv }, tmp.newFolder("memo")) }
+        MemoSenderTest.wav(store.chunk("m1", 0), 32_000)
+        store.put(MemoRecord("m1", 0, MemoState.Recorded, chunks = 1))
+        val r = sender(store) { _, _ -> MemoText.Hold("server_old") }.flush()
+        assertEquals(1, r.held)
+        assertTrue(jobs.allPendingJobs.isEmpty())
+        sender(store) { _, _ -> MemoText.Hold("timeout") }.flush()
+        assertEquals("a transient hold does wake the job", 1, jobs.allPendingJobs.size)
     }
 
     @Test fun memoNoticesArePrivateAndNeverShareAnIdWithResultsOrApprovals() {

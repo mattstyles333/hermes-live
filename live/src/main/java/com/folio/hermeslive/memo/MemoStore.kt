@@ -52,7 +52,16 @@ data class MemoRecord(
     val doneAt: Long? = null,
     /** The task's label, kept once sent (the words are dropped). */
     val label: String? = null,
+    /**
+     * Sent, and its task is finished in the phone's task table (done, failed, cancelled or gone).
+     * Until then the memo still needs the task runtime: `Started` only means the task is stored on
+     * the phone, and its prompt may not have left yet.
+     */
+    val taskDone: Boolean = false,
 ) {
+    /** Still needs the task machinery: waiting to go, cut off mid-recording, or sent with its task not finished. */
+    val needsRuntime: Boolean get() = pending || state == MemoState.Recording || (state == MemoState.Sent && !taskDone)
+
     /** Waiting to go to Hermes. */
     val pending: Boolean get() = state == MemoState.Recorded || state == MemoState.Transcribed
 
@@ -109,7 +118,7 @@ object MemoRetention {
 
     fun prune(store: MemoStore, nowWall: Long, telemetry: TelemetrySink = TelemetrySink.None, memos: List<MemoRecord> = store.all()): Int {
         val cutoff = nowWall - DAYS * DAY_MS
-        val old = memos.filter { m -> m.state in DONE && (m.doneAt ?: m.createdAt) < cutoff }
+        val old = memos.filter { m -> m.state in DONE && (m.state != MemoState.Sent || m.taskDone) && (m.doneAt ?: m.createdAt) < cutoff }
         old.forEach { store.delete(it.id) }
         if (old.isNotEmpty()) runCatching { telemetry.event("memo.deleted", mapOf("count" to old.size, "reason" to "retention"), false) }
         return old.size

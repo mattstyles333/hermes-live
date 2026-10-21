@@ -14,7 +14,9 @@ import com.folio.hermeslive.R
 import com.folio.hermeslive.cascade.AndroidNetwork
 import com.folio.hermeslive.cascade.appRuntime
 import com.folio.hermeslive.data.AccountState
+import com.folio.hermeslive.data.CascadeShell
 import com.folio.hermeslive.data.VoiceShell
+import com.folio.hermeslive.cascade.CascadeAppRuntime
 import com.folio.hermeslive.graph
 import com.folio.hermeslive.tasks.CascadeTaskSubmitter
 import com.folio.hermeslive.tasks.HeldTasks
@@ -30,6 +32,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -49,6 +52,10 @@ class MemoTriggers(
     private val ready: suspend () -> Unit,
     private val waiting: () -> Boolean,
     private val flush: suspend () -> Unit,
+    /** The task table's running count: a change (a task ending) checks sent memos' tasks. */
+    private val tasks: Flow<Int> = emptyFlow(),
+    /** Called when the network comes back, before the flush. */
+    private val networkBack: () -> Unit = {},
 ) {
     fun start() {
         scope.launch {
@@ -56,7 +63,13 @@ class MemoTriggers(
             if (waiting()) flush()
         }
         scope.launch {
-            online.distinctUntilChanged().drop(1).filter { it }.collect { if (waiting()) flush() }
+            online.distinctUntilChanged().drop(1).filter { it }.collect {
+                runCatching(networkBack)
+                if (waiting()) flush()
+            }
+        }
+        scope.launch {
+            tasks.distinctUntilChanged().drop(1).collect { if (waiting()) flush() }
         }
     }
 
@@ -94,7 +107,13 @@ class MemoHost private constructor(private val app: Context) {
         notices = AndroidMemoNotices(app),
         scheduler = MemoJobs(app),
         recording = { id -> (app.graph.calls.active.value as? MemoCall)?.recordingId == id },
+        taskStatus = { id -> MemoSender.statusIn(runtimeTasks(), id) },
+        retryTask = { id -> runtimeTasks()?.retry(id) },
     )
+
+    private suspend fun runtimeTasks() = withContext(Dispatchers.Default) { shell.shell.appRuntime()?.core?.tasks }
+
+    private val gate = MemoTaskGate(sender, shell.shell) { shell.memosHeld = it }
 
     private val triggers = MemoTriggers(
         scope = scope,
@@ -102,6 +121,10 @@ class MemoHost private constructor(private val app: Context) {
         ready = { withTimeoutOrNull(READY_WAIT_MS) { app.graph.ready.await() } },
         waiting = ::waiting,
         flush = { flush() },
+        // A task ending (a sent memo's included): check it, so the gate can shut.
+        tasks = shell.offCallHooks.tasksRunning,
+        // The network is back: Hermes's speech-to-text is tried at once, not after its 60 s skip.
+        networkBack = { shell.hermesVoices.voice()?.resetBreakers() },
     )
 
     init {
@@ -123,12 +146,7 @@ class MemoHost private constructor(private val app: Context) {
      * store). Nothing left and the gate shut for everything else: the runtime is released once no
      * task runs, so the gateway can close.
      */
-    suspend fun flush(): MemoSender.Flush {
-        val r = runCatching { sender.flush() }.getOrElse { MemoSender.Flush(0, 1) }
-        shell.memosHeld = r.held > 0
-        if (!shell.gate.tasksActive && shell.offCallHooks.tasksRunning.value == 0) shell.shell.release()
-        return r
-    }
+    suspend fun flush(inJob: Boolean = false): MemoSender.Flush = gate.flush(inJob)
 
     private fun waiting(): Boolean = waiting(store)
 
@@ -150,13 +168,39 @@ class MemoHost private constructor(private val app: Context) {
         fun wanted(shell: VoiceShell): Boolean = shell.memosOn() || (shell.isSignedIn && shell.dirs.store.exists() && waiting(MemoStore({ shell.storage.store }, shell.dirs.memo)))
 
         /** Something to send, or left by a kill mid-recording. */
-        fun waiting(store: MemoStore): Boolean = runCatching { store.all().any { it.pending || it.state == MemoState.Recording } }.getOrDefault(false)
+        fun waiting(store: MemoStore): Boolean = runCatching { store.all().any { it.needsRuntime } }.getOrDefault(false)
 
         /** Tests: forget the process's host. */
         @androidx.annotation.VisibleForTesting
         fun resetForTests() {
             instance = null
         }
+    }
+}
+
+/**
+ * A flush, then the task gate: [setHeld] says whether memos still need the task runtime, and once
+ * nothing does and the gate is shut for everything else, the runtime is released.
+ */
+class MemoTaskGate(
+    private val sender: MemoSender,
+    private val shell: CascadeShell,
+    private val setHeld: (Boolean) -> Unit,
+) {
+    suspend fun flush(inJob: Boolean = false): MemoSender.Flush {
+        val r = runCatching { sender.flush(inJob) }.getOrElse { MemoSender.Flush(0, 1) }
+        // Held, or sent with the task not finished in the table: memos still need the runtime.
+        setHeld(r.held > 0 || r.open > 0)
+        val rt = shell.existing() as? CascadeAppRuntime
+        // Never while the task table has a task not finished (the running count is updated by its own collector, later).
+        if (!shell.gate.tasksActive && (rt == null || idle(rt))) shell.release()
+        return r
+    }
+
+    private fun idle(rt: CascadeAppRuntime): Boolean = rt.core.tasks.status().all { it.status in FINISHED }
+
+    private companion object {
+        val FINISHED = setOf("done", "failed", "cancelled")
     }
 }
 
@@ -244,7 +288,8 @@ class MemoJobWork(
                 runCatching { hold?.close() }
             }
         }
-        return r.held > 0
+        // Retry while something worth waking for waits: a transient hold, or a sent memo's task not finished.
+        return r.wake > 0
     }
 
     companion object {
@@ -255,7 +300,7 @@ class MemoJobWork(
             val shell = VoiceShell.of(context)
             return MemoJobWork(
                 ready = { withTimeoutOrNull(MemoHost.READY_WAIT_MS) { context.graph.ready.await() } },
-                flush = { MemoHost.ifNeeded(context)?.flush() },
+                flush = { MemoHost.ifNeeded(context)?.flush(inJob = true) },
                 holdGateway = { shell.offCallHooks.holdGateway() },
                 tasksRunning = shell.offCallHooks.tasksRunning,
                 memosHeld = { shell.memosHeld },

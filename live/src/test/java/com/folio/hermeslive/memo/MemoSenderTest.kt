@@ -43,6 +43,8 @@ class MemoSenderTest {
         fun sender() = MemoSender(
             store, HeldTasks { task }, { transcriber }, { ZoneId.of("Europe/London") }, { now }, events, notices, scheduler,
             recording = { it in live },
+            // The fake task table finishes every task at once.
+            taskStatus = { "done" },
         )
 
         /** A recorded memo of [seconds], in 60 s chunks (the last one partial). */
@@ -346,16 +348,47 @@ class MemoSenderTest {
         val rig = Rig()
         val day = MemoRetention.DAY_MS
         rig.now = T0 + 30 * day
-        rig.store.put(MemoRecord("old-sent", T0, MemoState.Sent, taskId = "t", doneAt = rig.now - 8 * day))
+        rig.store.put(MemoRecord("old-sent", T0, MemoState.Sent, taskId = "t", doneAt = rig.now - 8 * day, taskDone = true))
+        // Sent long ago but its task not known to be finished: it still needs the runtime, so it stays.
+        rig.store.put(MemoRecord("old-open", T0, MemoState.Sent, taskId = "t2", doneAt = rig.now - 8 * day))
         rig.store.put(MemoRecord("old-empty", T0, MemoState.Empty, doneAt = rig.now - 8 * day))
         rig.store.put(MemoRecord("old-failed", T0, MemoState.Failed, doneAt = rig.now - 9 * day))
-        rig.store.put(MemoRecord("new-sent", T0, MemoState.Sent, taskId = "t", doneAt = rig.now - 6 * day))
+        rig.store.put(MemoRecord("new-sent", T0, MemoState.Sent, taskId = "t", doneAt = rig.now - 6 * day, taskDone = true))
         rig.store.put(MemoRecord("old-text", T0, MemoState.Transcribed, transcript = "still to go", typed = true))
         rig.tasks.reply = { HeldSubmit.Offline }
-        rig.sender().flush()
-        assertEquals(setOf("new-sent", "old-text"), rig.store.all().map { it.id }.toSet())
+        MemoSender(
+            rig.store, HeldTasks { rig.tasks }, { rig.transcriber }, { ZoneId.of("Europe/London") }, { rig.now }, rig.events, rig.notices, rig.scheduler,
+            taskStatus = { null },
+        ).flush()
+        assertEquals(setOf("new-sent", "old-open", "old-text"), rig.store.all().map { it.id }.toSet())
         assertEquals(3, rig.events.all.single { it.first == "memo.deleted" }.second["count"])
         assertEquals(0, MemoRetention.prune(rig.store, rig.now, rig.events))
+    }
+
+    /** Final review: a sent memo stays open until its task is finished in the task table; a not_sent one is resent. */
+    @Test fun aSentMemoStaysOpenUntilItsTaskIsFinished() = runTest {
+        val rig = Rig()
+        rig.recorded()
+        var status: String? = "queued"
+        val retried = ArrayList<String>()
+        val sender = MemoSender(
+            rig.store, HeldTasks { rig.tasks }, { rig.transcriber }, { ZoneId.of("Europe/London") }, { rig.now }, rig.events, rig.notices, rig.scheduler,
+            taskStatus = { status }, retryTask = { retried += it },
+        )
+        assertEquals(1, sender.flush().open)
+        assertTrue("it still needs the runtime", rig.store.get("m1")!!.needsRuntime)
+        status = "not_sent"
+        assertEquals(1, sender.flush().open)
+        assertEquals(listOf("task-memo-m1"), retried)
+        status = null
+        assertEquals("unknown (no runtime yet) is not finished", 1, sender.flush().open)
+        status = "done"
+        val r = sender.flush()
+        assertEquals(0, r.open)
+        assertEquals(0, r.wake)
+        assertTrue(rig.store.get("m1")!!.taskDone)
+        assertFalse(rig.store.get("m1")!!.needsRuntime)
+        assertEquals("one task, never started again", 1, rig.tasks.calls.size)
     }
 
     companion object {
