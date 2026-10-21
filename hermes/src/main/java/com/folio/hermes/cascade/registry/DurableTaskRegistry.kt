@@ -32,7 +32,8 @@ import com.folio.hermes.cascade.store.StoreCodec
  *   (counts as a failed submit, so it is resent) or [TaskRecovery.UNCERTAIN] (`NotSent` at once:
  *   it may have reached Hermes, so it is never resent on its own).
  * - **Retry ([retry]):** a `NotSent` task is submitted again as the same task; a `Failed` task
- *   starts a new task with the same brief (R-TASK-7). Over the cap, `limit.full`.
+ *   starts a new task with the same brief (R-TASK-7). Over the cap, `limit.full` in Bill's call;
+ *   off-call (the task API's [com.folio.hermes.cascade.TaskCommand.Retry]) nothing is said.
  * - **Off-call (R-CONV-3):** with no call open, a finished task is recorded unread (the task table
  *   does that) and an [Effect.Notify] goes to the app: `task_done`, `task_failed` or `task_needs_you`.
  */
@@ -67,7 +68,8 @@ object DurableTaskRegistry : TaskRegistry {
             t.state == TaskState.Failed -> {
                 val brief = t.brief ?: t.label
                 when (tx.tasks(tx.s.tasks.start(brief, t.label, tx.voiceContext(), tx.s.settings.taskCap, tx.s.wallMs))) {
-                    is StartResult.AtCap -> tx.say(AppLines.LIMIT_FULL)
+                    // Only in Bill's call: off-call (the task API on a Grok or GPT-Live call) the reply says it.
+                    is StartResult.AtCap -> if (tx.s.started) tx.say(AppLines.LIMIT_FULL)
                     is StartResult.Started -> tx.report("cascade.task", mapOf("event" to "retry", "running" to tx.s.tasks.runningCount, "how" to "new_task"))
                 }
             }
@@ -113,7 +115,7 @@ object DurableTaskRegistry : TaskRegistry {
     /** "Not sent: tap to retry": the same task, submitted again (attempts start over). */
     private fun resend(tx: Tx, t: TaskRecord) {
         if (tx.tasks(tx.s.tasks.reopen(t.id, tx.s.settings.taskCap)) is UpdateResult.AtCap) {
-            tx.say(AppLines.LIMIT_FULL)
+            if (tx.s.started) tx.say(AppLines.LIMIT_FULL)
             return
         }
         val reopened = tx.s.tasks[t.id] ?: return

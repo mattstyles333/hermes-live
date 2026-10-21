@@ -72,7 +72,12 @@ class FakeGateway : GatewayControl {
 }
 
 /** A runtime on fakes: the real actor and slots, a fake gateway, an in-memory store. */
-class TestRuntime(scope: CoroutineScope, settings: CascadeSettings = CascadeSettings()) {
+class TestRuntime(
+    scope: CoroutineScope,
+    settings: CascadeSettings = CascadeSettings(),
+    hermes: HermesPort = IdleHermes(),
+    clock: com.folio.hermes.cascade.ports.Clock = com.folio.hermes.cascade.ports.Clock.System,
+) {
     val gateway = FakeGateway()
     val openRouter = QuietOpenRouter()
     val running = MutableStateFlow(0)
@@ -80,7 +85,7 @@ class TestRuntime(scope: CoroutineScope, settings: CascadeSettings = CascadeSett
     val audio = AudioSlot()
     val core = CascadeCore.create(
         scope = scope,
-        ports = CascadePorts(openRouter, IdleHermes(), { _, _ -> SessionProbe.NeverPrompted }, audio, MemoryStore(), stt = stt),
+        ports = CascadePorts(openRouter, hermes, { _, _ -> SessionProbe.NeverPrompted }, audio, MemoryStore(), clock = clock, stt = stt),
         bank = PhraseBank.load(),
         settings = { settings },
         telemetry = TelemetrySink.None,

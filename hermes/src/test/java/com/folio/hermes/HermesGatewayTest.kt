@@ -1,6 +1,12 @@
 package com.folio.hermes
 
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -8,9 +14,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
@@ -152,6 +163,94 @@ class HermesGatewayTest {
         assertTrue("answered on the new connection", now.generation > first.generation)
     }
 
+    /**
+     * Drops and [HermesGateway.disconnect] racing waiting calls (the race shipped in 1.4.0). The old
+     * failPending copied the calls with `toList()`, which throws NoSuchElementException when the map
+     * empties between its size check and its iterator: out of disconnect(), or out of the connection
+     * loop into the scope's handler (a crash on Android: the app's scopes have no handler). It then
+     * cleared the map, so a call that registered after the copy was never failed and waited out its
+     * whole timeout.
+     *
+     * Each round, one call waits on the wire (a single entry, the size `toList()` tripped on), calls
+     * with 0-2 ms timeouts come and go, and [RACE_SWEEPERS] threads start at once: one drops the
+     * socket from the server, the rest call disconnect() (which also cancels the loop, whose cleanup
+     * sweeps too), and one of them then calls connect(). Round 0 parks [RACE_GROW_TABLE] calls first
+     * so the map's table grows (it never shrinks): `clear()` then walks the whole table before it
+     * lowers the count, which widens the window enough that the old code failed 9 runs in 10.
+     * The fake then answers [HANG], and a disconnect() and connect() settle the round, so every call
+     * must end (failed by a sweep, timed out, or answered) well inside [RACE_RPC_TIMEOUT_MS].
+     * Real dispatchers and sockets; about 2 s.
+     */
+    @Test fun dropsAndDisconnectsRacingCallsNeverThrowOrStrandACall() {
+        val quick = FakeHermesServer(noDelay = true) // a reconnect per round: 40 ms less each
+        val uncaught = CopyOnWriteArrayList<Throwable>()
+        val raceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> uncaught += e })
+        val config = quick.config().copy(rpcTimeoutMs = RACE_RPC_TIMEOUT_MS, reconnectBaseDelayMs = 1, reconnectMaxDelayMs = 5)
+        val racy = HermesGateway(config, tokens, scope = raceScope)
+        val disconnectErrors = CopyOnWriteArrayList<Throwable>()
+        val ended = CopyOnWriteArrayList<Pair<Throwable?, Long>>()
+        val answer = AtomicBoolean(false)
+        val hung = MutableStateFlow(0)
+        quick.responders[HANG] = { s, id, _ ->
+            if (answer.get()) runCatching { s.reply(id, "{}") } else hung.update { it + 1 }
+        }
+        fun disconnect() = runCatching { racy.disconnect() }.onFailure { disconnectErrors += it }
+        fun dropServerSockets() = generateSequence { quick.sockets.poll() }.forEach { it.ws.close(1001, "going away") }
+        fun CoroutineScope.timedCall(timeoutMs: Long) = launch {
+            val started = System.nanoTime()
+            val error = try {
+                racy.call(HANG, JsonObject(emptyMap()), timeoutMs)
+                null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                e
+            }
+            ended += error to (System.nanoTime() - started) / 1_000_000
+        }
+        try {
+            runBlocking(Dispatchers.Default) {
+                repeat(RACE_ROUNDS) { round ->
+                    answer.set(false)
+                    racy.awaitReady()
+                    val before = hung.value
+                    val waiting = if (round == 0) RACE_GROW_TABLE else 1
+                    val calls = MutableList(waiting) { timedCall(RACE_RPC_TIMEOUT_MS) }
+                    withTimeout(2_000) { hung.first { it >= before + waiting } }
+                    calls += List(RACE_SHORT_CALLS) { i -> timedCall(i % 3L) }
+                    val arrived = AtomicInteger()
+                    List(RACE_SWEEPERS) { j ->
+                        thread {
+                            arrived.incrementAndGet()
+                            while (arrived.get() < RACE_SWEEPERS) Thread.onSpinWait()
+                            when (j) {
+                                0 -> dropServerSockets()
+                                1 -> disconnect().also { racy.connect() }
+                                else -> disconnect()
+                            }
+                        }
+                    }.forEach { it.join() }
+                    answer.set(true)
+                    disconnect()
+                    racy.connect()
+                    val settled = withTimeoutOrNull(RACE_RPC_TIMEOUT_MS / 4) { calls.joinAll() }
+                    if (settled == null) fail("round $round: a call was never completed; uncaught=$uncaught disconnect=$disconnectErrors")
+                }
+            }
+        } finally {
+            disconnect()
+            raceScope.cancel()
+            quick.close()
+        }
+        assertEquals("uncaught", emptyList<Throwable>(), uncaught)
+        assertEquals("disconnect() threw", emptyList<Throwable>(), disconnectErrors)
+        assertEquals(RACE_ROUNDS * (1 + RACE_SHORT_CALLS) + RACE_GROW_TABLE - 1, ended.size)
+        ended.forEach { (error, ms) ->
+            assertTrue(error.toString(), error == null || error is GatewayUnavailableException)
+            assertTrue("took $ms ms", ms < RACE_RPC_TIMEOUT_MS / 4)
+        }
+    }
+
     @Test fun refusedHandshakesStopAfterTheLimit() = test {
         fake.refuseUpgrade = true
         val stopped = gateway.run {
@@ -276,5 +375,16 @@ class HermesGatewayTest {
         assertEquals(SubmitStatus.Steered, status("""{"status":"steered"}"""))
         assertEquals(SubmitStatus.VoiceStopped, status("""{"voice_stopped":true}"""))
         assertEquals(SubmitStatus.Unknown, status("""{}"""))
+    }
+
+    private companion object {
+        /** A method the fake leaves unanswered until the race test settles a round. */
+        const val HANG = "test.hang"
+        // The race test's sizes: on the old code, 100 rounds hit the race several times per run.
+        const val RACE_ROUNDS = 100
+        const val RACE_SHORT_CALLS = 6
+        const val RACE_GROW_TABLE = 1024
+        const val RACE_SWEEPERS = 6
+        const val RACE_RPC_TIMEOUT_MS = 10_000L
     }
 }

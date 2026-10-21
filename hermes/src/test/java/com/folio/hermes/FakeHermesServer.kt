@@ -1,11 +1,17 @@
 package com.folio.hermes
 
 import java.io.Closeable
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import javax.net.ServerSocketFactory
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,8 +32,14 @@ import okhttp3.WebSocketListener
 /**
  * A scripted Hermes dashboard for gateway tests: `/api/auth/ws-ticket` (Bearer-checked) and the
  * `/api/ws` upgrade. Shapes follow the deployed server (tui_gateway/ws.py, server_requests.py).
+ *
+ * [noDelay] turns Nagle off on the server's sockets. MockWebServer writes a response's headers and
+ * body separately, so with Nagle on the body waits for the client's delayed ACK: about 40 ms per
+ * ticket, so per connection. Off by default: with it on for every test, frames sent back to back
+ * arrive at once, and `HermesConversationTest.droppedSocketMidTurnResumesAndKeepsReading` fails
+ * every run (a turn that completes right after its resume reply reads as lost; a separate fix).
  */
-class FakeHermesServer : Closeable {
+class FakeHermesServer(noDelay: Boolean = false) : Closeable {
     val server = MockWebServer()
     val acceptedTokens: MutableSet<String> = ConcurrentHashMap.newKeySet<String>().apply { add("at-1") }
     val tickets = AtomicInteger()
@@ -37,6 +49,9 @@ class FakeHermesServer : Closeable {
     @Volatile var answerPings = true
     @Volatile var sendReady = true
     @Volatile var capabilitiesUnsupported = false
+
+    /** False: the fake never answers the client's close frame (the gateway's own fallback must cut the socket). */
+    @Volatile var answerClose = true
 
     /** Plain HTTP routes beyond the gateway's (path → handler): the voice tests add `/api/audio/…` ([FakeHermesVoice]). */
     val routes = ConcurrentHashMap<String, (RecordedRequest) -> MockResponse>()
@@ -68,6 +83,7 @@ class FakeHermesServer : Closeable {
                 else -> routes[request.url.encodedPath]?.invoke(request) ?: json(404, """{"detail":"Not Found"}""")
             }
         }
+        if (noDelay) server.serverSocketFactory = NoDelayServerSockets
         server.start()
     }
 
@@ -119,7 +135,12 @@ class FakeHermesServer : Closeable {
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-            webSocket.close(1000, null)
+            side.closing.complete(code)
+            if (answerClose) webSocket.close(1000, null)
+        }
+
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
+            side.failed.complete(t)
         }
     }
 
@@ -130,9 +151,32 @@ class FakeHermesServer : Closeable {
         const val FENCE = "test.fence"
     }
 
+    /** Server sockets whose accepted connections have TCP_NODELAY on. */
+    private object NoDelayServerSockets : ServerSocketFactory() {
+        private fun socket() = object : ServerSocket() {
+            override fun accept(): Socket = super.accept().apply { tcpNoDelay = true }
+        }
+
+        override fun createServerSocket(): ServerSocket = socket()
+        override fun createServerSocket(port: Int): ServerSocket = socket().apply { bind(InetSocketAddress(port)) }
+        override fun createServerSocket(port: Int, backlog: Int): ServerSocket =
+            socket().apply { bind(InetSocketAddress(port), backlog) }
+
+        override fun createServerSocket(port: Int, backlog: Int, ifAddress: InetAddress): ServerSocket =
+            socket().apply { bind(InetSocketAddress(ifAddress, port), backlog) }
+    }
+
     class ServerSide {
         lateinit var ws: WebSocket
         val frames = CopyOnWriteArrayList<JsonObject>()
+
+        /**
+         * How the client left this socket. Shared by every gateway test; only the close tests read it.
+         * [closing]: the close code the client sent (a clean close). [failed]: the socket dropped
+         * without a close frame (the client cut it, or the read failed).
+         */
+        val closing = CompletableDeferred<Int>()
+        val failed = CompletableDeferred<Throwable>()
         private val consumed = HashSet<Int>()
         private val arrived = MutableStateFlow(0)
 
